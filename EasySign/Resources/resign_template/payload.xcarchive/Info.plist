@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>ApplicationProperties</key>
+	<dict>
+		<key>ApplicationPath</key>
+		<string>Applications/thirdcent.app</string>
+		<key>CFBundleIdentifier</key>
+		<string>com.twocent.single</string>
+		<key>CFBundleShortVersionString</key>
+		<string>1.0.1</string>
+		<key>CFBundleVersion</key>
+		<string>6</string>
+		<key>SigningIdentity</key>
+		<string>iPhone Developer: Oliver Babbitt (SW5U5ZWZ4J)</string>
+		<key>Team</key>
+		<string>SW5U5ZWZ4J</string>
+	</dict>
+	<key>ArchiveVersion</key>
+	<integer>2</integer>
+	<key>CreationDate</key>
+	<date>2019-12-31T13:21:11Z</date>
+	<key>Name</key>
+	<string>thirdcent</string>
+	<key>SchemeName</key>
+	<string>thirdcent</string>
+</dict>
+</plist>
