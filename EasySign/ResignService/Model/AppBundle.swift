@@ -72,11 +72,11 @@ class AppBundle: BaseBundle {
     }
     
     func getEntitlementsString() throws -> String {
-        guard let ldidPath = Bundle.main.resourceURL?.appendingPathComponent("Resources/resign_tools/ldid"),
-              let executableFilePath = self.executableFilePath else {
-            throw NSError(message: "读取 ldid 失败")
+        guard let executableFilePath = self.executableFilePath,
+              let result = MachOSignature.load(executableFilePath).first else {
+            throw NSError(message: "读取 entitlements 失败")
         }
-        return try TaskCenter.executeShell(command: "\"\(ldidPath.path)\" -e \"\(executableFilePath.path)\"")
+        return result.entitlements
     }
     
     func getEntitlements() throws -> [String: Any] {
