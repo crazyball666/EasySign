@@ -18,7 +18,15 @@ struct PKCS12 {
         self.password = password
         
         let data = try Data(contentsOf: file)
-        let options: [String: Any] = [kSecImportExportPassphrase as String: password]
+        let options: [String: Any]
+        if #available(macOS 15.0, *) {
+            options = [
+                kSecImportExportPassphrase as String: password,
+                kSecImportToMemoryOnly as String: true
+            ]
+        } else {
+            options = [kSecImportExportPassphrase as String: password]
+        }
         var items: CFArray?
         let status = SecPKCS12Import(data as CFData, options as CFDictionary, &items)
         

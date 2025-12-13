@@ -92,7 +92,7 @@ struct ResignTask {
 extension ResignTask {
     
     private func getAppBundle() throws -> AppBundle {
-        if taskInfo.filePath.pathExtension == "ipa" {
+        if taskInfo.filePath.pathExtension == "ipa" || taskInfo.filePath.pathExtension == "zip" {
             let outputPath = workspacePath.appendingPathComponent("ipa_content")
             let command = "unzip \"\(taskInfo.filePath.path)\" -d \"\(outputPath.path)\""
             try TaskCenter.executeShell(command: command)

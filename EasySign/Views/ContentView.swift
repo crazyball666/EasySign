@@ -58,7 +58,7 @@ class ContentViewModel: ObservableObject, LoggerProtocol {
     {
         willSet {
             if inputFile != newValue {
-                self.selectedIPA = nil
+                self.selectedAppBundle = nil
             }
         }
     }
@@ -83,18 +83,18 @@ class ContentViewModel: ObservableObject, LoggerProtocol {
     
     @Published var loading: Bool = false
         
-    var selectedIPA: IPA? {
+    var selectedAppBundle: AppBundle? {
         didSet {
-            guard let ipa = selectedIPA else {
+            guard let appBundle = selectedAppBundle else {
                 return
             }
             do {
-                let entitlements = try ipa.appBundle.getEntitlementsString()
+                let entitlements = try appBundle.getEntitlementsString()
                 resignSetting = ResignSetting(
-                    bundleId: ipa.appBundle.bundleId,
-                    displayName: ipa.appBundle.displayName,
-                    version: ipa.appBundle.version,
-                    buildVersion: ipa.appBundle.buildVersion,
+                    bundleId: appBundle.bundleId,
+                    displayName: appBundle.displayName,
+                    version: appBundle.version,
+                    buildVersion: appBundle.buildVersion,
                     entitlements: entitlements
                 )
             } catch {
@@ -195,22 +195,23 @@ struct ContentView: View {
             }
 
             HStack {
+                Text("Resign Type")
+                    .frame(width: 100)
                 Picker(selection: $viewModel.resignType) {
                     ForEach(ResignExportType.allCases, id: \.rawValue) { option in
-                        Text(option.rawValue).tag(option)
+                        Text(option.rawValue)
+                            .tag(option)
                     }
-                } label: {
-                    Text("Resign Type")
-                        .frame(width: 100)
-                }
-                .pickerStyle(.menu) // 设置为下拉菜单样式
-                
+                } label: {}
+                    .pickerStyle(.segmented) // 设置为下拉菜单样式
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
             }
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, 8)
             .padding(.vertical, 12)
             .background(Color.gray.opacity(0.2))
             .cornerRadius(10)
-            
             
             InputField(title: "Output", text: $viewModel.outputDir) {
                 guard let selectedUrl = selectFile(isDirectory: true) else {
@@ -271,14 +272,21 @@ struct ContentView: View {
     }
     
     private func showIPAInfo() {
-        if viewModel.selectedIPA != nil {
+        if viewModel.selectedAppBundle != nil {
             viewModel.isDetailActive = true
             return
         }
-        if let inputFile = URL(string: viewModel.inputFile) {
+        let inputFile = URL(fileURLWithPath: viewModel.inputFile)
+        if FileManager.default.fileExists(atPath: viewModel.inputFile) {
             do {
-                let ipa = try IPA(file:inputFile)
-                viewModel.selectedIPA = ipa
+                if inputFile.pathExtension == "ipa" || inputFile.pathExtension == "zip" {
+                    let ipa = try IPA(file:inputFile)
+                    viewModel.selectedAppBundle = ipa.appBundle
+                } else if inputFile.pathExtension == "app" {
+                    viewModel.selectedAppBundle = try AppBundle(path: inputFile)
+                } else {
+                    throw NSError(message: "非法文件")
+                }
                 viewModel.isDetailActive = true
             } catch {
                 viewModel.presentError = error
