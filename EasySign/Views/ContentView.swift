@@ -226,12 +226,6 @@ struct ContentView: View {
     }
 }
 
-struct DeviceView: View {
-    var body: some View {
-        Text("Device View - Coming Soon")
-    }
-}
-
 struct ResignContentView: View {
     @StateObject var viewModel = ContentViewModel()
     @State var logText = ""
