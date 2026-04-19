@@ -7,28 +7,6 @@
 
 import SwiftUI
 
-// MARK: - Placeholder Views (will be implemented in Tasks 10-12)
-
-struct AppListView: View {
-    let device: Device?
-    let onAppSelected: (InstalledApp) -> Void
-
-    var body: some View {
-        VStack {
-            if let device = device {
-                Text("Apps on \(device.name)")
-                    .font(.headline)
-                Text("AppListView - Coming in Task 10")
-                    .foregroundColor(.secondary)
-            } else {
-                Text("Select a device")
-                    .foregroundColor(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
 struct SandboxBrowserView: View {
     let app: InstalledApp?
     let initialPath: String
