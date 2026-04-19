@@ -47,6 +47,13 @@ func AMDeviceStartService(
     _ unknown: UnsafeMutableRawPointer?
 ) -> Int32
 
+@_silgen_name("AMDeviceLookupApplicationImages")
+func AMDeviceLookupApplicationImages(
+    _ device: AMDeviceRef,
+    _ flags: UInt32,
+    _ result: UnsafeMutablePointer<Unmanaged<CFDictionary>?>?
+) -> Int32
+
 @_silgen_name("AFCConnectionOpen")
 func AFCConnectionOpen(_ connection: AFCConnectionRef, _ unused: UInt32, _ connectionRef: UnsafeMutablePointer<AFCConnectionRef?>?) -> Int32
 
@@ -61,9 +68,28 @@ typealias AMDeviceNotificationCallback = @convention(c) (CFDictionary?, UnsafeMu
 
 // MARK: - Error Codes
 
-private let AMDAppLEDETECT_SUCCESS: Int32 = 0
+let AMDAppLEDETECT_SUCCESS: Int32 = 0
 private let kAMDeviceConnected: UInt32 = 1
 private let kAMDeviceDisconnected: UInt32 = 2
+
+// MARK: - Device Errors
+
+enum DeviceError: LocalizedError {
+    case notConnected
+    case lookupFailed
+    case connectionFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .notConnected:
+            return "Device is not connected"
+        case .lookupFailed:
+            return "Failed to lookup applications on device"
+        case .connectionFailed:
+            return "Failed to connect to device"
+        }
+    }
+}
 
 // MARK: - Notification Names
 
@@ -71,6 +97,15 @@ extension Notification.Name {
     static let deviceConnected = Notification.Name("DeviceConnected")
     static let deviceDisconnected = Notification.Name("DeviceDisconnected")
 }
+
+// MARK: - MobileDevice Constants
+
+let kCFBundleIdentifierKey = "CFBundleIdentifier"
+let kCFBundleNameKey = "CFBundleName"
+let kCFBundleShortVersionStringKey = "CFBundleShortVersionString"
+let kCFBundleVersionKey = "CFBundleVersion"
+let kAppLookupInfoAppDictKey = "ApplicationDictionaryKey"
+let kAppLookupInfoImagePathKey = "Path"
 
 // MARK: - Global Callback Function
 
@@ -118,6 +153,16 @@ final class DeviceManager: ObservableObject {
 
     func refreshDevices() {
         devices = fetchDevices()
+    }
+
+    func getConnectedDeviceRef(for deviceID: String) -> AMDeviceRef? {
+        guard isConnected,
+              let connected = connectedDevice,
+              connected.id == deviceID,
+              let ref = connectedDeviceRef else {
+            return nil
+        }
+        return ref
     }
 
     func connect(to device: Device) -> Bool {
