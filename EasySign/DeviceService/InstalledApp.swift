@@ -9,6 +9,7 @@ struct InstalledApp: Identifiable, Hashable {
     let signingInfo: SigningInfo
     let path: String
     let isSystemApp: Bool
+    let device: Device
 
     enum SigningInfo: String {
         case development = "Development"

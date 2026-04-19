@@ -7,35 +7,15 @@
 
 import SwiftUI
 
-struct SandboxBrowserView: View {
-    let app: InstalledApp?
-    let initialPath: String
-    let onFileSelected: (FileNode) -> Void
-    let onNavigateBack: () -> Void
+// MARK: - DeviceViewMode
 
-    var body: some View {
-        VStack {
-            HStack {
-                Button("Back to Apps") {
-                    onNavigateBack()
-                }
-                Spacer()
-            }
-            .padding()
-
-            if let app = app {
-                Text("Sandbox: \(app.bundleID)")
-                    .font(.headline)
-                Text("SandboxBrowserView - Coming in Task 11")
-                    .foregroundColor(.secondary)
-            } else {
-                Text("Select an app")
-                    .foregroundColor(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
+enum DeviceViewMode {
+    case appList
+    case fileBrowser
+    case filePreview
 }
+
+// MARK: - FilePreviewView
 
 struct FilePreviewView: View {
     let app: InstalledApp?
@@ -64,14 +44,6 @@ struct FilePreviewView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-}
-
-// MARK: - DeviceViewMode
-
-enum DeviceViewMode {
-    case appList
-    case fileBrowser
-    case filePreview
 }
 
 // MARK: - DeviceView

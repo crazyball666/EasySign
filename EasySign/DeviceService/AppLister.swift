@@ -52,7 +52,8 @@ final class AppLister {
                 buildVersion: buildVersion,
                 signingInfo: signingInfo,
                 path: path,
-                isSystemApp: isSystemApp
+                isSystemApp: isSystemApp,
+                device: device
             )
         }
     }
