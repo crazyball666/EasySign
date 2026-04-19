@@ -3,8 +3,8 @@ import Combine
 
 // MARK: - MobileDevice C API Declarations
 
-@_silgen_name("AMDeviceCopySupportedDevices")
-func AMDeviceCopySupportedDevices() -> CFArray?
+@_silgen_name("AMDCreateDeviceList")
+func AMDCreateDeviceList() -> CFArray?
 
 @_silgen_name("AMDeviceConnect")
 func AMDeviceConnect(_ device: AMDeviceRef) -> Int32
@@ -47,8 +47,8 @@ func AMDeviceStartService(
     _ unknown: UnsafeMutableRawPointer?
 ) -> Int32
 
-@_silgen_name("AMDeviceLookupApplicationImages")
-func AMDeviceLookupApplicationImages(
+@_silgen_name("AMDeviceLookupApplications")
+func AMDeviceLookupApplications(
     _ device: AMDeviceRef,
     _ flags: UInt32,
     _ result: UnsafeMutablePointer<Unmanaged<CFDictionary>?>?
@@ -167,7 +167,7 @@ final class DeviceManager: ObservableObject {
 
     func connect(to device: Device) -> Bool {
         // Find the device reference
-        guard let deviceList = AMDeviceCopySupportedDevices() as? [AMDeviceRef],
+        guard let deviceList = AMDCreateDeviceList() as? [AMDeviceRef],
               let deviceRef = deviceList.first(where: { ref in
                   guard AMDeviceConnect(ref) == AMDAppLEDETECT_SUCCESS else { return false }
                   defer { _ = AMDeviceDisconnect(ref) }
@@ -237,7 +237,7 @@ final class DeviceManager: ObservableObject {
     // MARK: - Private Methods
 
     private func fetchDevices() -> [Device] {
-        guard let deviceList = AMDeviceCopySupportedDevices() as? [AMDeviceRef] else {
+        guard let deviceList = AMDCreateDeviceList() as? [AMDeviceRef] else {
             return []
         }
 

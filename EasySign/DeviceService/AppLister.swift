@@ -13,9 +13,9 @@ final class AppLister {
             throw DeviceError.notConnected
         }
 
-        // 2. Call AMDeviceLookupApplicationImages
+        // 2. Call AMDeviceLookupApplications
         var result: Unmanaged<CFDictionary>?
-        let status = AMDeviceLookupApplicationImages(deviceRef, 0, &result)
+        let status = AMDeviceLookupApplications(deviceRef, 0, &result)
 
         guard status == AMDAppLEDETECT_SUCCESS,
               let dict = result?.takeRetainedValue() as? [String: Any] else {
