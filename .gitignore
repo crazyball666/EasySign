@@ -54,3 +54,4 @@ pod_lib/
 
 Carthage/Build
 *.
+.worktrees/
