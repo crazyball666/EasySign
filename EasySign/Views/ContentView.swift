@@ -53,7 +53,7 @@ class ContentViewModel: ObservableObject, LoggerProtocol {
             self.logString += "[\(level.rawValue)] \(text)\n"
         }
     }
-    
+
     @Published var inputFile = ""
     {
         willSet {
@@ -62,27 +62,27 @@ class ContentViewModel: ObservableObject, LoggerProtocol {
             }
         }
     }
-    
+
     @Published var p12Path = ""
-    
+
     @Published var p12Password = ""
-    
+
     @Published var mobileprovisionPath = ""
-    
+
     @Published var resignType: ResignExportType = .dev
-    
+
     @Published var outputDir = ""
-    
+
     @Published var isDetailActive = false
-    
+
     @Published var logString: String = ""
-    
+
     @Published var resignSetting: ResignSetting?
-        
+
     @Published var presentError: Error?
-    
+
     @Published var loading: Bool = false
-        
+
     var selectedAppBundle: AppBundle? {
         didSet {
             guard let appBundle = selectedAppBundle else {
@@ -111,7 +111,7 @@ struct InputField<TailView: View>: View {
     var selectAction: (() -> Void)? = nil
     var selectTitle: String = "Select"
     var tailView: TailView? = nil
-    
+
     init(title: String, text: Binding<String>, selectAction: (() -> Void)? = nil, selectTitle: String = "Select", @ViewBuilder tailView: @escaping () -> TailView) {
         self.title = title
         self._text = text
@@ -119,30 +119,30 @@ struct InputField<TailView: View>: View {
         self.selectTitle = selectTitle
         self.tailView = tailView()
     }
-    
+
     init(title: String, text: Binding<String>, selectAction: (() -> Void)? = nil, selectTitle: String = "Select") where TailView == EmptyView {
         self.title = title
         self._text = text
         self.selectAction = selectAction
         self.selectTitle = selectTitle
     }
-    
-    
+
+
     var body: some View {
         HStack {
             Text(title)
                 .frame(width: 100)
-            
+
             TextField(title, text: $text)
                 .textFieldStyle(.roundedBorder)
-            
+
             if let selectAction = selectAction {
                 Button(action: selectAction) {
                     Text(selectTitle)
                         .padding(.vertical, 3)
                 }
             }
-            
+
             if let tailView = tailView {
                 tailView
             }
@@ -155,11 +155,87 @@ struct InputField<TailView: View>: View {
 }
 
 
+enum NavigationTab: String, CaseIterable {
+    case resign = "Resign"
+    case devices = "Devices"
+}
+
+struct SidebarView: View {
+    @Binding var selectedTab: NavigationTab
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(NavigationTab.allCases, id: \.rawValue) { tab in
+                SidebarItem(
+                    title: tab.rawValue,
+                    icon: tab == .resign ? "doc.badge.gearshape" : "iphone",
+                    isSelected: selectedTab == tab
+                ) {
+                    selectedTab = tab
+                }
+            }
+            Spacer()
+        }
+        .background(Color.gray.opacity(0.1))
+    }
+}
+
+struct SidebarItem: View {
+    let title: String
+    let icon: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                Text(title)
+                    .font(.caption)
+            }
+            .foregroundColor(isSelected ? .blue : .primary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+        }
+        .background(isSelected ? Color.blue.opacity(0.1) : Color.clear)
+    }
+}
+
 
 struct ContentView: View {
+    @State private var selectedTab: NavigationTab = .resign
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // 侧边栏
+            SidebarView(selectedTab: $selectedTab)
+                .frame(width: 80)
+
+            // 内容区域
+            Group {
+                switch selectedTab {
+                case .resign:
+                    ResignContentView()
+                case .devices:
+                    DeviceView()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+struct DeviceView: View {
+    var body: some View {
+        Text("Device View - Coming Soon")
+    }
+}
+
+struct ResignContentView: View {
     @StateObject var viewModel = ContentViewModel()
     @State var logText = ""
-    
+
     var body: some View {
         VStack(alignment: .leading) {
             InputField(title: "Input File", text: $viewModel.inputFile, selectAction: {
@@ -176,17 +252,17 @@ struct ContentView: View {
                     IPAContentView(resignSetting: Binding(get: { viewModel.resignSetting ?? ResignSetting() }, set: { newValue in viewModel.resignSetting = newValue }))
                 }
             }
-            
-            
+
+
             InputField(title: "P12 File", text: $viewModel.p12Path) {
                 guard let selectedUrl = selectFile() else {
                     return
                 }
                 viewModel.p12Path = selectedUrl.path
             }
-            
+
             InputField(title: "P12 Password", text: $viewModel.p12Password)
-            
+
             InputField(title: "Mobileprovision", text: $viewModel.mobileprovisionPath) {
                 guard let selectedUrl = selectFile() else {
                     return
@@ -212,14 +288,14 @@ struct ContentView: View {
             .padding(.vertical, 12)
             .background(Color.gray.opacity(0.2))
             .cornerRadius(10)
-            
+
             InputField(title: "Output", text: $viewModel.outputDir) {
                 guard let selectedUrl = selectFile(isDirectory: true) else {
                     return
                 }
                 viewModel.outputDir = selectedUrl.path
             }
-            
+
             Text("Logcat:")
                 .padding(.top)
             ScrollView(.vertical) {  // 指定垂直滚动
@@ -230,7 +306,7 @@ struct ContentView: View {
             .padding(.init(top: 10, leading: 10, bottom: 10, trailing: 10))
             .background(Color.gray.opacity(0.2))
             .cornerRadius(10)
-            
+
             HStack {
                 Button(action: onTapStart) {
                     Text("Start")
@@ -258,8 +334,8 @@ struct ContentView: View {
             CustomLoadingView(text: "重签中", color: .blue)
         }
     }
-    
-    
+
+
     private func selectFile(isDirectory: Bool = false) -> URL? {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
@@ -270,7 +346,7 @@ struct ContentView: View {
         }
         return nil
     }
-    
+
     private func showIPAInfo() {
         if viewModel.selectedAppBundle != nil {
             viewModel.isDetailActive = true
@@ -295,7 +371,7 @@ struct ContentView: View {
             viewModel.presentError = NSError(message: "invaild input file")
         }
     }
-    
+
     private func onTapStart() {
         UserDefaults.standard.set(viewModel.inputFile, forKey: CacheKey.selectedInput.rawValue)
         UserDefaults.standard.set(viewModel.p12Path, forKey: CacheKey.selectedP12.rawValue)
@@ -303,7 +379,7 @@ struct ContentView: View {
         UserDefaults.standard.set(viewModel.mobileprovisionPath, forKey: CacheKey.selectedMobileProvision.rawValue)
         UserDefaults.standard.set(viewModel.resignType.rawValue, forKey: CacheKey.selectedResignType.rawValue)
         UserDefaults.standard.set(viewModel.outputDir, forKey: CacheKey.selectedOutput.rawValue)
-        
+
         let taskInfo = ResignTaskInfo(
             filePath: URL(fileURLWithPath: viewModel.inputFile),
             p12Path: URL(fileURLWithPath: viewModel.p12Path),
