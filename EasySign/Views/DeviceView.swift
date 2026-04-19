@@ -15,37 +15,6 @@ enum DeviceViewMode {
     case filePreview
 }
 
-// MARK: - FilePreviewView
-
-struct FilePreviewView: View {
-    let app: InstalledApp?
-    let path: String
-    let onBack: () -> Void
-
-    var body: some View {
-        VStack {
-            HStack {
-                Button("Back") {
-                    onBack()
-                }
-                Spacer()
-            }
-            .padding()
-
-            if let app = app {
-                Text("Preview: \(path)")
-                    .font(.headline)
-                Text("FilePreviewView - Coming in Task 12")
-                    .foregroundColor(.secondary)
-            } else {
-                Text("Select a file to preview")
-                    .foregroundColor(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
 // MARK: - DeviceView
 
 struct DeviceView: View {
