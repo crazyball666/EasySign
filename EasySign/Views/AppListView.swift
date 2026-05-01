@@ -88,9 +88,11 @@ struct AppListView: View {
             }
         }
         .onAppear {
+            print("[AppListView] onAppear called, device: \(device?.name ?? "nil")")
             loadApps()
         }
-        .onChange(of: device) { _ in
+        .onChange(of: device) { newDevice in
+            print("[AppListView] onChange called, device: \(newDevice?.name ?? "nil")")
             loadApps()
         }
     }
@@ -102,6 +104,17 @@ struct AppListView: View {
         errorMessage = nil
 
         DispatchQueue.global().async {
+            // First connect to the device
+            let connected = DeviceManager.shared.connect(to: device)
+            guard connected else {
+                DispatchQueue.main.async {
+                    self.errorMessage = "无法连接到设备"
+                    self.isLoading = false
+                }
+                return
+            }
+
+            // Then list apps
             do {
                 let lister = AppLister(device: device)
                 let appList = try lister.listInstalledApps()

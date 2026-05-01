@@ -23,6 +23,7 @@ struct DeviceView: View {
     @State private var selectedApp: InstalledApp?
     @State private var currentPath: String = ""
     @State private var viewMode: DeviceViewMode = .appList
+    @State private var refreshTrigger: Int = 0  // Used to force AppListView refresh
 
     var body: some View {
         HStack(spacing: 0) {
@@ -30,8 +31,12 @@ struct DeviceView: View {
             DeviceListPanel(
                 devices: deviceManager.devices,
                 selectedDevice: $selectedDevice,
-                onRefresh: { deviceManager.refreshDevices() }
+                onRefresh: { deviceManager.refreshDevices() },
+                onDeviceSelected: {
+                    refreshTrigger += 1
+                }
             )
+            .frame(width: 150)
             .frame(width: 150)
 
             Divider()
@@ -48,6 +53,7 @@ struct DeviceView: View {
                             viewMode = .fileBrowser
                         }
                     )
+                    .id(refreshTrigger)  // Force view recreation when refreshTrigger changes
                 case .fileBrowser:
                     SandboxBrowserView(
                         app: selectedApp,
@@ -74,7 +80,14 @@ struct DeviceView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear {
+            deviceManager.startObserving()
             deviceManager.refreshDevices()
+        }
+        .onDisappear {
+            deviceManager.stopObserving()
+        }
+        .onChange(of: selectedDevice) { newDevice in
+            print("[DeviceView] selectedDevice changed: \(newDevice?.name ?? "nil")")
         }
     }
 }

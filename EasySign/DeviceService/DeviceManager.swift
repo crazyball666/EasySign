@@ -47,10 +47,19 @@ func AMDeviceStartService(
     _ unknown: UnsafeMutableRawPointer?
 ) -> Int32
 
+@_silgen_name("AMDeviceStartServiceWithOptions")
+func AMDeviceStartServiceWithOptions(
+    _ device: AMDeviceRef,
+    _ serviceName: CFString,
+    _ options: CFDictionary?,
+    _ connection: UnsafeMutablePointer<AFCConnectionRef?>?,
+    _ unknown: UnsafeMutableRawPointer?
+) -> Int32
+
 @_silgen_name("AMDeviceLookupApplications")
 func AMDeviceLookupApplications(
     _ device: AMDeviceRef,
-    _ flags: UInt32,
+    _ options: CFDictionary?,
     _ result: UnsafeMutablePointer<Unmanaged<CFDictionary>?>?
 ) -> Int32
 
@@ -64,7 +73,7 @@ func AFCConnectionClose(_ connection: AFCConnectionRef) -> Int32
 
 typealias AMDeviceRef = UnsafeMutableRawPointer
 typealias AFCConnectionRef = UnsafeMutableRawPointer
-typealias AMDeviceNotificationCallback = @convention(c) (CFDictionary?, UnsafeMutableRawPointer?) -> Void
+typealias AMDeviceNotificationCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void
 
 // MARK: - Error Codes
 
@@ -106,29 +115,17 @@ let kCFBundleShortVersionStringKey = "CFBundleShortVersionString"
 let kCFBundleVersionKey = "CFBundleVersion"
 let kAppLookupInfoAppDictKey = "ApplicationDictionaryKey"
 let kAppLookupInfoImagePathKey = "Path"
+let kLookupReturnAttributesKey = "LookupReturnAttributesKey"
 
 // MARK: - Global Callback Function
 
-// This callback is called from C code, so it cannot capture any Swift context
-private func deviceNotificationCallback(_ dict: CFDictionary?, _ userInfo: UnsafeMutableRawPointer?) {
-    guard let dict = dict else { return }
-
-    // Extract notification type from the CFDictionary
-    // The dictionary contains a key "AMDeviceNotificationNoteType" with a UInt32 value
-    let key = "AMDeviceNotificationNoteType" as CFString
-    guard let noteTypeRef = CFDictionaryGetValue(dict, Unmanaged.passUnretained(key).toOpaque()) else { return }
-
-    // The value is a pointer to UInt32
-    let noteTypeValue = noteTypeRef.assumingMemoryBound(to: UInt32.self)
-    let noteType = noteTypeValue.pointee
-
-    // Post notification to main thread
+// This callback is called from C code on a background thread
+// IMPORTANT: Don't try to access the info pointer directly - its structure is
+// private and may vary between SDK versions. Just use it as a trigger to refresh.
+private func deviceNotificationCallback(_ info: UnsafeMutableRawPointer?, _ userInfo: UnsafeMutableRawPointer?) {
+    // Just post notification to refresh - don't try to parse the info structure
     DispatchQueue.main.async {
-        if noteType == kAMDeviceConnected {
-            NotificationCenter.default.post(name: .deviceConnected, object: nil)
-        } else if noteType == kAMDeviceDisconnected {
-            NotificationCenter.default.post(name: .deviceDisconnected, object: nil)
-        }
+        NotificationCenter.default.post(name: .deviceConnected, object: nil)
     }
 }
 
@@ -146,6 +143,14 @@ final class DeviceManager: ObservableObject {
     private var connectedDeviceRef: AMDeviceRef?
     private var notificationObserverConnected: NSObjectProtocol?
     private var notificationObserverDisconnected: NSObjectProtocol?
+    private var pollingTimer: Timer?
+
+    // MARK: - Notification Names (unused now, but keeping for future use)
+
+    enum DeviceNotification {
+        static let connected = Notification.Name("DeviceConnected")
+        static let disconnected = Notification.Name("DeviceDisconnected")
+    }
 
     private init() {}
 
@@ -167,34 +172,70 @@ final class DeviceManager: ObservableObject {
 
     func connect(to device: Device) -> Bool {
         // Find the device reference
-        guard let deviceList = AMDCreateDeviceList() as? [AMDeviceRef],
-              let deviceRef = deviceList.first(where: { ref in
-                  guard AMDeviceConnect(ref) == AMDAppLEDETECT_SUCCESS else { return false }
-                  defer { _ = AMDeviceDisconnect(ref) }
-                  guard let udid = AMDeviceCopyValue(ref, 0, "UniqueDeviceID" as CFString) as? String else {
-                      return false
-                  }
-                  return udid == device.id
-              }) else {
+        guard let deviceListRef = AMDCreateDeviceList() else {
+            return false
+        }
+        let typeID = CFGetTypeID(deviceListRef)
+        guard typeID == CFArrayGetTypeID() else {
+            return false
+        }
+        let deviceList = deviceListRef as! CFArray
+        let count = CFArrayGetCount(deviceList)
+
+        var foundRef: AMDeviceRef?
+        for i in 0..<count {
+            let cfValue = CFArrayGetValueAtIndex(deviceList, i)
+            let ref = unsafeBitCast(cfValue, to: AMDeviceRef.self)
+
+            let connectResult = AMDeviceConnect(ref)
+            if connectResult != AMDAppLEDETECT_SUCCESS {
+                continue
+            }
+
+            if let udid = AMDeviceCopyValue(ref, 0, "UniqueDeviceID" as CFString) as? String,
+               udid == device.id {
+                foundRef = ref
+                break
+            }
+            // Not the device we want, disconnect
+            _ = AMDeviceDisconnect(ref)
+        }
+
+        guard let deviceRef = foundRef else {
+            print("[DeviceManager] Device not found in list")
             return false
         }
 
         // Connect and pair
-        guard AMDeviceConnect(deviceRef) == AMDAppLEDETECT_SUCCESS else {
+        print("[DeviceManager] Connecting to device...")
+        let connectResult = AMDeviceConnect(deviceRef)
+        print("[DeviceManager] AMDeviceConnect result: \(connectResult)")
+        guard connectResult == AMDAppLEDETECT_SUCCESS else {
+            print("[DeviceManager] AMDeviceConnect failed")
             return false
         }
 
-        guard AMDeviceIsPaired(deviceRef) == AMDAppLEDETECT_SUCCESS else {
-            _ = AMDeviceDisconnect(deviceRef)
-            return false
+        // Skip AMDeviceIsPaired - sometimes it returns wrong result
+        // Go directly to ValidatePairing
+        print("[DeviceManager] Validating pairing...")
+        let validateResult = AMDeviceValidatePairing(deviceRef)
+        print("[DeviceManager] AMDeviceValidatePairing result: \(validateResult)")
+        if validateResult != AMDAppLEDETECT_SUCCESS {
+            // Try stopping session first, then validate again
+            print("[DeviceManager] First validation failed, retrying...")
+            _ = AMDeviceStopSession(deviceRef)
+            let retryResult = AMDeviceValidatePairing(deviceRef)
+            print("[DeviceManager] AMDeviceValidatePairing retry result: \(retryResult)")
+            guard retryResult == AMDAppLEDETECT_SUCCESS else {
+                print("[DeviceManager] AMDeviceValidatePairing failed")
+                _ = AMDeviceDisconnect(deviceRef)
+                return false
+            }
         }
 
-        guard AMDeviceValidatePairing(deviceRef) == AMDAppLEDETECT_SUCCESS else {
-            _ = AMDeviceDisconnect(deviceRef)
-            return false
-        }
-
+        print("[DeviceManager] Starting session...")
         guard AMDeviceStartSession(deviceRef) == AMDAppLEDETECT_SUCCESS else {
+            print("[DeviceManager] AMDeviceStartSession failed")
             _ = AMDeviceDisconnect(deviceRef)
             return false
         }
@@ -202,6 +243,7 @@ final class DeviceManager: ObservableObject {
         connectedDeviceRef = deviceRef
         connectedDevice = device
         isConnected = true
+        print("[DeviceManager] Connected successfully!")
         return true
     }
 
@@ -216,79 +258,62 @@ final class DeviceManager: ObservableObject {
     }
 
     func startObserving() {
-        setupNotifications()
-        setupDeviceNotification()
+        // Only use Timer-based polling - don't register callbacks to avoid crashes
+        pollingTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.refreshDevices()
+        }
     }
 
     func stopObserving() {
-        if let observer = notificationObserverConnected {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = notificationObserverDisconnected {
-            NotificationCenter.default.removeObserver(observer)
-        }
-
-        guard let port = deviceNotificationPort else { return }
-        _ = AMDeviceNotificationUnsubscribe(port)
-        deviceNotificationPort = nil
-        runLoopSource = nil
+        pollingTimer?.invalidate()
+        pollingTimer = nil
+        // Don't call AMDeviceNotificationUnsubscribe since we're not using callbacks
     }
 
     // MARK: - Private Methods
 
     private func fetchDevices() -> [Device] {
-        guard let deviceList = AMDCreateDeviceList() as? [AMDeviceRef] else {
+        // Only use AMDCreateDeviceList
+        guard let deviceListRef = AMDCreateDeviceList() else {
             return []
         }
 
-        return deviceList.compactMap { ref -> Device? in
-            guard AMDeviceConnect(ref) == AMDAppLEDETECT_SUCCESS else { return nil }
-            defer { _ = AMDeviceDisconnect(ref) }
+        // Verify it's actually a CFArray before using it
+        let typeID = CFGetTypeID(deviceListRef)
+        guard typeID == CFArrayGetTypeID() else {
+            return []
+        }
 
-            guard let name = AMDeviceCopyValue(ref, 0, "DeviceName" as CFString) as? String,
-                  let udid = AMDeviceCopyValue(ref, 0, "UniqueDeviceID" as CFString) as? String,
-                  let model = AMDeviceCopyValue(ref, 0, "ProductType" as CFString) as? String,
-                  let version = AMDeviceCopyValue(ref, 0, "ProductVersion" as CFString) as? String else {
-                return nil
+        let deviceList = deviceListRef as! CFArray
+        let count = CFArrayGetCount(deviceList)
+        guard count > 0 else {
+            return []
+        }
+
+        var devices: [Device] = []
+        for i in 0..<count {
+            let cfValue = CFArrayGetValueAtIndex(deviceList, i)
+            let deviceRef = unsafeBitCast(cfValue, to: AMDeviceRef.self)
+
+            let connectResult = AMDeviceConnect(deviceRef)
+            guard connectResult == AMDAppLEDETECT_SUCCESS else { continue }
+            defer { _ = AMDeviceDisconnect(deviceRef) }
+
+            guard let name = AMDeviceCopyValue(deviceRef, 0, "DeviceName" as CFString) as? String,
+                  let udid = AMDeviceCopyValue(deviceRef, 0, "UniqueDeviceID" as CFString) as? String,
+                  let model = AMDeviceCopyValue(deviceRef, 0, "ProductType" as CFString) as? String,
+                  let version = AMDeviceCopyValue(deviceRef, 0, "ProductVersion" as CFString) as? String else {
+                continue
             }
 
             let deviceClass = parseDeviceClass(from: model)
-
-            return Device(
-                id: udid,
-                name: name,
-                model: model,
-                systemVersion: version,
-                deviceClass: deviceClass
-            )
+            devices.append(Device(id: udid, name: name, model: model, systemVersion: version, deviceClass: deviceClass))
         }
+
+        return devices
     }
 
-    private func setupNotifications() {
-        notificationObserverConnected = NotificationCenter.default.addObserver(
-            forName: .deviceConnected,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.refreshDevices()
-        }
-
-        notificationObserverDisconnected = NotificationCenter.default.addObserver(
-            forName: .deviceDisconnected,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.refreshDevices()
-            // If disconnected device was our connected device, clear it
-            if let self = self,
-               let connectedId = self.connectedDevice?.id,
-               !self.devices.contains(where: { $0.id == connectedId }) {
-                self.connectedDeviceRef = nil
-                self.connectedDevice = nil
-                self.isConnected = false
-            }
-        }
-    }
+    // Notifications are no longer used - we use Timer polling instead
 
     private func setupDeviceNotification() {
         var notifyPort: UnsafeMutableRawPointer?

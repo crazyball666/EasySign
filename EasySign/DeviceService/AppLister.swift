@@ -13,16 +13,44 @@ final class AppLister {
             throw DeviceError.notConnected
         }
 
-        // 2. Call AMDeviceLookupApplications
+        // 2. Start the installation_proxy service with options
+        print("[AppLister] Starting installation_proxy service...")
+        var connection: AFCConnectionRef?
+        let serviceOptions: [String: Any] = [
+            "Clutch": false as Any,
+            "StartSyncServiceIfNeeded": false as Any
+        ]
+        let serviceResult = AMDeviceStartServiceWithOptions(
+            deviceRef,
+            "com.apple.mobile.installation_proxy" as CFString,
+            serviceOptions as CFDictionary,
+            &connection,
+            nil
+        )
+        print("[AppLister] AMDeviceStartServiceWithOptions result: \(serviceResult), socket: \(String(describing: connection))")
+
+        // 3. Create options dictionary with return attributes
+        let options: [String: Any] = [
+            "LookupReturnAttributesKey": ["CFBundleIdentifier", "CFBundleName", "CFBundleShortVersionString", "CFBundleVersion", "Path", "SignerIdentity"]
+        ]
+
+        print("[AppLister] Calling AMDeviceLookupApplications with options")
+
+        // 4. Call AMDeviceLookupApplications with options dictionary
         var result: Unmanaged<CFDictionary>?
-        let status = AMDeviceLookupApplications(deviceRef, 0, &result)
+        let status = AMDeviceLookupApplications(deviceRef, options as CFDictionary, &result)
+
+        print("[AppLister] AMDeviceLookupApplications status: \(status)")
 
         guard status == AMDAppLEDETECT_SUCCESS,
               let dict = result?.takeRetainedValue() as? [String: Any] else {
+            print("[AppLister] Lookup failed, result: \(String(describing: result))")
             throw DeviceError.lookupFailed
         }
 
-        // 3. Parse the returned App list
+        print("[AppLister] Lookup succeeded, dict keys: \(dict.keys)")
+
+        // 4. Parse the returned App list
         return parseAppList(from: dict)
     }
 

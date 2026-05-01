@@ -11,6 +11,7 @@ struct DeviceListPanel: View {
     let devices: [Device]
     @Binding var selectedDevice: Device?
     let onRefresh: () -> Void
+    let onDeviceSelected: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,6 +35,7 @@ struct DeviceListPanel: View {
                             isSelected: selectedDevice?.id == device.id
                         ) {
                             selectedDevice = device
+                            onDeviceSelected()
                         }
                     }
                 }
