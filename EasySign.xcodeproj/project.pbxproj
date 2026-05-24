@@ -7,8 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		7C047AFF2DFE61D30063989A /* CryptoSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 7C047AFE2DFE61D30063989A /* CryptoSwift */; };
 		7C0000010000000100000001 /* MobileDevice.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C0000010000000100000002 /* MobileDevice.framework */; };
+		7C047AFF2DFE61D30063989A /* CryptoSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 7C047AFE2DFE61D30063989A /* CryptoSwift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -26,8 +26,8 @@
 
 /* Begin PBXFileReference section */
 		4817C90FD13E6007607F3D0A /* libPods-iFocus.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-iFocus.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		7C0000010000000100000002 /* MobileDevice.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MobileDevice.framework; path = /System/Library/PrivateFrameworks/MobileDevice.framework; sourceTree = "<absolute>"; };
 		7CD6C1A72C4197E900C1DB7F /* EasySign.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EasySign.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		7C0000010000000100000002 /* MobileDevice.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MobileDevice.framework; path = "/System/Library/PrivateFrameworks/MobileDevice.framework"; sourceTree = "<absolute>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
@@ -211,7 +211,7 @@
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
-					"/System/Library/PrivateFrameworks",
+					/System/Library/PrivateFrameworks,
 				);
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
@@ -318,7 +318,12 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0.0;
-				OTHER_LDFLAGS = "-F /Library/Apple/System/Library/PrivateFrameworks -framework MobileDevice";
+				OTHER_LDFLAGS = (
+					"-F",
+					/Library/Apple/System/Library/PrivateFrameworks,
+					"-framework",
+					MobileDevice,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.crazyball.easysign;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";

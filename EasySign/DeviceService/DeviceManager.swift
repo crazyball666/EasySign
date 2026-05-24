@@ -12,9 +12,6 @@ func AMDeviceConnect(_ device: AMDeviceRef) -> Int32
 @_silgen_name("AMDeviceDisconnect")
 func AMDeviceDisconnect(_ device: AMDeviceRef) -> Int32
 
-@_silgen_name("AMDeviceIsPaired")
-func AMDeviceIsPaired(_ device: AMDeviceRef) -> Int32
-
 @_silgen_name("AMDeviceValidatePairing")
 func AMDeviceValidatePairing(_ device: AMDeviceRef) -> Int32
 
@@ -27,17 +24,18 @@ func AMDeviceStopSession(_ device: AMDeviceRef) -> Int32
 @_silgen_name("AMDeviceCopyValue")
 func AMDeviceCopyValue(_ device: AMDeviceRef, _ domain: UInt32, _ key: CFString) -> CFTypeRef?
 
-@_silgen_name("AMDeviceNotificationSubscribe")
-func AMDeviceNotificationSubscribe(
+@_silgen_name("AMDeviceNotificationSubscribeWithOptions")
+func AMDeviceNotificationSubscribeWithOptions(
     _ callback: AMDeviceNotificationCallback,
     _ unknown1: UInt32,
     _ unknown2: UInt32,
     _ userInfo: UnsafeMutableRawPointer?,
-    _ notifyPort: UnsafeMutableRawPointer?
+    _ notifyPort: UnsafeMutablePointer<UnsafeMutableRawPointer?>?,
+    _ options: CFDictionary?
 ) -> Int32
 
-@_silgen_name("AMDeviceNotificationUnsubscribe")
-func AMDeviceNotificationUnsubscribe(_ notifyPort: UnsafeMutableRawPointer) -> Int32
+@_silgen_name("AMDeviceGetInterfaceType")
+func AMDeviceGetInterfaceType(_ device: AMDeviceRef) -> Int32
 
 @_silgen_name("AMDeviceStartService")
 func AMDeviceStartService(
@@ -63,16 +61,36 @@ func AMDeviceLookupApplications(
     _ result: UnsafeMutablePointer<Unmanaged<CFDictionary>?>?
 ) -> Int32
 
-@_silgen_name("AFCConnectionOpen")
-func AFCConnectionOpen(_ connection: AFCConnectionRef, _ unused: UInt32, _ connectionRef: UnsafeMutablePointer<AFCConnectionRef?>?) -> Int32
+// MARK: - AMDServiceConnection (SSL-aware service connection — used for
+// services that lockdownd marks as encrypted, like com.apple.mobile.house_arrest
+// on iOS 13+). AMDServiceConnectionSend/Receive transparently apply the SSL
+// context the framework set up at start time.
 
-@_silgen_name("AFCConnectionClose")
-func AFCConnectionClose(_ connection: AFCConnectionRef) -> Int32
+@_silgen_name("AMDeviceSecureStartService")
+func AMDeviceSecureStartService(
+    _ device: AMDeviceRef,
+    _ serviceName: CFString,
+    _ options: CFDictionary?,
+    _ serviceConn: UnsafeMutablePointer<AMDServiceConnectionRef?>
+) -> Int32
+
+// Return type is Int32 — these are `int` in the framework, not ssize_t. -1
+// means error, otherwise byte count (fits in Int32). Caller must cast to Int
+// when accumulating into a 64-bit counter.
+@_silgen_name("AMDServiceConnectionSend")
+func AMDServiceConnectionSend(_ conn: AMDServiceConnectionRef, _ data: UnsafeRawPointer, _ size: Int) -> Int32
+
+@_silgen_name("AMDServiceConnectionReceive")
+func AMDServiceConnectionReceive(_ conn: AMDServiceConnectionRef, _ buffer: UnsafeMutableRawPointer, _ size: Int) -> Int32
+
+@_silgen_name("AMDServiceConnectionInvalidate")
+func AMDServiceConnectionInvalidate(_ conn: AMDServiceConnectionRef)
 
 // MARK: - Type Aliases
 
 typealias AMDeviceRef = UnsafeMutableRawPointer
 typealias AFCConnectionRef = UnsafeMutableRawPointer
+typealias AMDServiceConnectionRef = UnsafeMutableRawPointer
 typealias AMDeviceNotificationCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void
 
 // MARK: - Error Codes
@@ -80,6 +98,10 @@ typealias AMDeviceNotificationCallback = @convention(c) (UnsafeMutableRawPointer
 let AMDAppLEDETECT_SUCCESS: Int32 = 0
 private let kAMDeviceConnected: UInt32 = 1
 private let kAMDeviceDisconnected: UInt32 = 2
+
+// AMDeviceGetInterfaceType return values
+private let kAMDeviceInterfaceTypeUSB: Int32 = 1
+private let kAMDeviceInterfaceTypeWiFi: Int32 = 2
 
 // MARK: - Device Errors
 
@@ -100,13 +122,6 @@ enum DeviceError: LocalizedError {
     }
 }
 
-// MARK: - Notification Names
-
-extension Notification.Name {
-    static let deviceConnected = Notification.Name("DeviceConnected")
-    static let deviceDisconnected = Notification.Name("DeviceDisconnected")
-}
-
 // MARK: - MobileDevice Constants
 
 let kCFBundleIdentifierKey = "CFBundleIdentifier"
@@ -119,14 +134,12 @@ let kLookupReturnAttributesKey = "LookupReturnAttributesKey"
 
 // MARK: - Global Callback Function
 
-// This callback is called from C code on a background thread
-// IMPORTANT: Don't try to access the info pointer directly - its structure is
-// private and may vary between SDK versions. Just use it as a trigger to refresh.
+// Called from C on a framework-internal thread. We don't parse the info struct
+// (private layout, varies by SDK), just ask DeviceManager to coalesce a refresh.
+// refreshDevices() is debounced + thread-safe, so calling it directly from this
+// thread is fine.
 private func deviceNotificationCallback(_ info: UnsafeMutableRawPointer?, _ userInfo: UnsafeMutableRawPointer?) {
-    // Just post notification to refresh - don't try to parse the info structure
-    DispatchQueue.main.async {
-        NotificationCenter.default.post(name: .deviceConnected, object: nil)
-    }
+    DeviceManager.shared.refreshDevices()
 }
 
 // MARK: - DeviceManager
@@ -135,29 +148,77 @@ final class DeviceManager: ObservableObject {
     static let shared = DeviceManager()
 
     @Published private(set) var devices: [Device] = []
-    @Published private(set) var connectedDevice: Device?
-    @Published private(set) var isConnected: Bool = false
+    // Internal session state — not observed by any view, so plain properties to
+    // avoid the "publishing from background thread" warning when connect() runs.
+    private(set) var connectedDevice: Device?
+    private(set) var isConnected: Bool = false
 
     private var deviceNotificationPort: UnsafeMutableRawPointer?
-    private var runLoopSource: CFRunLoopSource?
     private var connectedDeviceRef: AMDeviceRef?
-    private var notificationObserverConnected: NSObjectProtocol?
-    private var notificationObserverDisconnected: NSObjectProtocol?
+    // Holds the CFArray that owns connectedDeviceRef. Without this, the underlying
+    // AMDevice object can be released (especially for wireless), turning the ref
+    // into a dangling pointer for subsequent AFC / installation_proxy calls.
+    private var connectedDeviceList: CFArray?
     private var pollingTimer: Timer?
+    private var wirelessDiscoveryEnabled = false
 
-    // MARK: - Notification Names (unused now, but keeping for future use)
+    // Wireless devices get new ref pointers on every poll, so we must cache by UDID.
+    // lastSeenRefs is the fast-path lookup for stable refs (USB) — skips the readMetadata
+    // round-trip when we recognize a ref from the previous poll.
+    // Touched only on refreshQueue.
+    private let refreshQueue = DispatchQueue(label: "com.crazyball.easysign.deviceRefresh")
+    private var deviceCache: [String: Device] = [:]
+    private var lastSeenRefs: [Int: String] = [:]
 
-    enum DeviceNotification {
-        static let connected = Notification.Name("DeviceConnected")
-        static let disconnected = Notification.Name("DeviceDisconnected")
-    }
+    // Leading-edge debounce — coalesces bursts of callback+timer+user-tap triggers.
+    private var lastRefreshAt: Date = .distantPast
+    private let refreshDebounce: TimeInterval = 0.5
+
+    // Wireless devices' refs change every poll, so the ref cache is useless for
+    // them. To avoid Connect+Session every 5s, we throttle wireless metadata
+    // reads to once every N seconds and reuse the cached Device in between.
+    private var lastWirelessReadAt: Date = .distantPast
+    private let wirelessReadInterval: TimeInterval = 30.0
+
+    // Hysteresis — don't clear the UI on a single empty AMDCreateDeviceList result
+    // (wireless transports can blip). Require two consecutive empties.
+    private var consecutiveEmptyResults: Int = 0
 
     private init() {}
 
     // MARK: - Public Methods
 
     func refreshDevices() {
-        devices = fetchDevices()
+        refreshQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            // Leading-edge debounce: first call runs, subsequent calls within
+            // the window are dropped. The 5s timer is our safety net so we never
+            // miss a real state change for long.
+            let now = Date()
+            if now.timeIntervalSince(self.lastRefreshAt) < self.refreshDebounce {
+                return
+            }
+            self.lastRefreshAt = now
+
+            let newDevices = self.fetchDevices()
+            DispatchQueue.main.async {
+                // Hysteresis: a sudden empty result while we have devices is
+                // often a transient blip (especially over Wi-Fi). Wait for a
+                // second empty to confirm before clearing the UI.
+                if newDevices.isEmpty && !self.devices.isEmpty {
+                    self.consecutiveEmptyResults += 1
+                    if self.consecutiveEmptyResults < 2 {
+                        return
+                    }
+                } else {
+                    self.consecutiveEmptyResults = 0
+                }
+                if !Self.devicesEqual(self.devices, newDevices) {
+                    self.devices = newDevices
+                }
+            }
+        }
     }
 
     func getConnectedDeviceRef(for deviceID: String) -> AMDeviceRef? {
@@ -171,42 +232,36 @@ final class DeviceManager: ObservableObject {
     }
 
     func connect(to device: Device) -> Bool {
-        // Find the device reference
-        guard let deviceListRef = AMDCreateDeviceList() else {
+        // Take a fresh AMDCreateDeviceList and HOLD ONTO IT for the lifetime of the
+        // session. The device refs live as long as this CFArray does — releasing it
+        // mid-session would let the framework deallocate the AMDevice for wireless
+        // connections and turn our ref into garbage.
+        guard let deviceList = AMDCreateDeviceList(),
+              CFGetTypeID(deviceList) == CFArrayGetTypeID() else {
+            print("[DeviceManager] AMDCreateDeviceList failed")
             return false
         }
-        let typeID = CFGetTypeID(deviceListRef)
-        guard typeID == CFArrayGetTypeID() else {
-            return false
-        }
-        let deviceList = deviceListRef as! CFArray
         let count = CFArrayGetCount(deviceList)
 
-        var foundRef: AMDeviceRef?
+        // Identify the requested device by reading metadata (handles wireless UDID
+        // via session fallback).
+        var targetRef: AMDeviceRef?
         for i in 0..<count {
             let cfValue = CFArrayGetValueAtIndex(deviceList, i)
             let ref = unsafeBitCast(cfValue, to: AMDeviceRef.self)
-
-            let connectResult = AMDeviceConnect(ref)
-            if connectResult != AMDAppLEDETECT_SUCCESS {
-                continue
-            }
-
-            if let udid = AMDeviceCopyValue(ref, 0, "UniqueDeviceID" as CFString) as? String,
-               udid == device.id {
-                foundRef = ref
+            let interfaceType = parseInterfaceType(from: AMDeviceGetInterfaceType(ref))
+            if let metadata = readDeviceMetadata(ref: ref, interfaceType: interfaceType),
+               metadata.id == device.id {
+                targetRef = ref
                 break
             }
-            // Not the device we want, disconnect
-            _ = AMDeviceDisconnect(ref)
         }
 
-        guard let deviceRef = foundRef else {
+        guard let deviceRef = targetRef else {
             print("[DeviceManager] Device not found in list")
             return false
         }
 
-        // Connect and pair
         print("[DeviceManager] Connecting to device...")
         let connectResult = AMDeviceConnect(deviceRef)
         print("[DeviceManager] AMDeviceConnect result: \(connectResult)")
@@ -215,22 +270,20 @@ final class DeviceManager: ObservableObject {
             return false
         }
 
-        // Skip AMDeviceIsPaired - sometimes it returns wrong result
-        // Go directly to ValidatePairing
+        // Skip AMDeviceIsPaired (unreliable) and go straight to ValidatePairing
         print("[DeviceManager] Validating pairing...")
-        let validateResult = AMDeviceValidatePairing(deviceRef)
+        var validateResult = AMDeviceValidatePairing(deviceRef)
         print("[DeviceManager] AMDeviceValidatePairing result: \(validateResult)")
         if validateResult != AMDAppLEDETECT_SUCCESS {
-            // Try stopping session first, then validate again
             print("[DeviceManager] First validation failed, retrying...")
             _ = AMDeviceStopSession(deviceRef)
-            let retryResult = AMDeviceValidatePairing(deviceRef)
-            print("[DeviceManager] AMDeviceValidatePairing retry result: \(retryResult)")
-            guard retryResult == AMDAppLEDETECT_SUCCESS else {
-                print("[DeviceManager] AMDeviceValidatePairing failed")
-                _ = AMDeviceDisconnect(deviceRef)
-                return false
-            }
+            validateResult = AMDeviceValidatePairing(deviceRef)
+            print("[DeviceManager] AMDeviceValidatePairing retry result: \(validateResult)")
+        }
+        guard validateResult == AMDAppLEDETECT_SUCCESS else {
+            print("[DeviceManager] AMDeviceValidatePairing failed")
+            _ = AMDeviceDisconnect(deviceRef)
+            return false
         }
 
         print("[DeviceManager] Starting session...")
@@ -240,6 +293,7 @@ final class DeviceManager: ObservableObject {
             return false
         }
 
+        connectedDeviceList = deviceList
         connectedDeviceRef = deviceRef
         connectedDevice = device
         isConnected = true
@@ -253,13 +307,16 @@ final class DeviceManager: ObservableObject {
         _ = AMDeviceStopSession(deviceRef)
         _ = AMDeviceDisconnect(deviceRef)
         connectedDeviceRef = nil
+        connectedDeviceList = nil
         connectedDevice = nil
         isConnected = false
     }
 
     func startObserving() {
-        // Only use Timer-based polling - don't register callbacks to avoid crashes
-        pollingTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        enableWirelessDiscovery()
+        // The framework callback drives immediate refresh; the timer is a safety
+        // net for missed events. Both go through the debounce in refreshDevices.
+        pollingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             self?.refreshDevices()
         }
     }
@@ -267,75 +324,201 @@ final class DeviceManager: ObservableObject {
     func stopObserving() {
         pollingTimer?.invalidate()
         pollingTimer = nil
-        // Don't call AMDeviceNotificationUnsubscribe since we're not using callbacks
+        // Wireless subscribe (deviceNotificationPort) is intentionally kept for the
+        // app's lifetime — unsubscribing has been observed to crash older builds.
+        // The callback just calls refreshDevices(), which short-circuits when
+        // nothing has changed, so leaving it active is cheap.
+    }
+
+    // Without this, AMDCreateDeviceList() returns USB devices only.
+    // Subscribe is one-shot for the app's lifetime — the callback intentionally
+    // does nothing risky; we don't deref the info pointer.
+    private func enableWirelessDiscovery() {
+        guard !wirelessDiscoveryEnabled else { return }
+        let options: CFDictionary = [
+            "NotificationOptions": ["WiFiConnections": true]
+        ] as CFDictionary
+        var notifyPort: UnsafeMutableRawPointer?
+        let result = AMDeviceNotificationSubscribeWithOptions(
+            deviceNotificationCallback,
+            0, 0, nil,
+            &notifyPort,
+            options
+        )
+        if result == AMDAppLEDETECT_SUCCESS {
+            deviceNotificationPort = notifyPort
+            wirelessDiscoveryEnabled = true
+            print("[DeviceManager] Wireless discovery enabled")
+        } else {
+            print("[DeviceManager] Failed to enable wireless discovery: \(result)")
+        }
     }
 
     // MARK: - Private Methods
 
+    // Called on refreshQueue. CFArray is kept alive across the whole iteration so
+    // the device ref pointers it owns remain valid. Cache is keyed by ref pointer
+    // so repeated polls don't AMDeviceConnect to known devices.
     private func fetchDevices() -> [Device] {
-        // Only use AMDCreateDeviceList
-        guard let deviceListRef = AMDCreateDeviceList() else {
+        guard let deviceList = AMDCreateDeviceList(),
+              CFGetTypeID(deviceList) == CFArrayGetTypeID() else {
+            deviceCache.removeAll()
+            lastSeenRefs.removeAll()
             return []
         }
-
-        // Verify it's actually a CFArray before using it
-        let typeID = CFGetTypeID(deviceListRef)
-        guard typeID == CFArrayGetTypeID() else {
-            return []
-        }
-
-        let deviceList = deviceListRef as! CFArray
         let count = CFArrayGetCount(deviceList)
         guard count > 0 else {
+            deviceCache.removeAll()
+            lastSeenRefs.removeAll()
             return []
         }
 
+        let now = Date()
+        let wirelessCooldown = now.timeIntervalSince(lastWirelessReadAt) < wirelessReadInterval
+        var newCache: [String: Device] = [:]
+        var newLastSeenRefs: [Int: String] = [:]
         var devices: [Device] = []
+
         for i in 0..<count {
             let cfValue = CFArrayGetValueAtIndex(deviceList, i)
-            let deviceRef = unsafeBitCast(cfValue, to: AMDeviceRef.self)
+            let ref = unsafeBitCast(cfValue, to: AMDeviceRef.self)
+            let refKey = Int(bitPattern: ref)
+            let interfaceType = parseInterfaceType(from: AMDeviceGetInterfaceType(ref))
 
-            let connectResult = AMDeviceConnect(deviceRef)
-            guard connectResult == AMDAppLEDETECT_SUCCESS else { continue }
-            defer { _ = AMDeviceDisconnect(deviceRef) }
-
-            guard let name = AMDeviceCopyValue(deviceRef, 0, "DeviceName" as CFString) as? String,
-                  let udid = AMDeviceCopyValue(deviceRef, 0, "UniqueDeviceID" as CFString) as? String,
-                  let model = AMDeviceCopyValue(deviceRef, 0, "ProductType" as CFString) as? String,
-                  let version = AMDeviceCopyValue(deviceRef, 0, "ProductVersion" as CFString) as? String else {
+            // Active session — never disturb. Match by ref pointer (USB only really;
+            // wireless ref churns so this rarely hits, but harmless).
+            if ref == connectedDeviceRef, let connected = connectedDevice {
+                newCache[connected.id] = connected
+                newLastSeenRefs[refKey] = connected.id
+                devices.append(connected)
                 continue
             }
 
-            let deviceClass = parseDeviceClass(from: model)
-            devices.append(Device(id: udid, name: name, model: model, systemVersion: version, deviceClass: deviceClass))
+            // Fast path: same ref pointer as last poll AND interface unchanged → reuse
+            // cached Device. This is the big win for USB (stable refs).
+            if let udid = lastSeenRefs[refKey],
+               let cached = deviceCache[udid],
+               cached.interfaceType == interfaceType {
+                newCache[udid] = cached
+                newLastSeenRefs[refKey] = udid
+                devices.append(cached)
+                continue
+            }
+
+            // Wireless throttle: a wireless ref always misses the ref-pointer cache
+            // (the framework recycles them every poll), but doing the full Connect+
+            // Session dance every 5 seconds is wasteful. If we already have a
+            // cached wireless Device and the cooldown hasn't elapsed, claim it for
+            // this ref. Per-refresh claim-tracking via newCache.keys ensures we
+            // don't reuse the same UDID twice when there are multiple wireless refs.
+            if interfaceType == .wireless && wirelessCooldown {
+                if let cached = deviceCache.values.first(where: {
+                    $0.interfaceType == .wireless && !newCache.keys.contains($0.id)
+                }) {
+                    newCache[cached.id] = cached
+                    newLastSeenRefs[refKey] = cached.id
+                    devices.append(cached)
+                    continue
+                }
+                // No cached wireless available — fall through and do the full read.
+            }
+
+            // Cache miss — do the full read.
+            guard let device = readDeviceMetadata(ref: ref, interfaceType: interfaceType) else {
+                print("[DeviceManager]   [\(i)] readDeviceMetadata FAILED (interface=\(interfaceType))")
+                continue
+            }
+            if interfaceType == .wireless {
+                lastWirelessReadAt = now
+            }
+
+            // Reuse the existing instance if we already had this UDID — keeps
+            // Hashable identity stable for SwiftUI diffing.
+            let toAppend = (deviceCache[device.id]?.interfaceType == interfaceType)
+                ? (deviceCache[device.id] ?? device) : device
+            newCache[device.id] = toAppend
+            newLastSeenRefs[refKey] = device.id
+            devices.append(toAppend)
         }
 
+        deviceCache = newCache
+        lastSeenRefs = newLastSeenRefs
         return devices
     }
 
-    // Notifications are no longer used - we use Timer polling instead
+    // Reads lockdown metadata. For wireless devices, "UniqueDeviceID" requires an
+    // active session — so if the session-less path returns nil UDID, we fall back
+    // to ValidatePairing + StartSession + read + StopSession.
+    private func readDeviceMetadata(ref: AMDeviceRef, interfaceType: Device.InterfaceType) -> Device? {
+        let connectResult = AMDeviceConnect(ref)
+        guard connectResult == AMDAppLEDETECT_SUCCESS else {
+            print("[DeviceManager]     AMDeviceConnect failed: \(connectResult)")
+            return nil
+        }
+        defer { _ = AMDeviceDisconnect(ref) }
 
-    private func setupDeviceNotification() {
-        var notifyPort: UnsafeMutableRawPointer?
+        let name = AMDeviceCopyValue(ref, 0, "DeviceName" as CFString) as? String
+        let model = AMDeviceCopyValue(ref, 0, "ProductType" as CFString) as? String
+        let version = AMDeviceCopyValue(ref, 0, "ProductVersion" as CFString) as? String
+        var udid = AMDeviceCopyValue(ref, 0, "UniqueDeviceID" as CFString) as? String
 
-        // Use the global callback function - it doesn't capture context
-        let result = AMDeviceNotificationSubscribe(
-            deviceNotificationCallback,
-            0,
-            0,
-            nil,
-            &notifyPort
+        if udid?.isEmpty != false {
+            // Wireless: need pair+session to expose UDID.
+            udid = readUDIDViaSession(ref: ref)
+        }
+
+        guard let udid = udid, !udid.isEmpty,
+              let name = name, let model = model, let version = version else {
+            print("[DeviceManager]     incomplete metadata udid=\(udid ?? "nil") name=\(name ?? "nil") model=\(model ?? "nil") version=\(version ?? "nil")")
+            return nil
+        }
+
+        return Device(
+            id: udid,
+            name: name,
+            model: model,
+            systemVersion: version,
+            deviceClass: parseDeviceClass(from: model),
+            interfaceType: interfaceType
         )
+    }
 
-        if result == AMDAppLEDETECT_SUCCESS, let port = notifyPort {
-            deviceNotificationPort = port
-            // Add to current run loop for callback delivery
-            if let runLoop = CFRunLoopGetCurrent() {
-                let source = CFRunLoopSourceCreate(nil, 0, nil)
-                CFRunLoopAddSource(runLoop, source, .defaultMode)
-                runLoopSource = source
+    // Caller must have already called AMDeviceConnect successfully. We open a short
+    // session purely to read the UDID, then close it so we don't keep the device busy.
+    private func readUDIDViaSession(ref: AMDeviceRef) -> String? {
+        var pairResult = AMDeviceValidatePairing(ref)
+        if pairResult != AMDAppLEDETECT_SUCCESS {
+            _ = AMDeviceStopSession(ref)
+            pairResult = AMDeviceValidatePairing(ref)
+        }
+        guard pairResult == AMDAppLEDETECT_SUCCESS else {
+            print("[DeviceManager]     ValidatePairing failed: \(pairResult)")
+            return nil
+        }
+        guard AMDeviceStartSession(ref) == AMDAppLEDETECT_SUCCESS else {
+            print("[DeviceManager]     StartSession failed")
+            return nil
+        }
+        defer { _ = AMDeviceStopSession(ref) }
+        return AMDeviceCopyValue(ref, 0, "UniqueDeviceID" as CFString) as? String
+    }
+
+    private func parseInterfaceType(from code: Int32) -> Device.InterfaceType {
+        switch code {
+        case kAMDeviceInterfaceTypeUSB: return .usb
+        case kAMDeviceInterfaceTypeWiFi: return .wireless
+        default: return .unknown
+        }
+    }
+
+    private static func devicesEqual(_ a: [Device], _ b: [Device]) -> Bool {
+        guard a.count == b.count else { return false }
+        for (x, y) in zip(a, b) {
+            if x.id != y.id || x.interfaceType != y.interfaceType {
+                return false
             }
         }
+        return true
     }
 
     private func parseDeviceClass(from model: String) -> Device.DeviceClass {

@@ -15,6 +15,12 @@ struct InstalledApp: Identifiable, Hashable {
         case development = "Development"
         case distribution = "Distribution"
         case enterprise = "Enterprise"
+        case system = "System"
         case unknown = "Unknown"
+    }
+
+    // What to show on the badge in the app row.
+    var badgeLabel: String {
+        isSystemApp ? SigningInfo.system.rawValue : signingInfo.rawValue
     }
 }

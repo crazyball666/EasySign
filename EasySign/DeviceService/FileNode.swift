@@ -13,6 +13,8 @@ struct FileNode: Identifiable, Hashable {
         case directory
         case text
         case image
+        case video
+        case audio
         case database
         case plist
         case json

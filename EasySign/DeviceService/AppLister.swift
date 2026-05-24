@@ -29,9 +29,20 @@ final class AppLister {
         )
         print("[AppLister] AMDeviceStartServiceWithOptions result: \(serviceResult), socket: \(String(describing: connection))")
 
-        // 3. Create options dictionary with return attributes
+        // 3. Create options dictionary with return attributes.
+        // ApplicationType distinguishes System / User / Internal / Hidden — much
+        // more reliable than guessing from path prefix.
         let options: [String: Any] = [
-            "LookupReturnAttributesKey": ["CFBundleIdentifier", "CFBundleName", "CFBundleShortVersionString", "CFBundleVersion", "Path", "SignerIdentity"]
+            "LookupReturnAttributesKey": [
+                "CFBundleIdentifier",
+                "CFBundleDisplayName",
+                "CFBundleName",
+                "CFBundleShortVersionString",
+                "CFBundleVersion",
+                "Path",
+                "SignerIdentity",
+                "ApplicationType",
+            ]
         ]
 
         print("[AppLister] Calling AMDeviceLookupApplications with options")
@@ -55,22 +66,25 @@ final class AppLister {
     }
 
     private func parseAppList(from dict: [String: Any]) -> [InstalledApp] {
-        guard let appList = dict[kAppLookupInfoAppDictKey] as? [[String: Any]] else {
-            return []
-        }
+        // AMDeviceLookupApplications with LookupReturnAttributesKey returns a flat
+        // map of bundleID → attributes dict, not a nested {"ApplicationDictionaryKey": [...]}.
+        return dict.compactMap { (bundleID, value) -> InstalledApp? in
+            guard let appDict = value as? [String: Any] else { return nil }
 
-        return appList.compactMap { appDict -> InstalledApp? in
-            guard let bundleID = appDict[kCFBundleIdentifierKey] as? String,
-                  let path = appDict[kAppLookupInfoImagePathKey] as? String else {
-                return nil
-            }
-
-            let name = appDict[kCFBundleNameKey] as? String ?? bundleID
+            // CFBundleDisplayName is the localized user-facing name (e.g. 微信);
+            // CFBundleName is the internal name (e.g. WeChat). Prefer the former.
+            let displayName = appDict["CFBundleDisplayName"] as? String
+            let name = displayName ?? (appDict[kCFBundleNameKey] as? String) ?? bundleID
             let version = appDict[kCFBundleShortVersionStringKey] as? String ?? ""
             let buildVersion = appDict[kCFBundleVersionKey] as? String ?? ""
             let signerIdentity = appDict["SignerIdentity"] as? String ?? ""
-            let signingInfo = parseSigningInfo(signerIdentity)
-            let isSystemApp = path.hasPrefix("/Applications/")
+            let appType = appDict["ApplicationType"] as? String ?? ""
+            let path = appDict[kAppLookupInfoImagePathKey] as? String ?? ""
+
+            // ApplicationType is authoritative for System vs User. Fall back to
+            // path prefix if for some reason the field is missing.
+            let isSystemApp = (appType == "System") || path.hasPrefix("/Applications/")
+            let signingInfo = parseSigningInfo(signerIdentity, isSystem: isSystemApp)
 
             return InstalledApp(
                 id: bundleID,
@@ -86,7 +100,8 @@ final class AppLister {
         }
     }
 
-    private func parseSigningInfo(_ signerIdentity: String) -> InstalledApp.SigningInfo {
+    private func parseSigningInfo(_ signerIdentity: String, isSystem: Bool) -> InstalledApp.SigningInfo {
+        if isSystem { return .system }
         if signerIdentity.contains("Apple Development") || signerIdentity.contains("iPhone Developer") {
             return .development
         } else if signerIdentity.contains("Apple Distribution") {

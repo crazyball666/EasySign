@@ -64,6 +64,11 @@ struct DeviceRow: View {
                         .foregroundColor(.secondary)
                 }
                 Spacer()
+                if device.interfaceType == .wireless {
+                    Image(systemName: "wifi")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                }
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
