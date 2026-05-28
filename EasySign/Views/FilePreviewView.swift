@@ -13,6 +13,8 @@ struct FilePreviewView: View {
     @State private var errorMessage: String?
 
     @State private var transferState: TransferState = .idle
+    // Download failure shown as an alert so it doesn't blank out the preview.
+    @State private var transferError: String?
 
     private var fileName: String {
         (path as NSString).lastPathComponent
@@ -66,6 +68,18 @@ struct FilePreviewView: View {
         }
         .onAppear { loadPreview() }
         .autoDismissTransferSuccess($transferState)
+        .alert(
+            "下载失败",
+            isPresented: Binding(
+                get: { transferError != nil },
+                set: { if !$0 { transferError = nil } }
+            ),
+            presenting: transferError
+        ) { _ in
+            Button("好", role: .cancel) {}
+        } message: { msg in
+            Text(msg)
+        }
     }
 
     @ViewBuilder
@@ -193,7 +207,7 @@ struct FilePreviewView: View {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         self.transferState = .idle
                     }
-                    self.errorMessage = error.localizedDescription
+                    self.transferError = error.localizedDescription
                 }
             }
         }

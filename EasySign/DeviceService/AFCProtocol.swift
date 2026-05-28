@@ -35,18 +35,26 @@ enum AFCOpcode: UInt64 {
     case getFileInfo             = 0x0000_000A
     case getDeviceInfo           = 0x0000_000B
     case writeFileAtomic         = 0x0000_000C
+    // Opcode values MUST match libimobiledevice's afc.h `enum afc_ops` exactly.
+    // (Earlier these were off-by-shift from 0x11 onward, which silently sent
+    // FILE_TELL instead of FILE_CLOSE and SET_SOCKET_BS instead of RENAME_PATH.)
     case fileOpen                = 0x0000_000D
     case fileOpenResult          = 0x0000_000E
     case fileRead                = 0x0000_000F
     case fileWrite               = 0x0000_0010
-    case fileLock                = 0x0000_0011
-    case fileClose               = 0x0000_0012
-    case fileSeek                = 0x0000_0013
-    case fileTell                = 0x0000_0014
-    case fileTellResult          = 0x0000_0015
-    case readDirResult           = 0x0000_0016
-    case fileSetSize             = 0x0000_0017
-    case renamePath              = 0x0000_001A
+    case fileSeek                = 0x0000_0011
+    case fileTell                = 0x0000_0012
+    case fileTellResult          = 0x0000_0013
+    case fileClose               = 0x0000_0014
+    case fileSetSize             = 0x0000_0015
+    case getConnectionInfo       = 0x0000_0016
+    case setConnectionOptions    = 0x0000_0017
+    case renamePath              = 0x0000_0018
+    case setFSBlockSize          = 0x0000_0019
+    case setSocketBlockSize      = 0x0000_001A
+    case fileLock                = 0x0000_001B
+    case makeLink                = 0x0000_001C
+    case setFileTime             = 0x0000_001E
 }
 
 // File open modes (subset, matches AFC protocol)
@@ -118,58 +126,18 @@ enum AFCStatus: UInt64 {
 
 // MARK: - Transport
 //
-// Pluggable byte channel — raw TCP socket for non-SSL services
-// (com.apple.afc), AMDServiceConnection for SSL-wrapped services
-// (com.apple.mobile.house_arrest).
+// Byte channel backed by an AMDServiceConnection. Both com.apple.afc (Media)
+// and com.apple.mobile.house_arrest (App sandbox) are started via
+// AMDeviceSecureStartService and route through AMDServiceConnectionSend/Receive,
+// which transparently apply the SSL session when lockdownd marks the service
+// encrypted. (Apple's plain AFCConnectionOpen can't do AFC-over-SSL, and the
+// raw socket fd it hands back can't be reconstructed from an AFCConnectionRef
+// pointer — hence we own the framing and use the service-connection transport.)
 
 protocol AFCTransport: AnyObject {
     func send(_ data: Data) throws
     func receive(_ count: Int) throws -> Data
     func close()
-}
-
-final class AFCRawSocketTransport: AFCTransport {
-    private var fd: Int32
-
-    init(fd: Int32) {
-        self.fd = fd
-    }
-
-    deinit { close() }
-
-    func send(_ data: Data) throws {
-        try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            guard let base = raw.baseAddress else { return }
-            var sent = 0
-            while sent < data.count {
-                let n = Darwin.send(fd, base.advanced(by: sent), data.count - sent, 0)
-                if n <= 0 { throw AFCSessionError.sendFailed(errno: errno) }
-                sent += n
-            }
-        }
-    }
-
-    func receive(_ count: Int) throws -> Data {
-        var buf = Data(count: count)
-        try buf.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
-            guard let base = raw.baseAddress else { return }
-            var read = 0
-            while read < count {
-                let n = Darwin.recv(fd, base.advanced(by: read), count - read, 0)
-                if n == 0 { throw AFCSessionError.shortRead(expected: count, got: read) }
-                if n < 0 { throw AFCSessionError.recvFailed(errno: errno) }
-                read += n
-            }
-        }
-        return buf
-    }
-
-    func close() {
-        if fd >= 0 {
-            Darwin.close(fd)
-            fd = -1
-        }
-    }
 }
 
 final class AFCServiceConnectionTransport: AFCTransport {
@@ -339,6 +307,13 @@ final class AFCSession {
         // STATUS responses encode op result in the first 8 bytes of payload.
         if response.opcode == .status {
             let code = response.payload.count >= 8 ? response.payload.readU64(at: 0) : 0
+            // A read that hits EOF can be signaled by STATUS(endOfData) or a
+            // bare success STATUS instead of an empty DATA packet. For callers
+            // expecting DATA, surface that as an empty payload so the read loop
+            // terminates cleanly rather than throwing.
+            if expecting == .data, code == 0 || code == AFCStatus.endOfData.rawValue {
+                return AFCResponse(opcode: .data, payload: Data())
+            }
             if code != 0 {
                 let status = AFCStatus(rawValue: code) ?? .unknown
                 throw AFCSessionError.status(status, opcode: opcode)
@@ -369,6 +344,16 @@ final class AFCSession {
         // let thisLength = header.readU64(at: 16)  // not needed for receive
         // let packetID = header.readU64(at: 24)    // could verify but we don't pipeline
         let opcodeRaw = header.readU64(at: 32)
+
+        // Guard against a corrupt length field: < header would make payloadSize
+        // negative (Data(count:) traps), and an absurdly large value would
+        // attempt a multi-GB allocation and then block forever in recv. AFC
+        // payloads (chunks, dir listings, file info) are well under this cap.
+        let maxPayload: UInt64 = 64 * 1024 * 1024
+        guard entireLength >= UInt64(afcHeaderSize),
+              entireLength - UInt64(afcHeaderSize) <= maxPayload else {
+            throw AFCSessionError.malformedResponse("entire_length \(entireLength) out of range")
+        }
 
         let payloadSize = Int(entireLength) - afcHeaderSize
         var payload = Data()

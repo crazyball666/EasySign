@@ -222,16 +222,29 @@ final class DeviceManager: ObservableObject {
     }
 
     func getConnectedDeviceRef(for deviceID: String) -> AMDeviceRef? {
-        guard isConnected,
-              let connected = connectedDevice,
-              connected.id == deviceID,
-              let ref = connectedDeviceRef else {
-            return nil
+        // Read connection state on refreshQueue so it can't observe a torn or
+        // reordered write from connect()/disconnect() (which now also run there).
+        refreshQueue.sync {
+            guard isConnected,
+                  let connected = connectedDevice,
+                  connected.id == deviceID,
+                  let ref = connectedDeviceRef else {
+                return nil
+            }
+            return ref
         }
-        return ref
     }
 
+    // Serialize the entire connect handshake on refreshQueue: per-device session
+    // state in MobileDevice is not thread-safe, so this must never run
+    // concurrently with fetchDevices() issuing Connect/Disconnect/CopyValue on
+    // the same ref. Running here also orders the connection-state writes against
+    // fetchDevices()/getConnectedDeviceRef() reads.
     func connect(to device: Device) -> Bool {
+        refreshQueue.sync { performConnect(to: device) }
+    }
+
+    private func performConnect(to device: Device) -> Bool {
         // Take a fresh AMDCreateDeviceList and HOLD ONTO IT for the lifetime of the
         // session. The device refs live as long as this CFArray does — releasing it
         // mid-session would let the framework deallocate the AMDevice for wireless
@@ -302,6 +315,10 @@ final class DeviceManager: ObservableObject {
     }
 
     func disconnect() {
+        refreshQueue.sync { performDisconnect() }
+    }
+
+    private func performDisconnect() {
         guard let deviceRef = connectedDeviceRef else { return }
 
         _ = AMDeviceStopSession(deviceRef)

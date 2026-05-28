@@ -15,7 +15,11 @@ struct SandboxBrowserView: View {
     @State private var currentPath: String = "/"
     @State private var fileNodes: [FileNode] = []
     @State private var isLoading: Bool = false
+    // Fatal listing error — replaces the file list with an error screen.
     @State private var errorMessage: String?
+    // Transfer (download/upload/copy/move/delete) failure — shown as an alert so
+    // it does NOT blank out the browsed directory.
+    @State private var transferError: String?
     @State private var afcClient: AFCClient?
     @State private var pathHistory: [String] = []
 
@@ -66,6 +70,22 @@ struct SandboxBrowserView: View {
                 remainingCount: req.remaining,
                 onResolve: req.resolve
             )
+            // Force every exit (including Esc / click-away) through a button so
+            // the background worker's semaphore is always signaled — otherwise a
+            // non-button dismissal deadlocks the transfer thread forever.
+            .interactiveDismissDisabled()
+        }
+        .alert(
+            "传输失败",
+            isPresented: Binding(
+                get: { transferError != nil },
+                set: { if !$0 { transferError = nil } }
+            ),
+            presenting: transferError
+        ) { _ in
+            Button("好", role: .cancel) {}
+        } message: { msg in
+            Text(msg)
         }
         .alert(
             "确认删除",
@@ -349,7 +369,7 @@ struct SandboxBrowserView: View {
         guard !transferState.isInProgress else { return }
         let files = nodes.filter { !$0.isDirectory }
         guard !files.isEmpty else {
-            errorMessage = "暂不支持下载文件夹"
+            transferError = "暂不支持下载文件夹"
             return
         }
 
@@ -382,9 +402,11 @@ struct SandboxBrowserView: View {
         errorMessage = nil
 
         DispatchQueue.global().async {
+            var currentName = files[0].0.name
             do {
                 let client = try makeClient(for: capturedSource)
                 for (i, (node, url)) in files.enumerated() {
+                    currentName = node.name
                     let throttle = TransferProgressThrottle()
                     updateTransfer(
                         kind: .download, name: node.name,
@@ -400,7 +422,7 @@ struct SandboxBrowserView: View {
                 }
                 finishTransfer(kind: .download, summary: summary(files.count, files[0].0.name))
             } catch {
-                failTransfer(error: error)
+                failTransfer(error: error, file: total > 1 ? currentName : nil)
             }
         }
     }
@@ -433,7 +455,7 @@ struct SandboxBrowserView: View {
         }
         group.notify(queue: .main) {
             guard !urls.isEmpty else {
-                self.errorMessage = "拖入的内容不包含文件（v1 不支持文件夹）"
+                self.transferError = "拖入的内容不包含文件（v1 不支持文件夹）"
                 return
             }
             self.performUpload(localURLs: urls)
@@ -452,12 +474,15 @@ struct SandboxBrowserView: View {
         errorMessage = nil
 
         DispatchQueue.global().async {
+            var currentName = firstName
             do {
                 let client = try makeClient(for: capturedSource)
                 var rememberedChoice: ConflictResolution?
+                var processed = 0
 
                 for (i, url) in localURLs.enumerated() {
                     let name = url.lastPathComponent
+                    currentName = name
                     let initialDest = (capturedDestDir as NSString).appendingPathComponent(name)
                     var destPath = initialDest
 
@@ -496,11 +521,12 @@ struct SandboxBrowserView: View {
                             index: i + 1, total: total, bytes: written, total64: t
                         )
                     }
+                    processed += 1
                 }
-                self.finishTransfer(kind: .upload, summary: self.summary(localURLs.count, firstName))
+                self.completeTransfer(kind: .upload, processed: processed, firstName: firstName)
                 DispatchQueue.main.async { self.connectAndBrowse() }
             } catch {
-                self.failTransfer(error: error)
+                self.failTransfer(error: error, file: total > 1 ? currentName : nil)
             }
         }
     }
@@ -510,7 +536,7 @@ struct SandboxBrowserView: View {
     private func performCopy(nodes: [FileNode], to destDir: String) {
         let files = nodes.filter { !$0.isDirectory }
         guard !files.isEmpty else {
-            errorMessage = "暂不支持复制文件夹（递归 copy 待实现）"
+            transferError = "暂不支持复制文件夹（递归 copy 待实现）"
             return
         }
         runDeviceSideBatch(kind: .copy, nodes: files, destDir: destDir) { client, node, destPath, progress in
@@ -544,11 +570,14 @@ struct SandboxBrowserView: View {
         errorMessage = nil
 
         DispatchQueue.global().async {
+            var currentName = firstName
             do {
                 let client = try makeClient(for: capturedSource)
                 var rememberedChoice: ConflictResolution?
+                var processed = 0
 
                 for (i, node) in nodes.enumerated() {
+                    currentName = node.name
                     let initialDest = (destDir as NSString).appendingPathComponent(node.name)
                     var destPath = initialDest
 
@@ -595,11 +624,12 @@ struct SandboxBrowserView: View {
                     } : nil
 
                     try operation(client, node, destPath, progressClosure)
+                    processed += 1
                 }
-                self.finishTransfer(kind: kind, summary: self.summary(nodes.count, firstName))
+                self.completeTransfer(kind: kind, processed: processed, firstName: firstName)
                 DispatchQueue.main.async { self.connectAndBrowse() }
             } catch {
-                self.failTransfer(error: error)
+                self.failTransfer(error: error, file: total > 1 ? currentName : nil)
             }
         }
     }
@@ -618,20 +648,24 @@ struct SandboxBrowserView: View {
         errorMessage = nil
 
         DispatchQueue.global().async {
+            var currentName = firstName
             do {
                 let client = try makeClient(for: capturedSource)
+                var processed = 0
                 for (i, node) in nodes.enumerated() {
+                    currentName = node.name
                     self.updateTransfer(
                         kind: .delete, name: node.name,
                         index: i + 1, total: total, bytes: 0, total64: nil
                     )
                     // Recursive walker: dirs get drained first, then removed.
                     try client.deleteRecursive(at: node.path, isDirectory: node.isDirectory)
+                    processed += 1
                 }
-                self.finishTransfer(kind: .delete, summary: self.summary(nodes.count, firstName))
+                self.completeTransfer(kind: .delete, processed: processed, firstName: firstName)
                 DispatchQueue.main.async { self.connectAndBrowse() }
             } catch {
-                self.failTransfer(error: error)
+                self.failTransfer(error: error, file: total > 1 ? currentName : nil)
             }
         }
     }
@@ -702,6 +736,17 @@ struct SandboxBrowserView: View {
         }
     }
 
+    // Wraps up a batch: if nothing was actually processed (e.g. every file was
+    // skipped at the conflict prompt), just dismiss the bar instead of falsely
+    // reporting "完成".
+    private func completeTransfer(kind: TransferKind, processed: Int, firstName: String) {
+        if processed == 0 {
+            cancelTransfer()
+        } else {
+            finishTransfer(kind: kind, summary: summary(processed, firstName))
+        }
+    }
+
     private func finishTransfer(kind: TransferKind, summary: String) {
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.25)) {
@@ -718,12 +763,16 @@ struct SandboxBrowserView: View {
         }
     }
 
-    private func failTransfer(error: Error) {
+    private func failTransfer(error: Error, file: String? = nil) {
+        let detail = error.localizedDescription
+        let message = file.map { "“\($0)”：\(detail)" } ?? detail
         DispatchQueue.main.async {
             withAnimation(.easeInOut(duration: 0.2)) {
                 self.transferState = .idle
             }
-            self.errorMessage = error.localizedDescription
+            // Surface as an alert, not the full-screen error view, so the
+            // current directory listing stays visible.
+            self.transferError = message
         }
     }
 

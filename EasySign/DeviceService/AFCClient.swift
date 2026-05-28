@@ -36,12 +36,12 @@ enum AFCError: LocalizedError {
 //
 // High-level AFC API that talks the AFC packet protocol via AFCSession.
 //
-// Two service variants:
-//   - Media (com.apple.afc): plain TCP, uses AFCRawSocketTransport over a
-//     socket from AMDeviceStartService.
-//   - App sandbox (com.apple.mobile.house_arrest): SSL-wrapped, uses
-//     AFCServiceConnectionTransport over an AMDServiceConnection from
-//     AMDeviceSecureStartService.
+// Two service variants, both over AFCServiceConnectionTransport (an
+// AMDServiceConnection from AMDeviceSecureStartService):
+//   - Media (com.apple.afc): not encrypted, but the service connection works
+//     just the same.
+//   - App sandbox (com.apple.mobile.house_arrest): SSL-wrapped; the service
+//     connection applies the SSL session transparently.
 //
 // All AFC operations (listDirectory / readFile / writeFile / streamFile /
 // uploadFile / copyFile / move / delete / makeDir / fileSize / exists) go
@@ -72,18 +72,22 @@ final class AFCClient {
         guard let deviceRef = DeviceManager.shared.getConnectedDeviceRef(for: device.id) else {
             throw AFCError.deviceNotConnected
         }
-        var serviceSocket: AFCConnectionRef?
-        let startResult = AMDeviceStartService(
+        // Use the secure-start path (same as house_arrest) and route AFC packets
+        // through the AMDServiceConnection. com.apple.afc isn't SSL-encrypted, so
+        // this adds no overhead, but it gives us a real byte channel instead of
+        // trying (incorrectly) to reinterpret an AFCConnectionRef pointer as a
+        // socket fd.
+        var serviceConn: AMDServiceConnectionRef?
+        let startResult = AMDeviceSecureStartService(
             deviceRef,
             "com.apple.afc" as CFString,
-            &serviceSocket,
-            nil
+            nil,
+            &serviceConn
         )
-        guard startResult == AMDAppLEDETECT_SUCCESS, let socket = serviceSocket else {
+        guard startResult == AMDAppLEDETECT_SUCCESS, let conn = serviceConn else {
             throw AFCError.connectionFailed
         }
-        let fd = Int32(truncatingIfNeeded: Int(bitPattern: socket))
-        return AFCSession(transport: AFCRawSocketTransport(fd: fd))
+        return AFCSession(transport: AFCServiceConnectionTransport(connection: conn))
     }
 
     private static func makeSandboxSession(device: Device, bundleID: String) throws -> AFCSession {
@@ -230,10 +234,18 @@ final class AFCClient {
         }
         defer { try? session.fileClose(handle: handle) }
 
-        do {
-            try session.fileWrite(handle: handle, data: data)
-        } catch {
-            throw AFCError.writeFailed(error)
+        // Chunk the write: a single FILE_WRITE packet carries its whole body in
+        // one entire_length frame, and the device rejects oversized packets.
+        var offset = 0
+        while offset < data.count {
+            let end = min(offset + Int(Self.readChunkSize), data.count)
+            let chunk = data.subdata(in: offset..<end)
+            do {
+                try session.fileWrite(handle: handle, data: chunk)
+            } catch {
+                throw AFCError.writeFailed(error)
+            }
+            offset = end
         }
     }
 
