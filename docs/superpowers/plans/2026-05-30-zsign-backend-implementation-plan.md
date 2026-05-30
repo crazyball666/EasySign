@@ -1,58 +1,58 @@
-# zsign Backend Implementation Plan
+# zsign 后端实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **给执行代理的要求：** 实施本计划时必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`。所有步骤使用 checkbox（`- [ ]`）跟踪。
 
-**Goal:** Add a bundled zsign signing backend as the default EasySign resign flow while preserving the existing Apple `codesign` + `xcodebuild` backend.
+**目标：** 在保留现有 Apple `codesign` + `xcodebuild` 重签流程的同时，新增默认的内置 zsign 重签后端。
 
-**Architecture:** Replace the existing bundled OpenSSL with one OpenSSL 3.5.6 LTS xcframework, vendor zsign source into the app target, expose zsign through a small Objective-C++ bridge, and route signing through a `ResignEngine` abstraction. The current `ResignTask` behavior becomes `AppleArchiveResignEngine`; the new `ZSignResignEngine` prepares options and calls the bridge.
+**架构：** 将现有 App 内置 OpenSSL 替换为单一 OpenSSL 3.5.6 LTS xcframework；把 zsign 源码 vendor 到 App target；通过 Objective-C++ bridge 暴露给 Swift；再用 `ResignEngine` 抽象在 Apple Archive 后端和 zsign 后端之间切换。现有 `ResignTask` 行为迁移为 `AppleArchiveResignEngine`，新增 `ZSignResignEngine` 负责准备 zsign 参数并调用 bridge。
 
-**Tech Stack:** Swift, SwiftUI, Objective-C++, C++11 zsign sources, OpenSSL 3.5.6 LTS, Xcode project with filesystem synchronized groups.
+**技术栈：** Swift、SwiftUI、Objective-C++、C++11 zsign 源码、OpenSSL 3.5.6 LTS、Xcode project filesystem synchronized groups。
 
 ---
 
-## File Structure
+## 文件结构
 
-Create:
+新增文件：
 
-- `scripts/build-openssl-macos-xcframework.sh` - reproducibly builds the single bundled OpenSSL 3.5.6 LTS xcframework.
-- `EasySign/Vendor/OpenSSL/VERSION.txt` - records OpenSSL version, source URL, build flags, and license.
-- `EasySign/Vendor/OpenSSL/LICENSE.txt` - copied from the OpenSSL 3.5.6 source archive.
-- `EasySign/Vendor/ZSign/LICENSE` - copied from `zhlynn/zsign`.
-- `EasySign/Vendor/ZSign/README-EasySign.md` - records upstream commit and local patches.
-- `EasySign/Vendor/ZSign/Sources/...` - vendored zsign C/C++ sources.
-- `EasySign/Vendor/ZSign/Bridge/EZSignBridge.h` - Objective-C API visible to Swift.
-- `EasySign/Vendor/ZSign/Bridge/EZSignBridge.mm` - Objective-C++ wrapper around zsign.
-- `EasySign/ResignService/Engine/ResignEngine.swift` - signing backend protocol and backend enum.
-- `EasySign/ResignService/Engine/AppleArchiveResignEngine.swift` - old resign flow moved behind the protocol.
-- `EasySign/ResignService/Engine/ZSignResignEngine.swift` - Swift wrapper that prepares zsign workspaces and options.
+- `scripts/build-openssl-macos-xcframework.sh`：可复现地构建单一 OpenSSL 3.5.6 LTS xcframework。
+- `EasySign/Vendor/OpenSSL/VERSION.txt`：记录 OpenSSL 版本、来源、构建参数和 license。
+- `EasySign/Vendor/OpenSSL/LICENSE.txt`：从 OpenSSL 3.5.6 源码包复制。
+- `EasySign/Vendor/ZSign/LICENSE`：从 `zhlynn/zsign` 复制。
+- `EasySign/Vendor/ZSign/README-EasySign.md`：记录上游 commit 和本地 patch。
+- `EasySign/Vendor/ZSign/Sources/...`：vendored zsign C/C++ 源码。
+- `EasySign/Vendor/ZSign/Bridge/EZSignBridge.h`：暴露给 Swift 的 Objective-C API。
+- `EasySign/Vendor/ZSign/Bridge/EZSignBridge.mm`：封装 zsign 的 Objective-C++ wrapper。
+- `EasySign/ResignService/Engine/ResignEngine.swift`：签名后端协议和后端枚举。
+- `EasySign/ResignService/Engine/AppleArchiveResignEngine.swift`：从现有 `ResignTask` 迁移出来的 Apple 后端。
+- `EasySign/ResignService/Engine/ZSignResignEngine.swift`：Swift 层 zsign 后端，负责工作区和参数映射。
 
-Modify:
+修改文件：
 
-- `EasySign/EasySign-Bridging-Header.h` - imports `EZSignBridge.h`.
-- `EasySign/ResignService/Model/ResignTask.swift` - becomes a small backend dispatcher.
-- `EasySign/ResignService/Model/ResignTaskInfo.swift` - adds `engineType`.
-- `EasySign/Views/ContentView.swift` - adds backend picker, default value, and UserDefaults persistence.
-- `EasySign.xcodeproj/project.pbxproj` - updates header search paths and OpenSSL framework settings if filesystem synchronization does not infer them cleanly.
-- Vendored `EasySign/Vendor/ZSign/Sources/bundle.h` and `bundle.cpp` - local patch so short version and build version can be signed separately.
+- `EasySign/EasySign-Bridging-Header.h`：导入 `EZSignBridge.h`。
+- `EasySign/ResignService/Model/ResignTask.swift`：改成后端分发器。
+- `EasySign/ResignService/Model/ResignTaskInfo.swift`：新增 `engineType`。
+- `EasySign/Views/ContentView.swift`：新增后端选择器、默认值和 `UserDefaults` 缓存。
+- `EasySign.xcodeproj/project.pbxproj`：必要时补充 header search paths 和 OpenSSL framework 设置。
+- `EasySign/Vendor/ZSign/Sources/bundle.h`、`bundle.cpp`：本地 patch，让外置版本号和内置 build 号可以分开修改。
 
-Do not modify:
+不要修改：
 
-- `AGENTS.md` - currently untracked user/workspace instruction file.
-- Existing DeviceService files - unrelated to signing backend.
+- `AGENTS.md`：当前是未跟踪的用户/工作区指令文件。
+- `EasySign/DeviceService/*`：和签名后端无关。
 
-## Task 1: Replace Bundled OpenSSL With 3.5.6 LTS
+## 任务 1：替换内置 OpenSSL 为 3.5.6 LTS
 
-**Files:**
+**文件：**
 
-- Create: `scripts/build-openssl-macos-xcframework.sh`
-- Create: `EasySign/Vendor/OpenSSL/VERSION.txt`
-- Create: `EasySign/Vendor/OpenSSL/LICENSE.txt`
-- Replace: `EasySign/Vendor/OpenSSL/OpenSSL.xcframework`
-- Modify: `EasySign.xcodeproj/project.pbxproj` only if framework linkage/embed settings need repair
+- 新增：`scripts/build-openssl-macos-xcframework.sh`
+- 新增：`EasySign/Vendor/OpenSSL/VERSION.txt`
+- 新增：`EasySign/Vendor/OpenSSL/LICENSE.txt`
+- 替换：`EasySign/Vendor/OpenSSL/OpenSSL.xcframework`
+- 必要时修改：`EasySign.xcodeproj/project.pbxproj`
 
-- [ ] **Step 1: Write the reproducible build script**
+- [ ] **步骤 1：写可复现构建脚本**
 
-Create `scripts/build-openssl-macos-xcframework.sh`:
+创建 `scripts/build-openssl-macos-xcframework.sh`：
 
 ```bash
 #!/usr/bin/env bash
@@ -168,84 +168,84 @@ License: Apache License 2.0
 EOF
 ```
 
-- [ ] **Step 2: Confirm the official tarball hash before first build**
+- [ ] **步骤 2：构建前确认官方 hash**
 
-OpenSSL publishes `openssl-3.5.6.tar.gz` with SHA256:
+OpenSSL 官方发布的 `openssl-3.5.6.tar.gz` SHA256：
 
 ```text
 deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736
 ```
 
-Before first build, confirm the hash still matches the official checksum link from the OpenSSL downloads page.
+首次构建前，到 OpenSSL downloads 页面确认该 hash 仍与官方 checksum 一致。
 
-- [ ] **Step 3: Run the OpenSSL build script**
+- [ ] **步骤 3：运行 OpenSSL 构建脚本**
 
-Run:
+运行：
 
 ```bash
 chmod +x scripts/build-openssl-macos-xcframework.sh
 scripts/build-openssl-macos-xcframework.sh
 ```
 
-Expected: command exits `0` and writes `EasySign/Vendor/OpenSSL/OpenSSL.xcframework`.
+期望：命令退出码为 `0`，并生成 `EasySign/Vendor/OpenSSL/OpenSSL.xcframework`。
 
-- [ ] **Step 4: Verify the vendored version**
+- [ ] **步骤 4：验证 vendored 版本**
 
-Run:
+运行：
 
 ```bash
 rg 'OPENSSL_VERSION_TEXT|OPENSSL_VERSION_STR' EasySign/Vendor/OpenSSL/OpenSSL.xcframework
 find EasySign/Vendor/OpenSSL/OpenSSL.xcframework -name opensslv.h -print
 ```
 
-Expected: exactly one header tree per xcframework slice, and version text mentions `OpenSSL 3.5.6`.
+期望：每个 xcframework slice 只有一套 header tree，版本文本包含 `OpenSSL 3.5.6`。
 
-- [ ] **Step 5: Verify there is no second OpenSSL dependency**
+- [ ] **步骤 5：验证没有第二套 OpenSSL 依赖**
 
-Run:
+运行：
 
 ```bash
 rg -n 'OpenSSL|libcrypto|libssl' EasySign.xcodeproj/project.pbxproj EasySign/Vendor -g '!OpenSSL.xcframework/**/Headers/**'
 ```
 
-Expected: only the intended `OpenSSL.xcframework` references and metadata. No Homebrew or `/usr/local` paths.
+期望：只看到目标 `OpenSSL.xcframework` 引用和 metadata，没有 Homebrew、`/usr/local` 或其他 OpenSSL 路径。
 
-- [ ] **Step 6: Build the app after the OpenSSL swap**
+- [ ] **步骤 6：OpenSSL 替换后先构建 App**
 
-Run:
+运行：
 
 ```bash
 xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Debug build
 ```
 
-Expected: build succeeds before zsign integration begins.
+期望：在接入 zsign 前，项目仍能正常构建。
 
-- [ ] **Step 7: Commit**
+- [ ] **步骤 7：提交**
 
 ```bash
 git add scripts/build-openssl-macos-xcframework.sh EasySign/Vendor/OpenSSL EasySign.xcodeproj/project.pbxproj
 git commit -m "build: upgrade bundled openssl"
 ```
 
-## Task 2: Vendor zsign Source and Apply Local Compatibility Patches
+## 任务 2：Vendor zsign 源码并应用本地兼容 patch
 
-**Files:**
+**文件：**
 
-- Create: `EasySign/Vendor/ZSign/LICENSE`
-- Create: `EasySign/Vendor/ZSign/README-EasySign.md`
-- Create: `EasySign/Vendor/ZSign/Sources/...`
-- Modify: `EasySign/Vendor/ZSign/Sources/bundle.h`
-- Modify: `EasySign/Vendor/ZSign/Sources/bundle.cpp`
+- 新增：`EasySign/Vendor/ZSign/LICENSE`
+- 新增：`EasySign/Vendor/ZSign/README-EasySign.md`
+- 新增：`EasySign/Vendor/ZSign/Sources/...`
+- 修改：`EasySign/Vendor/ZSign/Sources/bundle.h`
+- 修改：`EasySign/Vendor/ZSign/Sources/bundle.cpp`
 
-- [ ] **Step 1: Copy the upstream source snapshot**
+- [ ] **步骤 1：复制上游源码快照**
 
-Use upstream `zhlynn/zsign` commit:
+使用 `zhlynn/zsign` 上游 commit：
 
 ```text
 28a64217aa52d44a87a47dbc5e3bd59344c14a5d
 ```
 
-Copy:
+复制这些内容：
 
 ```text
 src/*.cpp
@@ -256,18 +256,18 @@ src/third-party/minizip/
 LICENSE
 ```
 
-into:
+复制到：
 
 ```text
 EasySign/Vendor/ZSign/Sources/
 EasySign/Vendor/ZSign/LICENSE
 ```
 
-Do not copy `src/zsign.cpp`; it contains CLI `main()` and getopt parsing that the app should not compile.
+不要复制 `src/zsign.cpp`，它包含 CLI `main()` 和 getopt 解析，App target 不应该编译它。
 
-- [ ] **Step 2: Add the vendored-source note**
+- [ ] **步骤 2：记录 vendored source 信息**
 
-Create `EasySign/Vendor/ZSign/README-EasySign.md`:
+创建 `EasySign/Vendor/ZSign/README-EasySign.md`：
 
 ```markdown
 # zsign Vendored Source
@@ -282,9 +282,9 @@ EasySign local patches:
 - Build against the single bundled OpenSSL 3.5.6 LTS xcframework.
 ```
 
-- [ ] **Step 3: Patch `bundle.h` for separate versions**
+- [ ] **步骤 3：Patch `bundle.h` 支持分离版本号**
 
-In `EasySign/Vendor/ZSign/Sources/bundle.h`, change both `SignFolder` overloads and `ModifyBundleInfo` to accept both short version and build version:
+在 `EasySign/Vendor/ZSign/Sources/bundle.h` 中，把两个 `SignFolder` overload 和 `ModifyBundleInfo` 改成接收 short version 与 build version：
 
 ```cpp
 bool SignFolder(ZSignAsset* pSignAsset,
@@ -319,9 +319,9 @@ bool ModifyBundleInfo(const string& strBundleId,
                       const string& strDisplayName);
 ```
 
-- [ ] **Step 4: Patch `bundle.cpp` for separate versions**
+- [ ] **步骤 4：Patch `bundle.cpp` 支持分离版本号**
 
-Update call sites and implementation:
+更新 call sites 和实现：
 
 ```cpp
 if (!strBundleId.empty() || !strDisplayName.empty() || !strBundleShortVersion.empty() || !strBundleVersion.empty()) {
@@ -332,7 +332,7 @@ if (!strBundleId.empty() || !strDisplayName.empty() || !strBundleShortVersion.em
 }
 ```
 
-Inside `ModifyBundleInfo`:
+在 `ModifyBundleInfo` 内部加入：
 
 ```cpp
 if (!strBundleShortVersion.empty()) {
@@ -348,35 +348,35 @@ if (!strBundleVersion.empty()) {
 }
 ```
 
-- [ ] **Step 5: Remove OpenSSL 1.1.1-only compatibility if copied**
+- [ ] **步骤 5：确认没有引入 OpenSSL 1.1.1 专用兼容分支**
 
-Run:
+运行：
 
 ```bash
 rg -n 'OSSL_PROVIDER|provider.h|OPENSSL_VERSION_NUMBER|OpenSSL_add_all_algorithms' EasySign/Vendor/ZSign/Sources
 ```
 
-Expected: OpenSSL 3 provider calls are allowed; OpenSSL 1.1.1-only fallback code is not introduced by EasySign patches.
+期望：OpenSSL 3 provider 调用允许存在；不要因为 EasySign patch 引入额外 OpenSSL 1.1.1-only fallback。
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```bash
 git add EasySign/Vendor/ZSign
 git commit -m "vendor: add zsign sources"
 ```
 
-## Task 3: Add the Objective-C++ zsign Bridge
+## 任务 3：新增 Objective-C++ zsign Bridge
 
-**Files:**
+**文件：**
 
-- Create: `EasySign/Vendor/ZSign/Bridge/EZSignBridge.h`
-- Create: `EasySign/Vendor/ZSign/Bridge/EZSignBridge.mm`
-- Modify: `EasySign/EasySign-Bridging-Header.h`
-- Modify: `EasySign.xcodeproj/project.pbxproj` if header search paths or source membership need explicit entries
+- 新增：`EasySign/Vendor/ZSign/Bridge/EZSignBridge.h`
+- 新增：`EasySign/Vendor/ZSign/Bridge/EZSignBridge.mm`
+- 修改：`EasySign/EasySign-Bridging-Header.h`
+- 必要时修改：`EasySign.xcodeproj/project.pbxproj`
 
-- [ ] **Step 1: Create the bridge header**
+- [ ] **步骤 1：创建 bridge header**
 
-Create `EasySign/Vendor/ZSign/Bridge/EZSignBridge.h`:
+创建 `EasySign/Vendor/ZSign/Bridge/EZSignBridge.h`：
 
 ```objc
 #import <Foundation/Foundation.h>
@@ -404,9 +404,9 @@ NS_ASSUME_NONNULL_BEGIN
 NS_ASSUME_NONNULL_END
 ```
 
-- [ ] **Step 2: Create the bridge implementation skeleton**
+- [ ] **步骤 2：创建 bridge 实现骨架**
 
-Create `EasySign/Vendor/ZSign/Bridge/EZSignBridge.mm`:
+创建 `EasySign/Vendor/ZSign/Bridge/EZSignBridge.mm`：
 
 ```objc
 #import "EZSignBridge.h"
@@ -439,9 +439,9 @@ static void EZSetError(NSError **error, NSString *message) {
 }
 ```
 
-- [ ] **Step 3: Implement provider initialization**
+- [ ] **步骤 3：实现 OpenSSL provider 初始化**
 
-Add:
+加入：
 
 ```objc
 static void EZInitializeOpenSSLProviders(void) {
@@ -455,18 +455,18 @@ static void EZInitializeOpenSSLProviders(void) {
 }
 ```
 
-- [ ] **Step 4: Implement input preparation**
+- [ ] **步骤 4：实现输入准备与签名调用**
 
-`signWithOptions:error:` must:
+`signWithOptions:error:` 必须完成：
 
-1. Validate required string properties are non-empty.
-2. Create `tempFolder` if missing.
-3. If `inputPath` is `.ipa` or `.zip`, extract it to `tempFolder/input`.
-4. If `inputPath` is `.app`, create `tempFolder/input/Payload` and copy the app there.
-5. Sign the prepared root folder.
-6. Archive the prepared root folder into `outputPath`.
+1. 校验必填 string 属性非空。
+2. 创建 `tempFolder`。
+3. 如果 `inputPath` 是 `.ipa` 或 `.zip`，解压到 `tempFolder/input`。
+4. 如果 `inputPath` 是 `.app`，创建 `tempFolder/input/Payload` 并复制 app。
+5. 对准备好的 root folder 调用 zsign。
+6. 把 root folder 打包到 `outputPath`。
 
-Expected core shape:
+核心代码形态：
 
 ```objc
 + (BOOL)signWithOptions:(EZSignOptions *)options error:(NSError **)error {
@@ -542,18 +542,18 @@ Expected core shape:
 }
 ```
 
-- [ ] **Step 5: Import bridge into Swift**
+- [ ] **步骤 5：把 bridge 导入 Swift**
 
-Modify `EasySign/EasySign-Bridging-Header.h`:
+修改 `EasySign/EasySign-Bridging-Header.h`：
 
 ```objc
 #import "MachOSignature.h"
 #import "EZSignBridge.h"
 ```
 
-- [ ] **Step 6: Fix project search paths if needed**
+- [ ] **步骤 6：必要时修复 project search paths**
 
-If Xcode cannot find zsign headers, add to both Debug and Release target build settings:
+如果 Xcode 找不到 zsign headers，在 Debug 和 Release target build settings 中加入：
 
 ```text
 HEADER_SEARCH_PATHS = (
@@ -567,37 +567,37 @@ HEADER_SEARCH_PATHS = (
 );
 ```
 
-Use the actual slice paths generated by `xcodebuild -create-xcframework`; do not add `/usr/local` or Homebrew paths.
+使用 `xcodebuild -create-xcframework` 实际生成的 slice 路径。不要添加 `/usr/local` 或 Homebrew 路径。
 
-- [ ] **Step 7: Build to catch C++/linker errors**
+- [ ] **步骤 7：构建并处理 C++/linker 问题**
 
-Run:
+运行：
 
 ```bash
 xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Debug build
 ```
 
-Expected: build succeeds or fails only with concrete zsign/OpenSSL compile errors to fix in this task.
+期望：构建成功；如果失败，只应该是本任务内可修复的 zsign/OpenSSL 编译或链接错误。
 
-- [ ] **Step 8: Commit**
+- [ ] **步骤 8：提交**
 
 ```bash
 git add EasySign/Vendor/ZSign/Bridge EasySign/EasySign-Bridging-Header.h EasySign.xcodeproj/project.pbxproj
 git commit -m "feat: add zsign bridge"
 ```
 
-## Task 4: Extract Signing Backends
+## 任务 4：抽象签名后端
 
-**Files:**
+**文件：**
 
-- Create: `EasySign/ResignService/Engine/ResignEngine.swift`
-- Create: `EasySign/ResignService/Engine/AppleArchiveResignEngine.swift`
-- Modify: `EasySign/ResignService/Model/ResignTask.swift`
-- Modify: `EasySign/ResignService/Model/ResignTaskInfo.swift`
+- 新增：`EasySign/ResignService/Engine/ResignEngine.swift`
+- 新增：`EasySign/ResignService/Engine/AppleArchiveResignEngine.swift`
+- 修改：`EasySign/ResignService/Model/ResignTask.swift`
+- 修改：`EasySign/ResignService/Model/ResignTaskInfo.swift`
 
-- [ ] **Step 1: Add backend enum and protocol**
+- [ ] **步骤 1：新增后端枚举和协议**
 
-Create `EasySign/ResignService/Engine/ResignEngine.swift`:
+创建 `EasySign/ResignService/Engine/ResignEngine.swift`：
 
 ```swift
 import Foundation
@@ -621,9 +621,9 @@ protocol ResignEngine {
 }
 ```
 
-- [ ] **Step 2: Add engine type to task info**
+- [ ] **步骤 2：给 `ResignTaskInfo` 增加 engine type**
 
-Modify `EasySign/ResignService/Model/ResignTaskInfo.swift`:
+修改 `EasySign/ResignService/Model/ResignTaskInfo.swift`：
 
 ```swift
 struct ResignTaskInfo {
@@ -644,9 +644,9 @@ struct ResignTaskInfo {
 }
 ```
 
-- [ ] **Step 3: Move existing implementation to AppleArchive engine**
+- [ ] **步骤 3：迁移现有实现到 AppleArchive engine**
 
-Create `EasySign/ResignService/Engine/AppleArchiveResignEngine.swift` by moving the current `ResignTask` implementation into a backend type.
+创建 `EasySign/ResignService/Engine/AppleArchiveResignEngine.swift`，把当前 `ResignTask` 的实现迁移到后端类型：
 
 ```swift
 struct AppleArchiveResignEngine: ResignEngine {
@@ -735,7 +735,7 @@ struct AppleArchiveResignEngine: ResignEngine {
 }
 ```
 
-Then move all private helper methods currently in `ResignTask` into private extensions on `AppleArchiveResignEngine`. Rename helpers that previously read `self.taskInfo` so they accept `taskInfo` explicitly, for example:
+把 `ResignTask` 里现有 private helpers 移到 `AppleArchiveResignEngine` 的 private extension。原来读取 `self.taskInfo` 的 helper 改成显式接收 `taskInfo`，例如：
 
 ```swift
 private func getAppBundle(taskInfo: ResignTaskInfo) throws -> AppBundle
@@ -743,13 +743,13 @@ private func codesignAppex(appBundle: AppBundle, taskInfo: ResignTaskInfo, logge
 private func updateEntitlements(appBundle: AppBundle, mobileProvision: MobileProvision, taskInfo: ResignTaskInfo, logger: LoggerProtocol?) throws -> String
 ```
 
-- [ ] **Step 4: Keep old behavior intact**
+- [ ] **步骤 4：确认旧行为仍完整**
 
-After moving, confirm these methods still exist in `AppleArchiveResignEngine`:
+迁移后，确认这些方法仍在 `AppleArchiveResignEngine` 中：
 
 ```text
-getAppBundle()
-codesignAppex(appBundle:logger:)
+getAppBundle(taskInfo:)
+codesignAppex(appBundle:taskInfo:logger:)
 codesignDynamicLibrary(appBundle:pkcs12:)
 codesignApp(appBundle:pkcs12:entitlements:)
 createArchiveTemplate(...)
@@ -758,11 +758,9 @@ updateEntitlements(...)
 updatePlist(url:block:)
 ```
 
-Each helper should take `taskInfo` as an argument if it previously read `self.taskInfo`.
+- [ ] **步骤 5：把 `ResignTask` 改成后端分发器**
 
-- [ ] **Step 5: Turn `ResignTask` into a dispatcher**
-
-Modify `EasySign/ResignService/Model/ResignTask.swift` to:
+修改 `EasySign/ResignService/Model/ResignTask.swift`：
 
 ```swift
 struct ResignTask {
@@ -787,7 +785,7 @@ struct ResignTask {
 }
 ```
 
-Temporarily create a stub `ZSignResignEngine` if Task 5 has not been implemented yet:
+如果任务 5 还没有实现，可临时创建 stub：
 
 ```swift
 struct ZSignResignEngine: ResignEngine {
@@ -798,32 +796,32 @@ struct ZSignResignEngine: ResignEngine {
 }
 ```
 
-- [ ] **Step 6: Build after extraction**
+- [ ] **步骤 6：抽取后构建**
 
-Run:
+运行：
 
 ```bash
 xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Debug build
 ```
 
-Expected: build succeeds; selecting Apple Archive later should still exercise old behavior.
+期望：构建成功；后续选择 Apple Archive 时仍能走旧流程。
 
-- [ ] **Step 7: Commit**
+- [ ] **步骤 7：提交**
 
 ```bash
 git add EasySign/ResignService/Engine EasySign/ResignService/Model/ResignTask.swift EasySign/ResignService/Model/ResignTaskInfo.swift
 git commit -m "refactor: split resign engines"
 ```
 
-## Task 5: Implement `ZSignResignEngine`
+## 任务 5：实现 `ZSignResignEngine`
 
-**Files:**
+**文件：**
 
-- Create or replace: `EasySign/ResignService/Engine/ZSignResignEngine.swift`
+- 新增或替换：`EasySign/ResignService/Engine/ZSignResignEngine.swift`
 
-- [ ] **Step 1: Implement workspace creation**
+- [ ] **步骤 1：实现工作区创建**
 
-Create `EasySign/ResignService/Engine/ZSignResignEngine.swift`:
+创建 `EasySign/ResignService/Engine/ZSignResignEngine.swift`：
 
 ```swift
 import Foundation
@@ -841,9 +839,9 @@ struct ZSignResignEngine: ResignEngine {
 }
 ```
 
-- [ ] **Step 2: Implement entitlements file generation**
+- [ ] **步骤 2：实现 entitlements 临时文件生成**
 
-Add:
+加入：
 
 ```swift
 private extension ZSignResignEngine {
@@ -862,9 +860,9 @@ private extension ZSignResignEngine {
 }
 ```
 
-- [ ] **Step 3: Implement option mapping**
+- [ ] **步骤 3：实现参数映射和 bridge 调用**
 
-Add:
+加入：
 
 ```swift
 func sign(taskInfo: ResignTaskInfo, logger: LoggerProtocol?) throws {
@@ -875,6 +873,10 @@ func sign(taskInfo: ResignTaskInfo, logger: LoggerProtocol?) throws {
 
     logger?.log(.INFO, "使用 zsign 后端重签名...")
     let entitlementsPath = try writeEntitlementsIfNeeded(taskInfo.entitlements)
+
+    if taskInfo.exportType == .appStore || taskInfo.exportType == .validation {
+        logger?.log(.INFO, "提示：App Store/validation 导出建议使用 Apple Archive 后端再次验证。")
+    }
 
     let options = EZSignOptions()
     options.inputPath = taskInfo.filePath.path
@@ -898,58 +900,48 @@ func sign(taskInfo: ResignTaskInfo, logger: LoggerProtocol?) throws {
 }
 ```
 
-- [ ] **Step 4: Add export type warning**
+- [ ] **步骤 4：构建**
 
-Before calling the bridge:
-
-```swift
-if taskInfo.exportType == .appStore || taskInfo.exportType == .validation {
-    logger?.log(.INFO, "提示：App Store/validation 导出建议使用 Apple Archive 后端再次验证。")
-}
-```
-
-- [ ] **Step 5: Build**
-
-Run:
+运行：
 
 ```bash
 xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Debug build
 ```
 
-Expected: build succeeds and `ZSignResignEngine` links to `EZSignBridge`.
+期望：构建成功，`ZSignResignEngine` 能链接到 `EZSignBridge`。
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add EasySign/ResignService/Engine/ZSignResignEngine.swift
 git commit -m "feat: implement zsign engine"
 ```
 
-## Task 6: Add UI Backend Selection and Default to zsign
+## 任务 6：新增 UI 后端选择并默认 zsign
 
-**Files:**
+**文件：**
 
-- Modify: `EasySign/Views/ContentView.swift`
+- 修改：`EasySign/Views/ContentView.swift`
 
-- [ ] **Step 1: Add cache key**
+- [ ] **步骤 1：新增 cache key**
 
-Add to `CacheKey`:
+给 `CacheKey` 添加：
 
 ```swift
 case selectedSigningBackend = "selected_signing_backend"
 ```
 
-- [ ] **Step 2: Add view model state**
+- [ ] **步骤 2：新增 view model 状态**
 
-Add to `ContentViewModel`:
+给 `ContentViewModel` 添加：
 
 ```swift
 @Published var signingBackend: ResignEngineType = .zsign
 ```
 
-- [ ] **Step 3: Add backend picker to the form**
+- [ ] **步骤 3：在表单中新增 backend picker**
 
-Place this near the current resign type picker:
+放在当前 resign type picker 附近：
 
 ```swift
 HStack {
@@ -972,9 +964,9 @@ HStack {
 .cornerRadius(10)
 ```
 
-- [ ] **Step 4: Persist and restore the backend**
+- [ ] **步骤 4：保存和恢复 backend**
 
-In `.onAppear`:
+在 `.onAppear` 中：
 
 ```swift
 viewModel.signingBackend = ResignEngineType(
@@ -982,15 +974,15 @@ viewModel.signingBackend = ResignEngineType(
 ) ?? .zsign
 ```
 
-In `onTapStart()`:
+在 `onTapStart()` 中：
 
 ```swift
 UserDefaults.standard.set(viewModel.signingBackend.rawValue, forKey: CacheKey.selectedSigningBackend.rawValue)
 ```
 
-- [ ] **Step 5: Pass engine type into task info**
+- [ ] **步骤 5：把 engine type 传入 task info**
 
-Update the `ResignTaskInfo` initializer call:
+更新 `ResignTaskInfo` 初始化：
 
 ```swift
 let taskInfo = ResignTaskInfo(
@@ -1010,42 +1002,42 @@ let taskInfo = ResignTaskInfo(
 )
 ```
 
-- [ ] **Step 6: Build**
+- [ ] **步骤 6：构建**
 
-Run:
+运行：
 
 ```bash
 xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Debug build
 ```
 
-Expected: build succeeds, and the UI defaults to zsign when no cached value exists.
+期望：构建成功；没有缓存值时 UI 默认选中 zsign。
 
-- [ ] **Step 7: Commit**
+- [ ] **步骤 7：提交**
 
 ```bash
 git add EasySign/Views/ContentView.swift
 git commit -m "feat: add signing backend picker"
 ```
 
-## Task 7: Verification and Packaging Checks
+## 任务 7：验证和打包检查
 
-**Files:**
+**文件：**
 
-- Modify only if verification reveals a real issue.
+- 只有验证暴露真实问题时才修改相关文件。
 
-- [ ] **Step 1: Clean build**
+- [ ] **步骤 1：clean build**
 
-Run:
+运行：
 
 ```bash
 xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Debug clean build
 ```
 
-Expected: build succeeds from a clean state.
+期望：干净构建成功。
 
-- [ ] **Step 2: Verify OpenSSL is bundled once**
+- [ ] **步骤 2：确认 App 包内只存在一套 OpenSSL**
 
-Find the built app path from the build log or DerivedData, then run:
+运行：
 
 ```bash
 APP_PATH="$(xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Debug -showBuildSettings | awk -F' = ' '/^[[:space:]]*BUILT_PRODUCTS_DIR = / { print $2; exit }')/EasySign.app"
@@ -1054,11 +1046,11 @@ find "${APP_PATH}" -iname '*openssl*' -print
 otool -L "${APP_PATH}/Contents/MacOS/EasySign" | rg 'OpenSSL|crypto|ssl' || true
 ```
 
-Expected for static OpenSSL: no runtime `libcrypto` or `libssl` dependency outside the app. If using dynamic fallback, exactly one `OpenSSL.framework` exists inside the app bundle.
+期望：如果使用静态 OpenSSL，不应出现指向 App 外部的 `libcrypto` 或 `libssl` runtime dependency。如果最终退回动态 framework，则 App bundle 内只能有一个 `OpenSSL.framework`。
 
-- [ ] **Step 3: Verify no external zsign dependency**
+- [ ] **步骤 3：确认没有外部 zsign 依赖**
 
-Run:
+运行：
 
 ```bash
 APP_PATH="$(xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Debug -showBuildSettings | awk -F' = ' '/^[[:space:]]*BUILT_PRODUCTS_DIR = / { print $2; exit }')/EasySign.app"
@@ -1067,37 +1059,38 @@ find "${APP_PATH}" -name 'zsign' -type f -print
 otool -L "${APP_PATH}/Contents/MacOS/EasySign" | rg 'zsign|/usr/local|opt/homebrew' || true
 ```
 
-Expected: no external zsign binary and no Homebrew paths.
+期望：没有外部 zsign binary，没有 Homebrew 路径。
 
-- [ ] **Step 4: Manual smoke test with bad p12 password**
+- [ ] **步骤 4：错误密码手工 smoke test**
 
-Use the UI with zsign selected and an intentionally wrong p12 password.
+在 UI 中选择 zsign，使用错误 p12 密码运行。
 
-Expected: signing fails with a readable error, the app remains responsive, and logs mention zsign failure.
+期望：签名失败但错误可读；App 保持响应；日志明确是 zsign 失败。
 
-- [ ] **Step 5: Manual smoke test with a valid fixture**
+- [ ] **步骤 5：有效 fixture 手工 smoke test**
 
-Use a known-good IPA/app, matching p12, password, and mobileprovision.
+使用已知可用的 IPA/app、匹配的 p12、密码和 mobileprovision。
 
-Expected:
+期望：
 
-- zsign backend writes an IPA to the selected output directory.
-- The IPA contains `Payload/<App>.app`.
-- The app can be installed on the target device for the selected profile type.
+- zsign 后端把 IPA 写入选择的输出目录。
+- IPA 内包含 `Payload/<App>.app`。
+- 产物可以在目标 profile 类型支持的设备上安装。
 
-- [ ] **Step 6: Manual Apple Archive regression test**
+- [ ] **步骤 6：Apple Archive 回归测试**
 
-Switch backend to Apple Archive and use the same fixture.
+切换到 Apple Archive 后端，使用同一个 fixture。
 
-Expected: existing `codesign` + `xcodebuild -exportArchive` flow still works as before.
+期望：现有 `codesign` + `xcodebuild -exportArchive` 流程行为保持不变。
 
-- [ ] **Step 7: Final status commit if fixes were needed**
+- [ ] **步骤 7：如果验证发现问题则提交修复**
 
-If verification required fixes:
+如果验证过程中需要修复：
 
 ```bash
 git add <fixed-files>
 git commit -m "fix: stabilize zsign backend integration"
 ```
 
-If no fixes were needed, do not create an empty commit.
+如果没有修复，不要创建空提交。
+
