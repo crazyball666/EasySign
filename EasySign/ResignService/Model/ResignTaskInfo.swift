@@ -22,6 +22,20 @@ enum ResignExportType: String, CaseIterable {
     case validation = "validation"
 }
 
+enum ResignBackend: String, CaseIterable {
+    case zsign = "zsign"
+    case apple = "codesign"
+
+    var displayName: String {
+        switch self {
+        case .zsign:
+            return "zsign"
+        case .apple:
+            return "系统 codesign"
+        }
+    }
+}
+
 struct ResignTaskInfo {
     var filePath: URL
     var p12Path: URL
@@ -29,6 +43,7 @@ struct ResignTaskInfo {
     var mobileProvisionPath: URL
     var appexResignInfos: [String: AppexResignInfo]?
     var exportType: ResignExportType
+    var backend: ResignBackend
     var outputPath: URL
     
     var bundleId: String?

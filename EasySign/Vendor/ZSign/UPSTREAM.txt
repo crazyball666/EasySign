@@ -1,0 +1,18 @@
+zsign upstream source
+=====================
+
+Repository: https://github.com/zhlynn/zsign
+Vendored commit: 28a64217aa52d44a87a47dbc5e3bd59344c14a5d
+Commit date: 2026-04-14 10:12:07 +0800
+License: MIT, see LICENSE in this directory.
+
+Included:
+- src signing library sources used by EasySign.
+- src/common helpers.
+- src/third-party/minizip, excluding Windows-only iowin32 files.
+- src/third-party/zlib.
+
+Excluded:
+- src/zsign.cpp, because EasySign embeds zsign as an in-process backend instead of building the CLI main.
+- certcheck and metadata CLI helpers, because the app signing flow does not use them.
+- upstream build scripts and prebuilt third-party binaries.

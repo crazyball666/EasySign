@@ -28,7 +28,17 @@ struct ResignTask {
             logger?.log(.INFO, "清理工作区目录：\(workspacePath.path)")
             try? FileManager.default.removeItem(at: workspacePath)
         }
-        
+
+        logger?.log(.INFO, "签名后端：\(taskInfo.backend.displayName)")
+        switch taskInfo.backend {
+        case .zsign:
+            try startZSignResign()
+        case .apple:
+            try startAppleResign()
+        }
+    }
+
+    private func startAppleResign() throws {
         let appBundle = try getAppBundle()
         
         logger?.log(.INFO, "开始重签名...")
@@ -83,6 +93,64 @@ struct ResignTask {
         }
         try FileManager.default.copyItem(at: ipaPath, to: taskInfo.outputPath)
         
+        logger?.log(.INFO, "重签名完成🎉🎉🎉")
+    }
+
+    private func startZSignResign() throws {
+        let appBundle = try getAppBundle()
+
+        logger?.log(.INFO, "开始 zsign 重签名...")
+
+        logger?.log(.INFO, "修改包体信息...")
+        try appBundle.update(bundleId: taskInfo.bundleId, displayName: taskInfo.displayName, version: taskInfo.version, buildVersion: taskInfo.buildVersion)
+
+        logger?.log(.INFO, "包体信息：")
+        logger?.log(.INFO, """
+        Bundle ID: \(appBundle.bundleId)
+        应用名称：\(appBundle.displayName)
+        外置版本号：\(appBundle.version)
+        内置版本号：\(appBundle.buildVersion)
+        """)
+
+        if let appexResignInfos = taskInfo.appexResignInfos, !appexResignInfos.isEmpty {
+            logger?.log(.INFO, "zsign 后端当前使用 App 证书和描述文件递归签名，独立 Appex 证书配置仅由系统 codesign 后端处理")
+        }
+
+        logger?.log(.INFO, "删除包体内无用文件...")
+        try TaskCenter.executeShell(command: "find -d \"\(appBundle.path.path)\" -name \".DS_Store\" -o -name \"__MACOSX\" | xargs rm -rf")
+
+        logger?.log(.INFO, "读取 App 描述文件...")
+        guard let mobileProvision = try MobileProvision(file: taskInfo.mobileProvisionPath) else {
+            throw NSError.init(message: "读取 App 描述文件异常")
+        }
+        logger?.log(.INFO, "App 描述文件名称：\(mobileProvision.name), Team ID: \(mobileProvision.teamId)")
+
+        logger?.log(.INFO, "生成 zsign entitlements...")
+        let newEntitlements = try updateEntitlements(appBundle: appBundle, mobileProvision: mobileProvision, logger: logger)
+        let entitlementsPath = workspacePath.appendingPathComponent("zsign.entitlements")
+        try newEntitlements.write(to: entitlementsPath, atomically: true, encoding: .utf8)
+
+        let options = ZSignBridgeOptions()
+        options.inputPath = appBundle.path.path
+        options.p12Path = taskInfo.p12Path.path
+        options.p12Password = taskInfo.p12Password
+        options.mobileProvisionPath = taskInfo.mobileProvisionPath.path
+        options.entitlementsPath = entitlementsPath.path
+        options.outputPath = taskInfo.outputPath.path
+        options.temporaryDirectory = workspacePath.path
+        options.zipLevel = 0
+        options.logHandler = { [logger] level, message in
+            let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                return
+            }
+            logger?.log(level == 1 ? .ERROR : .INFO, text)
+        }
+
+        logger?.log(.INFO, "执行 zsign 签名和打包...")
+        try ZSignBridge.resign(with: options)
+
+        logger?.log(.INFO, "输出 ipa：\(taskInfo.outputPath.path)")
         logger?.log(.INFO, "重签名完成🎉🎉🎉")
     }
 }

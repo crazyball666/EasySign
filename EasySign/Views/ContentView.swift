@@ -44,6 +44,7 @@ enum CacheKey: String {
     case selectedMobileProvision = "selected_mobileprovision"
     case selectedOutput = "selected_output"
     case selectedResignType = "selected_resign_type"
+    case selectedResignBackend = "selected_resign_backend"
 }
 
 
@@ -70,6 +71,8 @@ class ContentViewModel: ObservableObject, LoggerProtocol {
     @Published var mobileprovisionPath = ""
 
     @Published var resignType: ResignExportType = .dev
+
+    @Published var resignBackend: ResignBackend = .zsign
 
     @Published var outputDir = ""
 
@@ -265,6 +268,25 @@ struct ResignContentView: View {
             }
 
             HStack {
+                Text("Sign Backend")
+                    .frame(width: 100)
+                Picker(selection: $viewModel.resignBackend) {
+                    ForEach(ResignBackend.allCases, id: \.rawValue) { option in
+                        Text(option.displayName)
+                            .tag(option)
+                    }
+                } label: {}
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 12)
+            .background(Color.gray.opacity(0.2))
+            .cornerRadius(10)
+
+            HStack {
                 Text("Resign Type")
                     .frame(width: 100)
                 Picker(selection: $viewModel.resignType) {
@@ -296,7 +318,7 @@ struct ResignContentView: View {
                 Text(viewModel.logString)
                     .frame(maxWidth: .infinity)
             }
-            .frame(height: 180)
+            .frame(height: 150)
             .padding(.init(top: 10, leading: 10, bottom: 10, trailing: 10))
             .background(Color.gray.opacity(0.2))
             .cornerRadius(10)
@@ -316,6 +338,7 @@ struct ResignContentView: View {
             viewModel.p12Path = UserDefaults.standard.string(forKey: CacheKey.selectedP12.rawValue) ?? ""
             viewModel.p12Password = UserDefaults.standard.string(forKey: CacheKey.selectedP12Password.rawValue) ?? ""
             viewModel.mobileprovisionPath = UserDefaults.standard.string(forKey: CacheKey.selectedMobileProvision.rawValue) ?? ""
+            viewModel.resignBackend = ResignBackend(rawValue: UserDefaults.standard.string(forKey: CacheKey.selectedResignBackend.rawValue) ?? "") ?? .zsign
             viewModel.resignType = ResignExportType(rawValue: UserDefaults.standard.string(forKey: CacheKey.selectedResignType.rawValue) ?? "") ?? .dev
             viewModel.outputDir = UserDefaults.standard.string(forKey: CacheKey.selectedOutput.rawValue) ?? ""
         })
@@ -371,6 +394,7 @@ struct ResignContentView: View {
         UserDefaults.standard.set(viewModel.p12Path, forKey: CacheKey.selectedP12.rawValue)
         UserDefaults.standard.set(viewModel.p12Password, forKey: CacheKey.selectedP12Password.rawValue)
         UserDefaults.standard.set(viewModel.mobileprovisionPath, forKey: CacheKey.selectedMobileProvision.rawValue)
+        UserDefaults.standard.set(viewModel.resignBackend.rawValue, forKey: CacheKey.selectedResignBackend.rawValue)
         UserDefaults.standard.set(viewModel.resignType.rawValue, forKey: CacheKey.selectedResignType.rawValue)
         UserDefaults.standard.set(viewModel.outputDir, forKey: CacheKey.selectedOutput.rawValue)
 
@@ -381,6 +405,7 @@ struct ResignContentView: View {
             mobileProvisionPath: URL(fileURLWithPath: viewModel.mobileprovisionPath),
             appexResignInfos: nil,
             exportType: viewModel.resignType,
+            backend: viewModel.resignBackend,
             outputPath: URL(fileURLWithPath: viewModel.outputDir).appendingPathComponent(Date.now.formatString(format: "yyyyMMddHHmmss") + ".ipa"),
             bundleId: viewModel.resignSetting?.bundleId,
             displayName: viewModel.resignSetting?.displayName,

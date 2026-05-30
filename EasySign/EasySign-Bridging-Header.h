@@ -3,3 +3,4 @@
 //
 
 #import "MachOSignature.h"
+#import "ZSignBridge.h"
