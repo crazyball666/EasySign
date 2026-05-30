@@ -91,6 +91,8 @@ class ContentViewModel: ObservableObject, LoggerProtocol {
 
     @Published var presentError: Error?
 
+    @Published var resignSuccessOutputPath: String?
+
     @Published var loading: Bool = false
 
     var selectedAppBundle: AppBundle? {
@@ -685,6 +687,11 @@ struct ResignContentView: View {
         } message: {
             Text(viewModel.presentError?.localizedDescription ?? "")
         }
+        .alert("重签成功", isPresented: Binding(value: $viewModel.resignSuccessOutputPath)) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("IPA 已导出到：\n\(viewModel.resignSuccessOutputPath ?? "")")
+        }
         .sheet(isPresented: $viewModel.loading) {
             CustomLoadingView(text: "重签中", color: .blue)
         }
@@ -768,15 +775,17 @@ struct ResignContentView: View {
         DispatchQueue.global().async {
             do {
                 try ResignTask(taskInfo: taskInfo, logger: viewModel).Start()
+                DispatchQueue.main.async {
+                    viewModel.loading = false
+                    viewModel.resignSuccessOutputPath = taskInfo.outputPath.path
+                }
             } catch {
                 print("重签错误：", error.localizedDescription)
                 viewModel.log(.ERROR, error.localizedDescription)
                 DispatchQueue.main.async {
                     viewModel.presentError = error
+                    viewModel.loading = false
                 }
-            }
-            DispatchQueue.main.async {
-                viewModel.loading = false
             }
         }
     }
