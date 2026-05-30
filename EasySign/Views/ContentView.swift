@@ -299,7 +299,7 @@ struct DropdownPickerRow<SelectionValue: Hashable, Content: View>: View {
             } label: {}
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .frame(width: 220, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
