@@ -161,6 +161,77 @@ struct InputField<TailView: View>: View {
     }
 }
 
+struct InjectedDylibPickerView: View {
+    @Binding var paths: [String]
+    @Binding var text: String
+    var addAction: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top) {
+            Text("自定义动态库")
+                .frame(width: 100)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    TextField("选择或粘贴 .dylib 路径", text: $text)
+                        .textFieldStyle(.roundedBorder)
+
+                    Button(action: addAction) {
+                        Label("添加动态库", systemImage: "plus")
+                            .padding(.vertical, 3)
+                    }
+                }
+
+                if !paths.isEmpty {
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(paths.enumerated()), id: \.offset) { index, path in
+                                HStack(spacing: 8) {
+                                    Image(systemName: "link")
+                                        .foregroundColor(.secondary)
+
+                                    Text(URL(fileURLWithPath: path).lastPathComponent)
+                                        .font(.caption)
+                                        .frame(width: 120, alignment: .leading)
+                                        .lineLimit(1)
+
+                                    Text(path)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+
+                                    Spacer(minLength: 8)
+
+                                    Button(action: {
+                                        paths = DylibInjection.removePath(at: index, from: paths)
+                                    }) {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .accessibilityLabel("移除动态库")
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 74)
+
+                    Button(action: {
+                        paths = []
+                    }) {
+                        Label("清空动态库", systemImage: "trash")
+                            .padding(.vertical, 3)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 12)
+        .background(Color.gray.opacity(0.2))
+        .cornerRadius(10)
+    }
+}
+
 
 enum NavigationTab: String, CaseIterable {
     case resign = "Resign"
@@ -241,7 +312,10 @@ struct ResignContentView: View {
         Binding {
             DylibInjection.displayText(from: viewModel.injectedDylibPaths)
         } set: { newValue in
-            viewModel.injectedDylibPaths = DylibInjection.paths(from: newValue)
+            viewModel.injectedDylibPaths = DylibInjection.mergePaths(
+                existing: [],
+                adding: DylibInjection.paths(from: newValue)
+            )
         }
     }
 
@@ -279,20 +353,14 @@ struct ResignContentView: View {
                 viewModel.mobileprovisionPath = selectedUrl.path
             }
 
-            InputField(title: "Inject Dylibs", text: injectedDylibText, selectAction: {
+            InjectedDylibPickerView(paths: $viewModel.injectedDylibPaths, text: injectedDylibText) {
                 guard let selectedUrls = selectFiles(allowsMultipleSelection: true, allowedExtensions: ["dylib"]) else {
                     return
                 }
-                viewModel.injectedDylibPaths = selectedUrls.map { $0.path }
-            }) {
-                if !viewModel.injectedDylibPaths.isEmpty {
-                    Button(action: {
-                        viewModel.injectedDylibPaths = []
-                    }) {
-                        Text("Clear")
-                            .padding(.vertical, 3)
-                    }
-                }
+                viewModel.injectedDylibPaths = DylibInjection.mergePaths(
+                    existing: viewModel.injectedDylibPaths,
+                    adding: selectedUrls.map { $0.path }
+                )
             }
 
             HStack {

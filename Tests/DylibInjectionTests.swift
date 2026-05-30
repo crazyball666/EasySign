@@ -22,6 +22,18 @@ struct DylibInjectionTests {
             "展示文本应使用分号加空格连接多个路径"
         )
 
+        expectEqual(
+            DylibInjection.mergePaths(existing: ["/tmp/A.dylib"], adding: ["/tmp/A.dylib", "/Users/me/B.dylib"]),
+            ["/tmp/A.dylib", "/Users/me/B.dylib"],
+            "追加选择动态库时应保留已有路径并按完整路径去重"
+        )
+
+        expectEqual(
+            DylibInjection.removePath(at: 1, from: ["/tmp/A.dylib", "/Users/me/B.dylib"]),
+            ["/tmp/A.dylib"],
+            "界面逐个移除动态库时应删除指定位置"
+        )
+
         let duplicates = DylibInjection.duplicateFileNames(in: [
             URL(fileURLWithPath: "/tmp/A.dylib"),
             URL(fileURLWithPath: "/Users/me/A.dylib"),

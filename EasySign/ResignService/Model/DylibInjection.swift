@@ -21,6 +21,33 @@ enum DylibInjection {
         paths.joined(separator: "; ")
     }
 
+    static func mergePaths(existing: [String], adding newPaths: [String]) -> [String] {
+        var merged: [String] = []
+        var seen = Set<String>()
+
+        for path in existing + newPaths {
+            let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedPath.isEmpty, !seen.contains(trimmedPath) else {
+                continue
+            }
+
+            merged.append(trimmedPath)
+            seen.insert(trimmedPath)
+        }
+
+        return merged
+    }
+
+    static func removePath(at index: Int, from paths: [String]) -> [String] {
+        guard paths.indices.contains(index) else {
+            return paths
+        }
+
+        var result = paths
+        result.remove(at: index)
+        return result
+    }
+
     static func duplicateFileNames(in urls: [URL]) -> [String] {
         var seen = Set<String>()
         var duplicates = Set<String>()

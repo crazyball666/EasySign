@@ -11,7 +11,7 @@ EasySign 现在保留原有的系统重签逻辑，并新增一个内嵌的 zsig
 - `zsign`：默认后端。使用内嵌的 zsign C++ 源码、内嵌 minizip/zlib、内嵌 OpenSSL 3.5.6，对 App 解包后的 `.app` 进行签名并直接打包 IPA。
 - `系统 codesign`：原有后端。继续使用当前 EasySign 的 `codesign`、描述文件安装、`xcodebuild -exportArchive` 流程。
 
-主界面还提供 `Inject Dylibs` 选项，可以选择一个或多个 `.dylib`。未选择时不会改变原有重签行为。
+主界面还提供 `自定义动态库` 区域，可以选择一个或多个 `.dylib`，也可以直接粘贴路径；已选择的动态库支持逐个移除或一键清空。未选择时不会改变原有重签行为。
 
 ## zsign 后端流程
 
