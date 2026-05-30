@@ -98,18 +98,14 @@ class ContentViewModel: ObservableObject, LoggerProtocol {
             guard let appBundle = selectedAppBundle else {
                 return
             }
-            do {
-                let entitlements = try appBundle.getEntitlementsString()
-                resignSetting = ResignSetting(
-                    bundleId: appBundle.bundleId,
-                    displayName: appBundle.displayName,
-                    version: appBundle.version,
-                    buildVersion: appBundle.buildVersion,
-                    entitlements: entitlements
-                )
-            } catch {
-                self.presentError = NSError(message: "Read entitlements error: \(error.localizedDescription)")
-            }
+            let entitlements = (try? appBundle.getEntitlementsString()) ?? ""
+            resignSetting = ResignSetting(
+                bundleId: appBundle.bundleId,
+                displayName: appBundle.displayName,
+                version: appBundle.version,
+                buildVersion: appBundle.buildVersion,
+                entitlements: entitlements
+            )
         }
     }
 }
