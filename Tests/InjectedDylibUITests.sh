@@ -13,6 +13,13 @@ rg -n "struct DropdownPickerRow" "$CONTENT_VIEW" >/dev/null
 rg -n "Menu \\{" "$CONTENT_VIEW" >/dev/null
 rg -n "chevron\\.up\\.chevron\\.down" "$CONTENT_VIEW" >/dev/null
 rg -n "Spacer\\(minLength: 8\\)" "$CONTENT_VIEW" >/dev/null
+rg -n "fill\\(Color\\(nsColor: \\.textBackgroundColor\\)\\)" "$CONTENT_VIEW" >/dev/null
+if rg -n "fill\\(Color\\.primary\\.opacity\\(0\\.035\\)\\)" "$CONTENT_VIEW" >/dev/null; then
+  exit 1
+fi
+if rg -n "stroke\\(Color\\.primary\\.opacity\\(0\\.16\\), lineWidth: 1\\)" "$CONTENT_VIEW" >/dev/null; then
+  exit 1
+fi
 if rg -n "foregroundStyle\\(\\.primary\\)" "$CONTENT_VIEW" >/dev/null; then
   exit 1
 fi

@@ -329,11 +329,11 @@ struct DropdownPickerRow<SelectionValue: Hashable>: View {
                 .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(Color.primary.opacity(0.035))
+                        .fill(Color(nsColor: .textBackgroundColor))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .stroke(Color.primary.opacity(0.16), lineWidth: 1)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
                 )
                 .contentShape(Rectangle())
             }
