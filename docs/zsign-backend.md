@@ -39,8 +39,8 @@ EasySign 现在保留原有的系统重签逻辑，并新增一个内嵌的 zsig
 
 ## 已知边界
 
-- zsign 后端当前使用 App 的 p12 和 mobileprovision 递归签名主 App 及其内嵌内容。
-- 如果需要为 Appex 配置独立证书和描述文件，请选择 `系统 codesign` 后端；这条旧流程仍然保留。
+- zsign 后端使用主 App 的 p12 和 mobileprovision 递归签名主 App 及其内嵌内容。
+- 系统 codesign 后端也统一使用主 App 证书重签 Appex；当前不再为 Appex 配置独立证书和描述文件。
 - zsign 后端不会调用 `xcodebuild -exportArchive`，导出类型主要用于生成 entitlements。
 
 ## 验证

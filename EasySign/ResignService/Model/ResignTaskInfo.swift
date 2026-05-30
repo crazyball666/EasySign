@@ -7,13 +7,6 @@
 
 import Foundation
 
-
-struct AppexResignInfo {
-    var p12Path: URL
-    var p12Password: String
-    var mobileProvisionPath: URL
-}
-
 enum ResignExportType: String, CaseIterable {
     case appStore = "app-store"
     case dev = "development"
@@ -41,7 +34,6 @@ struct ResignTaskInfo {
     var p12Path: URL
     var p12Password: String
     var mobileProvisionPath: URL
-    var appexResignInfos: [String: AppexResignInfo]?
     var exportType: ResignExportType
     var backend: ResignBackend
     var injectedDylibPaths: [URL]

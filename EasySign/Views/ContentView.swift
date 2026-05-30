@@ -757,7 +757,6 @@ struct ResignContentView: View {
             p12Path: URL(fileURLWithPath: viewModel.p12Path),
             p12Password: viewModel.p12Password,
             mobileProvisionPath: URL(fileURLWithPath: viewModel.mobileprovisionPath),
-            appexResignInfos: nil,
             exportType: viewModel.resignType,
             backend: viewModel.resignBackend,
             injectedDylibPaths: viewModel.isDylibInjectionEnabled ? viewModel.injectedDylibPaths.map { URL(fileURLWithPath: $0) } : [],

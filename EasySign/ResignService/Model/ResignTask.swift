@@ -75,7 +75,7 @@ struct ResignTask {
         try codesignDynamicLibrary(appBundle: appBundle, pkcs12: pkcs12)
         
         logger?.log(.INFO, "重签 Appex...")
-        let appexResignReuslt = try codesignAppex(appBundle: appBundle, logger: logger)
+        let appexResignReuslt = try codesignAppex(appBundle: appBundle, pkcs12: pkcs12, mobileProvision: mobileProvision, logger: logger)
         
         logger?.log(.INFO, "替换 entitlements..")
         let newEntitlements = try updateEntitlements(appBundle: appBundle, mobileProvision: mobileProvision, logger: logger)
@@ -115,8 +115,8 @@ struct ResignTask {
         内置版本号：\(appBundle.buildVersion)
         """)
 
-        if let appexResignInfos = taskInfo.appexResignInfos, !appexResignInfos.isEmpty {
-            logger?.log(.INFO, "zsign 后端当前使用 App 证书和描述文件递归签名，独立 Appex 证书配置仅由系统 codesign 后端处理")
+        if !appBundle.appexList.isEmpty {
+            logger?.log(.INFO, "zsign 将使用主 App 证书和描述文件递归重签 Appex：\(appBundle.appexList.map { $0.path.lastPathComponent }.joined(separator: ", "))")
         }
 
         logger?.log(.INFO, "删除包体内无用文件...")
@@ -200,29 +200,20 @@ extension ResignTask {
     
     /// 重签 Appex
     /// - Parameters:
-    ///   - taskInfo: 重签任务
+    ///   - pkcs12: 主 App 证书
+    ///   - mobileProvision: 主 App 描述文件
     ///   - logger: 日志
     /// - Returns: 重签结果
-    private func codesignAppex(appBundle: AppBundle, logger: LoggerProtocol?) throws -> [(bundleId: String, mobileProvision: MobileProvision)] {
-        let canResignAppex = appBundle.appexList.filter { taskInfo.appexResignInfos?[$0.path.lastPathComponent] != nil }
-        var appexResignReuslt: [(bundleId: String, mobileProvision: MobileProvision)] = []
-        try canResignAppex.forEach { appex in
-            let name = appex.path.lastPathComponent
-            guard let resignInfo = taskInfo.appexResignInfos?[name] else {
-                return
-            }
-            logger?.log(.INFO, "安装 \(name) 的p12 文件...")
-            let pkcs12 = try PKCS12(file: resignInfo.p12Path, password: resignInfo.p12Password)
-            logger?.log(.INFO, "\(name) 证书名称：\(pkcs12.certificate.commonName) Sha1：\(pkcs12.certificate.sha1.hexString)")
+    private func codesignAppex(appBundle: AppBundle, pkcs12: PKCS12, mobileProvision: MobileProvision, logger: LoggerProtocol?) throws -> [(bundleId: String, mobileProvision: MobileProvision)] {
+        guard !appBundle.appexList.isEmpty else {
+            logger?.log(.INFO, "未发现 Appex，跳过")
+            return []
+        }
 
-            logger?.log(.INFO, "安装 \(name) 的描述文件...")
-            guard let mobileProvision = try MobileProvision(file: resignInfo.mobileProvisionPath) else {
-                throw NSError.init(message: "读取 \(name) 描述文件异常")
-            }
-            try mobileProvision.install()
-            logger?.log(.INFO, "\(name) 描述文件名称：\(mobileProvision.name), Team ID: \(mobileProvision.teamId)")
-            
-            logger?.log(.INFO, "重签 \(name)...")
+        var appexResignReuslt: [(bundleId: String, mobileProvision: MobileProvision)] = []
+        try appBundle.appexList.forEach { appex in
+            let name = appex.path.lastPathComponent
+            logger?.log(.INFO, "使用主 App 证书重签 \(name)...")
             let cmd = "/usr/bin/codesign -vvv --continue -f -s \"\(pkcs12.certificate.sha1.hexString)\"  --generate-entitlement-der --preserve-metadata=identifier,flags,runtime \"\(appex.path.path)\""
             try TaskCenter.executeShell(command: cmd)
             

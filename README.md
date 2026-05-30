@@ -7,7 +7,7 @@ macOS 上的 iOS IPA 重签名工具，通过图形界面快速对 IPA 或 .app 
 - 支持 IPA 和 .app 两种输入格式
 - 支持修改应用元数据（Bundle ID、应用名称、版本号、构建号）
 - 支持编辑 entitlements 权限文件
-- 支持单独对 App Extension（Appex）使用不同证书重签名
+- 支持 App Extension（Appex）统一使用主 App 证书重签名
 - 支持系统 codesign 与内嵌 zsign 两套重签后端，默认使用 zsign
 - 支持在主界面启用动态库注入，选择、粘贴和管理自定义 `.dylib` 后注入到主 App 可执行文件
 - 支持 5 种导出类型：App Store、Development、Ad-Hoc、Enterprise、Validation
@@ -92,7 +92,7 @@ EasySign/
 6. **安装证书**：加载 P12 证书文件
 7. **安装描述文件**：安装 Mobileprovision 到系统
 8. **重签名动态库**：遍历 .dylib 和 .framework 进行签名
-9. **重签名 Appex**：对插件使用指定证书重签名（可选）
+9. **重签名 Appex**：对插件统一使用主 App 证书重签名
 10. **更新 Entitlements**：根据导出类型调整权限配置
 11. **重签名主 App**：使用新证书和权限签名整个应用
 12. **导出 IPA**：生成最终 IPA
