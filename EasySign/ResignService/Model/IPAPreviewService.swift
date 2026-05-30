@@ -3,7 +3,9 @@
 //  EasySign
 //
 
+import CryptoKit
 import Foundation
+import Security
 
 struct IPAPreviewEmbeddedBundle: Identifiable, Equatable {
     var id: String { bundleIdentifier }
@@ -16,9 +18,34 @@ struct IPAPreviewEmbeddedBundle: Identifiable, Equatable {
 struct IPAPreviewProvisioningProfile: Equatable {
     let name: String
     let uuid: String
+    let teamName: String
     let teamIdentifier: String
     let applicationIdentifier: String
+    let profileType: String
+    let creationDate: Date?
     let expirationDate: Date?
+    let provisionedDeviceCount: Int
+    let provisionsAllDevices: Bool
+    let apsEnvironment: String?
+    let getTaskAllow: Bool?
+    let entitlementKeys: [String]
+    let certificates: [IPAPreviewCertificate]
+}
+
+struct IPAPreviewCertificate: Identifiable, Equatable {
+    var id: String { sha1Fingerprint.isEmpty ? commonName : sha1Fingerprint }
+    let commonName: String
+    let organization: String
+    let teamIdentifier: String
+    let countryName: String
+    let notBefore: Date?
+    let notAfter: Date?
+    let sha1Fingerprint: String
+}
+
+struct IPAPreviewCodeSignature: Equatable {
+    let hasCodeResources: Bool
+    let codeResourcesPath: String?
 }
 
 struct IPAPreviewInfo: Identifiable {
@@ -34,6 +61,7 @@ struct IPAPreviewInfo: Identifiable {
     let minimumOSVersion: String?
     let executableName: String?
     let iconData: Data?
+    let codeSignature: IPAPreviewCodeSignature
     let provisioningProfile: IPAPreviewProvisioningProfile?
     let appexes: [IPAPreviewEmbeddedBundle]
     let frameworks: [String]
@@ -50,6 +78,24 @@ struct IPAPreviewInfo: Identifiable {
             return "Build \(buildVersion)"
         }
         return "\(version) (\(buildVersion))"
+    }
+
+    var signingDescription: String {
+        var parts: [String] = []
+        if codeSignature.hasCodeResources {
+            parts.append("已包含 CodeResources")
+        } else {
+            parts.append("未发现 CodeResources")
+        }
+        if let provisioningProfile {
+            parts.append(provisioningProfile.profileType)
+            if !provisioningProfile.teamIdentifier.isEmpty {
+                parts.append("Team ID: \(provisioningProfile.teamIdentifier)")
+            }
+        } else {
+            parts.append("未内嵌描述文件")
+        }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -108,6 +154,7 @@ private extension IPAPreviewService {
         let embeddedProfile = try archiveProvisioningProfile(archiveURL: archiveURL, entries: entries, appPrefix: appPrefix)
         let appexes = try archiveAppexes(archiveURL: archiveURL, entries: entries, appPrefix: appPrefix)
         let iconData = try archiveIconData(archiveURL: archiveURL, entries: entries, appPrefix: appPrefix, info: info)
+        let codeSignature = archiveCodeSignature(entries: entries, appPrefix: appPrefix)
 
         return IPAPreviewInfo(
             fileURL: archiveURL,
@@ -121,6 +168,7 @@ private extension IPAPreviewService {
             minimumOSVersion: info["MinimumOSVersion"] as? String,
             executableName: info["CFBundleExecutable"] as? String,
             iconData: iconData,
+            codeSignature: codeSignature,
             provisioningProfile: embeddedProfile,
             appexes: appexes,
             frameworks: frameworkNames(in: entries, appPrefix: appPrefix),
@@ -139,6 +187,7 @@ private extension IPAPreviewService {
         let embeddedProfile = try directoryProvisioningProfile(appURL)
         let appexes = try directoryAppexes(appURL)
         let iconData = try directoryIconData(appURL: appURL, entries: entries, info: info)
+        let codeSignature = directoryCodeSignature(appURL)
 
         return IPAPreviewInfo(
             fileURL: appURL,
@@ -152,6 +201,7 @@ private extension IPAPreviewService {
             minimumOSVersion: info["MinimumOSVersion"] as? String,
             executableName: info["CFBundleExecutable"] as? String,
             iconData: iconData,
+            codeSignature: codeSignature,
             provisioningProfile: embeddedProfile,
             appexes: appexes,
             frameworks: frameworkNames(in: entries, appPrefix: ""),
@@ -222,6 +272,14 @@ private extension IPAPreviewService {
         }
         return try? extractArchiveEntry(iconEntry, from: archiveURL)
     }
+
+    func archiveCodeSignature(entries: [String], appPrefix: String) -> IPAPreviewCodeSignature {
+        let codeResources = appPrefix + "_CodeSignature/CodeResources"
+        return IPAPreviewCodeSignature(
+            hasCodeResources: entries.contains(codeResources),
+            codeResourcesPath: entries.contains(codeResources) ? codeResources : nil
+        )
+    }
 }
 
 private extension IPAPreviewService {
@@ -266,6 +324,15 @@ private extension IPAPreviewService {
             return nil
         }
         return try? Data(contentsOf: appURL.appendingPathComponent(entry))
+    }
+
+    func directoryCodeSignature(_ appURL: URL) -> IPAPreviewCodeSignature {
+        let codeResourcesURL = appURL.appendingPathComponent("_CodeSignature/CodeResources")
+        let exists = fileManager.fileExists(atPath: codeResourcesURL.path)
+        return IPAPreviewCodeSignature(
+            hasCodeResources: exists,
+            codeResourcesPath: exists ? codeResourcesURL.path : nil
+        )
     }
 }
 
@@ -344,28 +411,124 @@ private extension IPAPreviewService {
     }
 
     func decodeProvisioningProfile(data: Data) throws -> IPAPreviewProvisioningProfile? {
-        let tempURL = fileManager.temporaryDirectory.appendingPathComponent("easysign-\(UUID().uuidString).mobileprovision")
-        try data.write(to: tempURL)
-        defer { try? fileManager.removeItem(at: tempURL) }
-
-        let plistData: Data
-        do {
-            plistData = try runProcess("/usr/bin/security", arguments: ["cms", "-D", "-i", tempURL.path])
-        } catch {
-            return nil
-        }
-
+        let plistData = decodedProvisioningPlistData(from: data) ?? data
         guard let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any] else {
             return nil
         }
+
         let entitlements = plist["Entitlements"] as? [String: Any] ?? [:]
+        let teamIdentifier = (plist["TeamIdentifier"] as? [String])?.first ?? ""
+        let provisionedDevices = plist["ProvisionedDevices"] as? [String]
+        let provisionsAllDevices = plist["ProvisionsAllDevices"] as? Bool ?? false
+        let getTaskAllow = entitlements["get-task-allow"] as? Bool
+        let profileType = profileType(
+            provisionsAllDevices: provisionsAllDevices,
+            provisionedDevices: provisionedDevices,
+            getTaskAllow: getTaskAllow
+        )
+
         return IPAPreviewProvisioningProfile(
             name: plist["Name"] as? String ?? "",
             uuid: plist["UUID"] as? String ?? "",
-            teamIdentifier: (plist["TeamIdentifier"] as? [String])?.first ?? "",
+            teamName: plist["TeamName"] as? String ?? "",
+            teamIdentifier: teamIdentifier,
             applicationIdentifier: entitlements["application-identifier"] as? String ?? "",
-            expirationDate: plist["ExpirationDate"] as? Date
+            profileType: profileType,
+            creationDate: plist["CreationDate"] as? Date,
+            expirationDate: plist["ExpirationDate"] as? Date,
+            provisionedDeviceCount: provisionedDevices?.count ?? 0,
+            provisionsAllDevices: provisionsAllDevices,
+            apsEnvironment: entitlements["aps-environment"] as? String,
+            getTaskAllow: getTaskAllow,
+            entitlementKeys: entitlements.keys.sorted(),
+            certificates: (plist["DeveloperCertificates"] as? [Data] ?? []).compactMap(certificateInfo(from:))
         )
+    }
+
+    func decodedProvisioningPlistData(from data: Data) -> Data? {
+        let tempURL = fileManager.temporaryDirectory.appendingPathComponent("easysign-\(UUID().uuidString).mobileprovision")
+        guard (try? data.write(to: tempURL)) != nil else {
+            return nil
+        }
+        defer { try? fileManager.removeItem(at: tempURL) }
+
+        return try? runProcess("/usr/bin/security", arguments: ["cms", "-D", "-i", tempURL.path])
+    }
+
+    func profileType(provisionsAllDevices: Bool, provisionedDevices: [String]?, getTaskAllow: Bool?) -> String {
+        if provisionsAllDevices {
+            return "Enterprise"
+        }
+        if let provisionedDevices, !provisionedDevices.isEmpty {
+            return getTaskAllow == true ? "Development" : "Ad Hoc"
+        }
+        return "App Store"
+    }
+
+    func certificateInfo(from data: Data) -> IPAPreviewCertificate? {
+        guard let certificate = SecCertificateCreateWithData(nil, data as CFData) else {
+            return nil
+        }
+
+        var commonName: CFString?
+        SecCertificateCopyCommonName(certificate, &commonName)
+        let der = SecCertificateCopyData(certificate) as Data
+        return IPAPreviewCertificate(
+            commonName: commonName as String? ?? certificateSummary(certificate),
+            organization: certificateSubjectValue(certificate, oid: kSecOIDOrganizationName),
+            teamIdentifier: certificateSubjectValue(certificate, oid: kSecOIDOrganizationalUnitName),
+            countryName: certificateSubjectValue(certificate, oid: kSecOIDCountryName),
+            notBefore: certificateDate(certificate, oid: kSecOIDX509V1ValidityNotBefore),
+            notAfter: certificateDate(certificate, oid: kSecOIDX509V1ValidityNotAfter),
+            sha1Fingerprint: sha1Fingerprint(der)
+        )
+    }
+
+    func certificateSummary(_ certificate: SecCertificate) -> String {
+        SecCertificateCopySubjectSummary(certificate) as String? ?? ""
+    }
+
+    func certificateSubjectValue(_ certificate: SecCertificate, oid: CFString) -> String {
+        guard let result = SecCertificateCopyValues(certificate, [kSecOIDX509V1SubjectName] as CFArray, nil) as? [CFString: [CFString: Any]],
+              let subject = result[kSecOIDX509V1SubjectName],
+              let subjectItems = subject[kSecPropertyKeyValue] as? [[CFString: Any]]
+        else {
+            return ""
+        }
+
+        for item in subjectItems {
+            guard let rawLabel = item[kSecPropertyKeyLabel] else {
+                continue
+            }
+            let label = rawLabel as! CFString
+            if CFEqual(label, oid), let value = item[kSecPropertyKeyValue] {
+                return "\(value)"
+            }
+        }
+        return ""
+    }
+
+    func certificateDate(_ certificate: SecCertificate, oid: CFString) -> Date? {
+        guard let result = SecCertificateCopyValues(certificate, [oid] as CFArray, nil) as? [CFString: [CFString: Any]],
+              let dict = result[oid],
+              let value = dict[kSecPropertyKeyValue]
+        else {
+            return nil
+        }
+        if let date = value as? Date {
+            return date
+        }
+        if let number = value as? NSNumber,
+           let sinceDate = DateComponents(calendar: Calendar.current, timeZone: TimeZone(secondsFromGMT: 0), year: 2001).date {
+            return Date(timeInterval: number.doubleValue, since: sinceDate)
+        }
+        return nil
+    }
+
+    func sha1Fingerprint(_ data: Data) -> String {
+        Insecure.SHA1.hash(data: data)
+            .map { String(format: "%02X", $0) }
+            .joined(separator: ":")
     }
 
     func fileSize(_ url: URL) -> Int64 {

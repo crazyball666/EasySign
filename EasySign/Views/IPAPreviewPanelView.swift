@@ -25,14 +25,28 @@ struct IPAPreviewPanelView: View {
                         previewRow("可执行文件", info.executableName ?? "-")
                     }
 
+                    previewSection("签名信息") {
+                        previewRow("签名状态", info.signingDescription)
+                        previewRow("CodeResources", info.codeSignature.codeResourcesPath ?? "未发现")
+                    }
+
                     if let profile = info.provisioningProfile {
                         previewSection("描述文件") {
                             previewRow("名称", profile.name)
+                            previewRow("类型", profile.profileType)
                             previewRow("UUID", profile.uuid)
+                            previewRow("Team Name", profile.teamName)
                             previewRow("Team ID", profile.teamIdentifier)
                             previewRow("App ID", profile.applicationIdentifier)
+                            previewRow("创建时间", profile.creationDate?.formatString(format: "yyyy-MM-dd HH:mm:ss") ?? "-")
                             previewRow("过期时间", profile.expirationDate?.formatString(format: "yyyy-MM-dd HH:mm:ss") ?? "-")
+                            previewRow("设备数", profile.provisionsAllDevices ? "全部设备" : "\(profile.provisionedDeviceCount)")
+                            previewRow("APS", profile.apsEnvironment ?? "-")
+                            previewRow("调试权限", profile.getTaskAllow.map { $0 ? "YES" : "NO" } ?? "-")
                         }
+
+                        previewListSection("签名证书", values: profile.certificates.map(certificateDescription))
+                        previewListSection("Entitlements", values: profile.entitlementKeys)
                     }
 
                     previewListSection("App Extension", values: info.appexes.map { "\($0.name.isEmpty ? $0.bundleIdentifier : $0.name)  \($0.bundleIdentifier)" })
@@ -124,5 +138,19 @@ struct IPAPreviewPanelView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func certificateDescription(_ certificate: IPAPreviewCertificate) -> String {
+        var parts = [certificate.commonName]
+        if !certificate.teamIdentifier.isEmpty {
+            parts.append("Team ID: \(certificate.teamIdentifier)")
+        }
+        if let notAfter = certificate.notAfter {
+            parts.append("过期: \(notAfter.formatString(format: "yyyy-MM-dd"))")
+        }
+        if !certificate.sha1Fingerprint.isEmpty {
+            parts.append("SHA1: \(certificate.sha1Fingerprint)")
+        }
+        return parts.filter { !$0.isEmpty }.joined(separator: "  ")
     }
 }

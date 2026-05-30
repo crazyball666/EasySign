@@ -7,11 +7,36 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		35E391FEC21DCF69196B87C9 /* IPAPreviewHTMLRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02DE45FEF3088A40C5BD1BBE /* IPAPreviewHTMLRenderer.swift */; };
 		7C0000010000000100000001 /* MobileDevice.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C0000010000000100000002 /* MobileDevice.framework */; };
 		7C047AFF2DFE61D30063989A /* CryptoSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 7C047AFE2DFE61D30063989A /* CryptoSwift */; };
+		89101DE4E299978AEB7F8BBA /* Quartz.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E0DF986375702FE59B3232BD /* Quartz.framework */; };
+		CCF9D857907B66510FC637BF /* EasySignQuickLook.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 8C95EA07F8B625C31232873C /* EasySignQuickLook.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		D3FF28E2DE9FAD905A4A8614 /* IPAPreviewService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 411CFFCB18359A293F5DDB68 /* IPAPreviewService.swift */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		A9B6D7A6A60A58A4BF1E3B1A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7CD6C19F2C4197E900C1DB7F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 836719B55F51C6A8F606B414;
+			remoteInfo = EasySignQuickLook;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXCopyFilesBuildPhase section */
+		F7D5D1C860A28B7A31C9E1E4 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				CCF9D857907B66510FC637BF /* EasySignQuickLook.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		7C9878ED2DF4CF9900C9789C /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -25,10 +50,25 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		02DE45FEF3088A40C5BD1BBE /* IPAPreviewHTMLRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EasySign/ResignService/Model/IPAPreviewHTMLRenderer.swift; sourceTree = SOURCE_ROOT; };
+		411CFFCB18359A293F5DDB68 /* IPAPreviewService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EasySign/ResignService/Model/IPAPreviewService.swift; sourceTree = SOURCE_ROOT; };
 		4817C90FD13E6007607F3D0A /* libPods-iFocus.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-iFocus.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		7C0000010000000100000002 /* MobileDevice.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MobileDevice.framework; path = /System/Library/PrivateFrameworks/MobileDevice.framework; sourceTree = "<absolute>"; };
+		8C95EA07F8B625C31232873C /* EasySignQuickLook.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EasySignQuickLook.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		7CD6C1A72C4197E900C1DB7F /* EasySign.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EasySign.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E0DF986375702FE59B3232BD /* Quartz.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Quartz.framework; path = System/Library/Frameworks/Quartz.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		27C1F8A295BDE502C5719CC6 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				EasySignQuickLook.entitlements,
+				Info.plist,
+			);
+			target = 836719B55F51C6A8F606B414 /* EasySignQuickLook */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
 		7C9878EE2DF4CF9900C9789C /* PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet */ = {
@@ -48,9 +88,18 @@
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		7C9878C22DEC2D1100C9789C /* EasySign */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (7C9878EE2DF4CF9900C9789C /* PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (Resources, ); path = EasySign; sourceTree = "<group>"; };
+		78EAA4D98DE053A4CE8787E1 /* EasySignQuickLook */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (27C1F8A295BDE502C5719CC6 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = EasySignQuickLook; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		609C539D20D3D8BDBE2D08B3 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				89101DE4E299978AEB7F8BBA /* Quartz.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		7CD6C1A42C4197E900C1DB7F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -67,6 +116,8 @@
 			isa = PBXGroup;
 			children = (
 				7C9878C22DEC2D1100C9789C /* EasySign */,
+				78EAA4D98DE053A4CE8787E1 /* EasySignQuickLook */,
+				9BECE0D232327CF9954C05E7 /* Shared Preview Sources */,
 				7CD6C1A82C4197E900C1DB7F /* Products */,
 				E26E7E8058B13401184A3BD6 /* Frameworks */,
 			);
@@ -76,8 +127,18 @@
 			isa = PBXGroup;
 			children = (
 				7CD6C1A72C4197E900C1DB7F /* EasySign.app */,
+				8C95EA07F8B625C31232873C /* EasySignQuickLook.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		9BECE0D232327CF9954C05E7 /* Shared Preview Sources */ = {
+			isa = PBXGroup;
+			children = (
+				411CFFCB18359A293F5DDB68 /* IPAPreviewService.swift */,
+				02DE45FEF3088A40C5BD1BBE /* IPAPreviewHTMLRenderer.swift */,
+			);
+			name = "Shared Preview Sources";
 			sourceTree = "<group>";
 		};
 		E26E7E8058B13401184A3BD6 /* Frameworks */ = {
@@ -85,6 +146,7 @@
 			children = (
 				4817C90FD13E6007607F3D0A /* libPods-iFocus.a */,
 				7C0000010000000100000002 /* MobileDevice.framework */,
+				E0DF986375702FE59B3232BD /* Quartz.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -92,6 +154,26 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		836719B55F51C6A8F606B414 /* EasySignQuickLook */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 44AD17752530D96B27A449D6 /* Build configuration list for PBXNativeTarget "EasySignQuickLook" */;
+			buildPhases = (
+				B6A1A7C26C06E84F77EA5807 /* Sources */,
+				609C539D20D3D8BDBE2D08B3 /* Frameworks */,
+				026DF6EA8E349CAA6DE2E944 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				78EAA4D98DE053A4CE8787E1 /* EasySignQuickLook */,
+			);
+			name = EasySignQuickLook;
+			productName = EasySignQuickLook;
+			productReference = 8C95EA07F8B625C31232873C /* EasySignQuickLook.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		7CD6C1A62C4197E900C1DB7F /* EasySign */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 7CD6C1B62C4197EB00C1DB7F /* Build configuration list for PBXNativeTarget "EasySign" */;
@@ -99,11 +181,13 @@
 				7CD6C1A32C4197E900C1DB7F /* Sources */,
 				7CD6C1A42C4197E900C1DB7F /* Frameworks */,
 				7CD6C1A52C4197E900C1DB7F /* Resources */,
+				F7D5D1C860A28B7A31C9E1E4 /* Embed Foundation Extensions */,
 				7C9878ED2DF4CF9900C9789C /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				937DD08515DE66A8259A250E /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				7C9878C22DEC2D1100C9789C /* EasySign */,
@@ -123,6 +207,9 @@
 				LastSwiftUpdateCheck = 1520;
 				LastUpgradeCheck = 1520;
 				TargetAttributes = {
+					836719B55F51C6A8F606B414 = {
+						CreatedOnToolsVersion = 16.2;
+					};
 					7CD6C1A62C4197E900C1DB7F = {
 						CreatedOnToolsVersion = 15.2;
 						LastSwiftMigration = 1620;
@@ -146,11 +233,19 @@
 			projectRoot = "";
 			targets = (
 				7CD6C1A62C4197E900C1DB7F /* EasySign */,
+				836719B55F51C6A8F606B414 /* EasySignQuickLook */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		026DF6EA8E349CAA6DE2E944 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		7CD6C1A52C4197E900C1DB7F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -161,6 +256,15 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		B6A1A7C26C06E84F77EA5807 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				35E391FEC21DCF69196B87C9 /* IPAPreviewHTMLRenderer.swift in Sources */,
+				D3FF28E2DE9FAD905A4A8614 /* IPAPreviewService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		7CD6C1A32C4197E900C1DB7F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -170,7 +274,80 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		937DD08515DE66A8259A250E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 836719B55F51C6A8F606B414 /* EasySignQuickLook */;
+			targetProxy = A9B6D7A6A60A58A4BF1E3B1A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		A06DDBEB81BD32FCB03CA746 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = EasySignQuickLook/EasySignQuickLook.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = EasySignQuickLook/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.crazyball.easysign.quicklook;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A863586582DD494644E6DA96 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = EasySignQuickLook/EasySignQuickLook.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = EasySignQuickLook/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MARKETING_VERSION = 1.0.0;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.crazyball.easysign.quicklook;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
 		7CD6C1B42C4197EB00C1DB7F /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -393,6 +570,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		44AD17752530D96B27A449D6 /* Build configuration list for PBXNativeTarget "EasySignQuickLook" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A863586582DD494644E6DA96 /* Debug */,
+				A06DDBEB81BD32FCB03CA746 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		7CD6C1A22C4197E900C1DB7F /* Build configuration list for PBXProject "EasySign" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

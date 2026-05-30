@@ -597,9 +597,8 @@ struct ResignContentView: View {
                             Label("预览", systemImage: "eye")
                         }
                         .buttonStyle(.bordered)
-                        .keyboardShortcut(.space, modifiers: [])
                         .disabled(!canPreviewInput || viewModel.ipaPreviewLoading)
-                        .help("预览 IPA 内容（空格）")
+                        .help("预览 IPA 内容")
 
                         Button(action: showIPAInfo) {
                             Label("编辑", systemImage: "slider.horizontal.3")

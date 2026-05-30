@@ -30,9 +30,13 @@ struct IPAPreviewServiceTests {
         ]
         try (appInfo as NSDictionary).write(to: app.appendingPathComponent("Info.plist"))
         try (appexInfo as NSDictionary).write(to: shareExtension.appendingPathComponent("Info.plist"))
+        try sampleProvisioningProfile.write(to: app.appendingPathComponent("embedded.mobileprovision"))
         try Data().write(to: app.appendingPathComponent("libInjected.dylib"))
         try Data().write(to: kitFramework.appendingPathComponent("Kit"))
         try Data().write(to: app.appendingPathComponent("DemoExec"))
+        let codeSignature = app.appendingPathComponent("_CodeSignature", isDirectory: true)
+        try FileManager.default.createDirectory(at: codeSignature, withIntermediateDirectories: true)
+        try Data("codesign resources".utf8).write(to: codeSignature.appendingPathComponent("CodeResources"))
 
         let ipaPath = tempRoot.appendingPathComponent("Demo.ipa")
         try run("/usr/bin/zip", ["-qry", ipaPath.path, "Payload"], currentDirectory: tempRoot)
@@ -50,9 +54,44 @@ struct IPAPreviewServiceTests {
         assert(preview.appexes.map(\.bundleIdentifier) == ["com.example.demo.share"], "appex bundle id")
         assert(preview.frameworks == ["Kit.framework"], "frameworks")
         assert(preview.dynamicLibraries == ["libInjected.dylib"], "dynamic libraries")
+        assert(preview.codeSignature.hasCodeResources, "code resources")
+        assert(preview.signingDescription.contains("已包含 CodeResources"), "signing description")
+        assert(preview.provisioningProfile?.name == "Preview Development", "profile name")
+        assert(preview.provisioningProfile?.teamName == "Preview Team", "team name")
+        assert(preview.provisioningProfile?.profileType == "Development", "profile type")
+        assert(preview.provisioningProfile?.provisionedDeviceCount == 2, "device count")
+        assert(preview.provisioningProfile?.apsEnvironment == "development", "aps environment")
+        assert(preview.provisioningProfile?.getTaskAllow == true, "get-task-allow")
+        assert(preview.provisioningProfile?.certificates.first?.commonName.contains("Preview Tester") == true, "certificate common name")
+        assert(preview.provisioningProfile?.certificates.first?.teamIdentifier == "ABCDE12345", "certificate team id")
         assert(preview.fileSize > 0, "file size")
 
         try? FileManager.default.removeItem(at: tempRoot)
+    }
+
+    static var sampleProvisioningProfile: Data {
+        let certData = Data(base64Encoded: """
+        MIIDYDCCAkgCCQDE2Trw/tTnOjANBgkqhkiG9w0BAQsFADByMTcwNQYDVQQDDC5BcHBsZSBEZXZlbG9wbWVudDogUHJldmlldyBUZXN0ZXIgKEFCQ0RFMTIzNDUpMRMwEQYDVQQLDApBQkNERTEyMzQ1MRUwEwYDVQQKDAxQcmV2aWV3IFRlYW0xCzAJBgNVBAYTAlVTMB4XDTI2MDUzMDE4NTAzMloXDTI3MDUzMDE4NTAzMlowcjE3MDUGA1UEAwwuQXBwbGUgRGV2ZWxvcG1lbnQ6IFByZXZpZXcgVGVzdGVyIChBQkNERTEyMzQ1KTETMBEGA1UECwwKQUJDREUxMjM0NTEVMBMGA1UECgwMUHJldmlldyBUZWFtMQswCQYDVQQGEwJVUzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAMQNqqOEbZg4rJkZXwNaxEabw5Jt4b2CvD52T2RUsfuPCd4rc4OoeOGUSlRfKEt+nsfqbEifNm0EN7TWjQ1THf+pAKHG2rfQGb+CXQQmpx1daYNVjsiXQ7fAZk1M57gP9FTklO79GUzIhifx1WkWsSY8ZgwWznVYJhrnQZeZDXHC6PVdA6QNKznFH1sHcmYd5LgMMykXn55nY2wlDx6HQy0hsIirM6LEeJr/I2tR6vFq3fmFnNYbeNRYXYoSlUwbBdM91UfhxBOu7UHSxmLq5JcwhAa6qLLDzdJt7bnYtMTrtmAJt74Tku38RRbo90smlNd22EFs7vMcYqr2ds4EXO0CAwEAATANBgkqhkiG9w0BAQsFAAOCAQEAOFyHYcWgGedIETnS2LPtvNw2STMFe6gaCbj8WCGTFtHmlbTKS5vSi6BjRpGMeHI8JG0GyHPz2IpRo4ZIcjlNzipYt2bIN288PSuackph6EAxL28fBq7xt139bvTPSPVtjvAP5Lu0pkd3jl5PMOhoPH6jZrF62+hqBDJFrGMY4BxCl7CkTQNekCZE0PKoHwE1lFGKXamr2fIiPJElNRiogWttORuofaVrAQ95lkVodJTMm1+QGCGtEmX5G4fwNEUCCar+jkB32LDmtLj4u6WUWTm7aI6Ger6fx/jFZcaCV26SB1XAylhxo0eAkrT1/N837LduC0BOkQTM2Rfx9gdD/A==
+        """.filter { !$0.isWhitespace })!
+
+        let profile: [String: Any] = [
+            "Name": "Preview Development",
+            "UUID": "00000000-0000-0000-0000-000000000001",
+            "TeamName": "Preview Team",
+            "TeamIdentifier": ["ABCDE12345"],
+            "CreationDate": Date(timeIntervalSince1970: 1_700_000_000),
+            "ExpirationDate": Date(timeIntervalSince1970: 1_900_000_000),
+            "ProvisionedDevices": ["DEVICE-2", "DEVICE-1"],
+            "DeveloperCertificates": [certData],
+            "Entitlements": [
+                "application-identifier": "ABCDE12345.com.example.demo",
+                "aps-environment": "development",
+                "com.apple.developer.team-identifier": "ABCDE12345",
+                "get-task-allow": true
+            ]
+        ]
+
+        return try! PropertyListSerialization.data(fromPropertyList: profile, format: .xml, options: 0)
     }
 
     static func assert(_ condition: @autoclosure () -> Bool, _ message: String) {
