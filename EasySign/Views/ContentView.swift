@@ -115,52 +115,191 @@ class ContentViewModel: ObservableObject, LoggerProtocol {
 }
 
 
+private let resignLabelWidth: CGFloat = 104
+private let resignPanelRadius: CGFloat = 8
+
+struct ResignPageHeader: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.14))
+                Image(systemName: "signature")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .frame(width: 44, height: 44)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("重签工作台")
+                    .font(.title2.weight(.semibold))
+                Text("IPA / APP")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(.bottom, 2)
+    }
+}
+
+struct ResignSectionView<Content: View>: View {
+    let title: String
+    let systemImage: String
+    let content: Content
+
+    init(title: String, systemImage: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.systemImage = systemImage
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 18)
+                Text(title)
+                    .font(.headline)
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                content
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
+                .stroke(Color.primary.opacity(0.08))
+        )
+    }
+}
+
+struct FormRow<Content: View>: View {
+    let title: String
+    let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: resignLabelWidth, alignment: .trailing)
+
+            content
+                .frame(maxWidth: .infinity)
+        }
+        .frame(minHeight: 34)
+    }
+}
+
 struct InputField<TailView: View>: View {
     var title: String
     @Binding var text: String
-    var selectAction: (() -> Void)? = nil
-    var selectTitle: String = "Select"
-    var tailView: TailView? = nil
+    var placeholder: String?
+    var selectAction: (() -> Void)?
+    var selectTitle: String
+    var selectIcon: String
+    var isSecure: Bool
+    var tailView: TailView?
 
-    init(title: String, text: Binding<String>, selectAction: (() -> Void)? = nil, selectTitle: String = "Select", @ViewBuilder tailView: @escaping () -> TailView) {
+    init(
+        title: String,
+        text: Binding<String>,
+        placeholder: String? = nil,
+        selectAction: (() -> Void)? = nil,
+        selectTitle: String = "选择",
+        selectIcon: String = "folder",
+        isSecure: Bool = false,
+        @ViewBuilder tailView: () -> TailView
+    ) {
         self.title = title
         self._text = text
+        self.placeholder = placeholder
         self.selectAction = selectAction
         self.selectTitle = selectTitle
+        self.selectIcon = selectIcon
+        self.isSecure = isSecure
         self.tailView = tailView()
     }
 
-    init(title: String, text: Binding<String>, selectAction: (() -> Void)? = nil, selectTitle: String = "Select") where TailView == EmptyView {
+    init(
+        title: String,
+        text: Binding<String>,
+        placeholder: String? = nil,
+        selectAction: (() -> Void)? = nil,
+        selectTitle: String = "选择",
+        selectIcon: String = "folder",
+        isSecure: Bool = false
+    ) where TailView == EmptyView {
         self.title = title
         self._text = text
+        self.placeholder = placeholder
         self.selectAction = selectAction
         self.selectTitle = selectTitle
+        self.selectIcon = selectIcon
+        self.isSecure = isSecure
+        self.tailView = nil
     }
 
-
     var body: some View {
-        HStack {
-            Text(title)
-                .frame(width: 100)
+        FormRow(title) {
+            HStack(spacing: 8) {
+                if isSecure {
+                    SecureField(placeholder ?? title, text: $text)
+                        .textFieldStyle(.roundedBorder)
+                } else {
+                    TextField(placeholder ?? title, text: $text)
+                        .textFieldStyle(.roundedBorder)
+                }
 
-            TextField(title, text: $text)
-                .textFieldStyle(.roundedBorder)
+                if let selectAction = selectAction {
+                    Button(action: selectAction) {
+                        Label(selectTitle, systemImage: selectIcon)
+                    }
+                    .buttonStyle(.bordered)
+                }
 
-            if let selectAction = selectAction {
-                Button(action: selectAction) {
-                    Text(selectTitle)
-                        .padding(.vertical, 3)
+                if let tailView = tailView {
+                    tailView
                 }
             }
-
-            if let tailView = tailView {
-                tailView
-            }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 12)
-        .background(Color.gray.opacity(0.2))
-        .cornerRadius(10)
+    }
+}
+
+struct PickerRow<SelectionValue: Hashable, Content: View>: View {
+    let title: String
+    @Binding var selection: SelectionValue
+    let content: Content
+
+    init(title: String, selection: Binding<SelectionValue>, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self._selection = selection
+        self.content = content()
+    }
+
+    var body: some View {
+        FormRow(title) {
+            Picker(selection: $selection) {
+                content
+            } label: {}
+                .pickerStyle(.segmented)
+                .labelsHidden()
+        }
     }
 }
 
@@ -171,88 +310,110 @@ struct InjectedDylibPickerView: View {
     var addAction: () -> Void
 
     var body: some View {
-        HStack(alignment: .top) {
-            Text("动态库注入")
-                .frame(width: 100)
-
-            VStack(alignment: .leading, spacing: 8) {
+        FormRow("动态库注入") {
+            VStack(alignment: .leading, spacing: 10) {
                 Toggle("启用动态库注入", isOn: $isEnabled)
+                    .toggleStyle(.switch)
 
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack {
+                    HStack(spacing: 8) {
                         TextField("选择或粘贴 .dylib 路径", text: $text)
                             .textFieldStyle(.roundedBorder)
 
                         Button(action: addAction) {
                             Label("添加动态库", systemImage: "plus")
-                                .padding(.vertical, 3)
                         }
+                        .buttonStyle(.bordered)
                     }
 
                     if !paths.isEmpty {
-                        ScrollView(.vertical) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(Array(paths.enumerated()), id: \.offset) { index, path in
-                                    HStack(spacing: 8) {
-                                        Image(systemName: "link")
-                                            .foregroundColor(.secondary)
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(paths.enumerated()), id: \.offset) { index, path in
+                                HStack(spacing: 8) {
+                                    Image(systemName: "link")
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 16)
 
-                                        Text(URL(fileURLWithPath: path).lastPathComponent)
-                                            .font(.caption)
-                                            .frame(width: 120, alignment: .leading)
-                                            .lineLimit(1)
+                                    Text(URL(fileURLWithPath: path).lastPathComponent)
+                                        .font(.caption.weight(.medium))
+                                        .frame(width: 122, alignment: .leading)
+                                        .lineLimit(1)
 
-                                        Text(path)
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
+                                    Text(path)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
 
-                                        Spacer(minLength: 8)
+                                    Spacer(minLength: 8)
 
-                                        Button(action: {
-                                            paths = DylibInjection.removePath(at: index, from: paths)
-                                        }) {
-                                            Image(systemName: "xmark.circle.fill")
-                                                .accessibilityLabel("移除动态库")
-                                        }
-                                        .buttonStyle(.borderless)
+                                    Button(action: {
+                                        paths = DylibInjection.removePath(at: index, from: paths)
+                                    }) {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .accessibilityLabel("移除动态库")
                                     }
+                                    .buttonStyle(.borderless)
                                 }
+                                .padding(.horizontal, 8)
+                                .frame(height: 30)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(Color.primary.opacity(0.04))
+                                )
                             }
-                        }
-                        .frame(maxHeight: 74)
 
-                        Button(action: {
-                            paths = []
-                        }) {
-                            Label("清空动态库", systemImage: "trash")
-                                .padding(.vertical, 3)
+                            Button(action: {
+                                paths = []
+                            }) {
+                                Label("清空动态库", systemImage: "trash")
+                            }
+                            .buttonStyle(.borderless)
                         }
                     }
                 }
                 .disabled(!isEnabled)
-                .opacity(isEnabled ? 1 : 0.45)
+                .opacity(isEnabled ? 1 : 0.5)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 12)
-        .background(Color.gray.opacity(0.2))
-        .cornerRadius(10)
+    }
+}
+
+struct LogPanelView: View {
+    let logText: String
+
+    var body: some View {
+        ScrollView(.vertical) {
+            Text(logText.isEmpty ? "暂无日志" : logText)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(logText.isEmpty ? .secondary : .primary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+        }
+        .frame(minHeight: 132, maxHeight: 132)
+        .background(
+            RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
+                .stroke(Color.primary.opacity(0.08))
+        )
     }
 }
 
 
 enum NavigationTab: String, CaseIterable {
-    case resign = "Resign"
-    case devices = "Devices"
+    case resign = "重签"
+    case devices = "设备"
 }
 
 struct SidebarView: View {
     @Binding var selectedTab: NavigationTab
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 8) {
             ForEach(NavigationTab.allCases, id: \.rawValue) { tab in
                 SidebarItem(
                     title: tab.rawValue,
@@ -264,7 +425,9 @@ struct SidebarView: View {
             }
             Spacer()
         }
-        .background(Color.gray.opacity(0.1))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 12)
+        .background(Color(nsColor: .underPageBackgroundColor))
     }
 }
 
@@ -278,15 +441,19 @@ struct SidebarItem: View {
         Button(action: action) {
             VStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 20))
+                    .font(.system(size: 20, weight: .semibold))
                 Text(title)
-                    .font(.caption)
+                    .font(.caption.weight(.medium))
             }
-            .foregroundColor(isSelected ? .blue : .primary)
+            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
+            .frame(height: 58)
+            .background(
+                RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+            )
         }
-        .background(isSelected ? Color.blue.opacity(0.1) : Color.clear)
+        .buttonStyle(.plain)
     }
 }
 
@@ -331,120 +498,132 @@ struct ResignContentView: View {
 
     var body: some View {
         ScrollView(.vertical) {
-            VStack(alignment: .leading) {
-            InputField(title: "Input File", text: $viewModel.inputFile, selectAction: {
-                guard let selectedUrl = selectFile() else {
-                    return
-                }
-                viewModel.inputFile = selectedUrl.path
-            }) {
-                Button(action: showIPAInfo) {
-                    Text("Update")
-                    .padding(EdgeInsets(top: 5, leading: 0, bottom: 5, trailing: 0))
-                }
-                .popover(isPresented: $viewModel.isDetailActive, arrowEdge: .leading) {
-                    IPAContentView(resignSetting: Binding(get: { viewModel.resignSetting ?? ResignSetting() }, set: { newValue in viewModel.resignSetting = newValue }))
-                }
-            }
+            VStack(alignment: .leading, spacing: 16) {
+                ResignPageHeader()
 
-
-            InputField(title: "P12 File", text: $viewModel.p12Path) {
-                guard let selectedUrl = selectFile() else {
-                    return
-                }
-                viewModel.p12Path = selectedUrl.path
-            }
-
-            InputField(title: "P12 Password", text: $viewModel.p12Password)
-
-            InputField(title: "Mobileprovision", text: $viewModel.mobileprovisionPath) {
-                guard let selectedUrl = selectFile() else {
-                    return
-                }
-                viewModel.mobileprovisionPath = selectedUrl.path
-            }
-
-            InjectedDylibPickerView(
-                isEnabled: $viewModel.isDylibInjectionEnabled,
-                paths: $viewModel.injectedDylibPaths,
-                text: injectedDylibText
-            ) {
-                guard let selectedUrls = selectFiles(allowsMultipleSelection: true, allowedExtensions: ["dylib"]) else {
-                    return
-                }
-                viewModel.injectedDylibPaths = DylibInjection.mergePaths(
-                    existing: viewModel.injectedDylibPaths,
-                    adding: selectedUrls.map { $0.path }
-                )
-            }
-
-            HStack {
-                Text("重签方式")
-                    .frame(width: 100)
-                Picker(selection: $viewModel.resignBackend) {
-                    ForEach(ResignBackend.allCases, id: \.rawValue) { option in
-                        Text(option.displayName)
-                            .tag(option)
+                ResignSectionView(title: "文件与证书", systemImage: "doc.badge.gearshape") {
+                    InputField(
+                        title: "输入文件",
+                        text: $viewModel.inputFile,
+                        placeholder: "选择 IPA、ZIP 或 APP",
+                        selectAction: {
+                            guard let selectedUrl = selectFile() else {
+                                return
+                            }
+                            viewModel.inputFile = selectedUrl.path
+                        },
+                        selectTitle: "选择",
+                        selectIcon: "doc"
+                    ) {
+                        Button(action: showIPAInfo) {
+                            Label("编辑", systemImage: "slider.horizontal.3")
+                        }
+                        .buttonStyle(.bordered)
+                        .help("编辑应用信息")
+                        .popover(isPresented: $viewModel.isDetailActive, arrowEdge: .leading) {
+                            IPAContentView(resignSetting: Binding(get: { viewModel.resignSetting ?? ResignSetting() }, set: { newValue in viewModel.resignSetting = newValue }))
+                        }
                     }
-                } label: {}
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 12)
-            .background(Color.gray.opacity(0.2))
-            .cornerRadius(10)
 
-            HStack {
-                Text("Resign Type")
-                    .frame(width: 100)
-                Picker(selection: $viewModel.resignType) {
-                    ForEach(ResignExportType.allCases, id: \.rawValue) { option in
-                        Text(option.rawValue)
-                            .tag(option)
+                    InputField(
+                        title: "P12 证书",
+                        text: $viewModel.p12Path,
+                        placeholder: "选择 .p12 文件",
+                        selectAction: {
+                            guard let selectedUrl = selectFile() else {
+                                return
+                            }
+                            viewModel.p12Path = selectedUrl.path
+                        },
+                        selectTitle: "选择",
+                        selectIcon: "key"
+                    )
+
+                    InputField(
+                        title: "证书密码",
+                        text: $viewModel.p12Password,
+                        placeholder: "输入 P12 密码",
+                        isSecure: true
+                    )
+
+                    InputField(
+                        title: "描述文件",
+                        text: $viewModel.mobileprovisionPath,
+                        placeholder: "选择 .mobileprovision 文件",
+                        selectAction: {
+                            guard let selectedUrl = selectFile() else {
+                                return
+                            }
+                            viewModel.mobileprovisionPath = selectedUrl.path
+                        },
+                        selectTitle: "选择",
+                        selectIcon: "doc.text"
+                    )
+                }
+
+                ResignSectionView(title: "签名选项", systemImage: "checkmark.seal") {
+                    PickerRow(title: "重签方式", selection: $viewModel.resignBackend) {
+                        ForEach(ResignBackend.allCases, id: \.rawValue) { option in
+                            Text(option.displayName)
+                                .tag(option)
+                        }
                     }
-                } label: {}
-                    .pickerStyle(.segmented) // 设置为下拉菜单样式
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 12)
-            .background(Color.gray.opacity(0.2))
-            .cornerRadius(10)
 
-            InputField(title: "Output", text: $viewModel.outputDir) {
-                guard let selectedUrl = selectFile(isDirectory: true) else {
-                    return
+                    PickerRow(title: "导出类型", selection: $viewModel.resignType) {
+                        ForEach(ResignExportType.allCases, id: \.rawValue) { option in
+                            Text(option.rawValue)
+                                .tag(option)
+                        }
+                    }
+
+                    InjectedDylibPickerView(
+                        isEnabled: $viewModel.isDylibInjectionEnabled,
+                        paths: $viewModel.injectedDylibPaths,
+                        text: injectedDylibText
+                    ) {
+                        guard let selectedUrls = selectFiles(allowsMultipleSelection: true, allowedExtensions: ["dylib"]) else {
+                            return
+                        }
+                        viewModel.injectedDylibPaths = DylibInjection.mergePaths(
+                            existing: viewModel.injectedDylibPaths,
+                            adding: selectedUrls.map { $0.path }
+                        )
+                    }
                 }
-                viewModel.outputDir = selectedUrl.path
-            }
 
-            Text("Logcat:")
-                .padding(.top)
-            ScrollView(.vertical) {  // 指定垂直滚动
-                Text(viewModel.logString)
-                    .frame(maxWidth: .infinity)
-            }
-            .frame(height: 110)
-            .padding(.init(top: 10, leading: 10, bottom: 10, trailing: 10))
-            .background(Color.gray.opacity(0.2))
-            .cornerRadius(10)
+                ResignSectionView(title: "输出与日志", systemImage: "tray.and.arrow.up") {
+                    InputField(
+                        title: "输出目录",
+                        text: $viewModel.outputDir,
+                        placeholder: "选择输出目录",
+                        selectAction: {
+                            guard let selectedUrl = selectFile(isDirectory: true) else {
+                                return
+                            }
+                            viewModel.outputDir = selectedUrl.path
+                        },
+                        selectTitle: "选择",
+                        selectIcon: "folder"
+                    )
 
-            HStack {
-                Button(action: onTapStart) {
-                    Text("Start")
-                        .frame(width: 80, height: 30)
+                    LogPanelView(logText: viewModel.logString)
+
+                    HStack {
+                        Spacer()
+                        Button(action: onTapStart) {
+                            Label("开始重签", systemImage: "play.fill")
+                                .frame(minWidth: 96)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .disabled(viewModel.loading)
+                    }
                 }
             }
-            .frame(maxWidth: .infinity)
-        }
-            .padding()
+            .padding(20)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        .background(Color(nsColor: .windowBackgroundColor))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear(perform: {
             viewModel.inputFile = UserDefaults.standard.string(forKey: CacheKey.selectedInput.rawValue) ?? ""
