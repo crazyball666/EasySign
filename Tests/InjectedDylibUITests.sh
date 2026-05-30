@@ -13,6 +13,9 @@ rg -n "struct DropdownPickerRow" "$CONTENT_VIEW" >/dev/null
 rg -n "Menu \\{" "$CONTENT_VIEW" >/dev/null
 rg -n "chevron\\.up\\.chevron\\.down" "$CONTENT_VIEW" >/dev/null
 rg -n "Spacer\\(minLength: 8\\)" "$CONTENT_VIEW" >/dev/null
+if rg -n "foregroundStyle\\(\\.primary\\)" "$CONTENT_VIEW" >/dev/null; then
+  exit 1
+fi
 if rg -n "frame\\(width: 220" "$CONTENT_VIEW" >/dev/null; then
   exit 1
 fi
@@ -22,6 +25,7 @@ fi
 rg -n "struct InjectedDylibPickerView" "$CONTENT_VIEW" >/dev/null
 rg -n "重签方式|导出类型|zsign|系统 codesign" "$CONTENT_VIEW" >/dev/null
 rg -n "动态库注入|启用动态库注入|添加动态库|移除动态库|清空动态库" "$CONTENT_VIEW" >/dev/null
+rg -U -n "Toggle\\(\"启用动态库注入\"[\\s\\S]*font\\(\\.caption\\.weight\\(\\.medium\\)\\)[\\s\\S]*controlSize\\(\\.small\\)" "$CONTENT_VIEW" >/dev/null
 rg -n "DylibInjection\\.mergePaths" "$CONTENT_VIEW" >/dev/null
 rg -n "DylibInjection\\.removePath" "$CONTENT_VIEW" >/dev/null
 rg -n "isDylibInjectionEnabled" "$CONTENT_VIEW" >/dev/null

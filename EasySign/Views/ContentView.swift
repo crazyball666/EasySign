@@ -316,7 +316,7 @@ struct DropdownPickerRow<SelectionValue: Hashable>: View {
             } label: {
                 HStack(spacing: 8) {
                     Text(displayTitle(selection))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
 
                     Spacer(minLength: 8)
@@ -353,7 +353,10 @@ struct InjectedDylibPickerView: View {
         FormRow("动态库注入") {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle("启用动态库注入", isOn: $isEnabled)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
                     .toggleStyle(.switch)
+                    .controlSize(.small)
 
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
