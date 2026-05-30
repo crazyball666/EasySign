@@ -281,7 +281,7 @@ struct InputField<TailView: View>: View {
     }
 }
 
-struct PickerRow<SelectionValue: Hashable, Content: View>: View {
+struct DropdownPickerRow<SelectionValue: Hashable, Content: View>: View {
     let title: String
     @Binding var selection: SelectionValue
     let content: Content
@@ -297,8 +297,9 @@ struct PickerRow<SelectionValue: Hashable, Content: View>: View {
             Picker(selection: $selection) {
                 content
             } label: {}
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
                 .labelsHidden()
+                .frame(width: 220, alignment: .leading)
         }
     }
 }
@@ -562,14 +563,14 @@ struct ResignContentView: View {
                 }
 
                 ResignSectionView(title: "签名选项", systemImage: "checkmark.seal") {
-                    PickerRow(title: "重签方式", selection: $viewModel.resignBackend) {
+                    DropdownPickerRow(title: "重签方式", selection: $viewModel.resignBackend) {
                         ForEach(ResignBackend.allCases, id: \.rawValue) { option in
                             Text(option.displayName)
                                 .tag(option)
                         }
                     }
 
-                    PickerRow(title: "导出类型", selection: $viewModel.resignType) {
+                    DropdownPickerRow(title: "导出类型", selection: $viewModel.resignType) {
                         ForEach(ResignExportType.allCases, id: \.rawValue) { option in
                             Text(option.rawValue)
                                 .tag(option)
