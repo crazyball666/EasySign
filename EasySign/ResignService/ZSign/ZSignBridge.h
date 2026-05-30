@@ -23,6 +23,10 @@ typedef void (^ZSignBridgeLogHandler)(NSInteger level, NSString *message);
 @interface ZSignBridge : NSObject
 
 + (BOOL)resignWithOptions:(ZSignBridgeOptions *)options error:(NSError **)error;
++ (BOOL)injectDylibs:(NSArray<NSString *> *)dylibNames
+      intoExecutable:(NSString *)executablePath
+          weakInject:(BOOL)weakInject
+               error:(NSError **)error;
 
 @end
 

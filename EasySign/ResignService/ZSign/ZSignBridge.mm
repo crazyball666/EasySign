@@ -4,6 +4,7 @@
 #include "bundle.h"
 #include "log.h"
 #include "openssl.h"
+#include "ZSignMachOInjector.h"
 
 static NSString * const ZSignBridgeErrorDomain = @"com.EasySign.zsign";
 
@@ -83,6 +84,37 @@ static BOOL ZSignBridgeCopyAppIntoPayload(NSString *inputPath, NSString *archive
 }
 
 @implementation ZSignBridge
+
++ (BOOL)injectDylibs:(NSArray<NSString *> *)dylibNames
+      intoExecutable:(NSString *)executablePath
+          weakInject:(BOOL)weakInject
+               error:(NSError **)error
+{
+    if (executablePath.length == 0) {
+        return ZSignBridgeFail(error, @"主可执行文件路径为空");
+    }
+    if (![NSFileManager.defaultManager fileExistsAtPath:executablePath]) {
+        return ZSignBridgeFail(error, @"主可执行文件不存在");
+    }
+    if (dylibNames.count == 0) {
+        return YES;
+    }
+
+    std::vector<std::string> dylibs;
+    for (NSString *dylibName in dylibNames) {
+        if (dylibName.length == 0) {
+            return ZSignBridgeFail(error, @"注入动态库名称为空");
+        }
+        dylibs.push_back(ZSignBridgeString(dylibName));
+    }
+
+    std::string errorMessage;
+    if (!ZSignInjectDylibs(ZSignBridgeString(executablePath), dylibs, weakInject, errorMessage)) {
+        return ZSignBridgeFail(error, [NSString stringWithUTF8String:errorMessage.c_str()]);
+    }
+
+    return YES;
+}
 
 + (BOOL)resignWithOptions:(ZSignBridgeOptions *)options error:(NSError **)error
 {

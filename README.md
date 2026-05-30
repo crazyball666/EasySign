@@ -8,6 +8,8 @@ macOS 上的 iOS IPA 重签名工具，通过图形界面快速对 IPA 或 .app 
 - 支持修改应用元数据（Bundle ID、应用名称、版本号、构建号）
 - 支持编辑 entitlements 权限文件
 - 支持单独对 App Extension（Appex）使用不同证书重签名
+- 支持系统 codesign 与内嵌 zsign 两套重签后端，默认使用 zsign
+- 支持向主 App 可执行文件注入动态库
 - 支持 5 种导出类型：App Store、Development、Ad-Hoc、Enterprise、Validation
 - 实时日志输出
 - 用户配置自动保存
@@ -64,6 +66,7 @@ EasySign/
 │   ├── Utils/
 │   │   ├── TaskCenter.swift   # Shell 命令执行器
 │   │   └── PathManager.swift  # 路径管理工具
+│   ├── ZSign/                 # zsign Objective-C++/C++ 桥接层
 │   └── Ext/                   # 扩展
 │       ├── NSError.swift      # 自定义错误初始化
 │       ├── Date.swift         # 日期格式化
@@ -72,10 +75,9 @@ EasySign/
 │   ├── resign_template/       # xcarchive 导出模板
 │   │   ├── Info.plist
 │   │   └── ExportOptions.plist
-│   └── resign_tools/          # 重签名工具
-│       └── optool
 └── Vendor/                    # 第三方依赖
-    └── OpenSSL/              # OpenSSL xcframework
+    ├── OpenSSL/               # 内置 OpenSSL xcframework
+    └── ZSign/                 # 内嵌 zsign 源码
 ```
 
 ## 重签名流程
@@ -86,13 +88,14 @@ EasySign/
 2. **解析应用包**：读取 Payload/.app 目录
 3. **更新元数据**：修改 Bundle ID、应用名称、版本等信息
 4. **清理无用文件**：删除 .DS_Store、__MACOSX 等
-5. **安装证书**：加载 P12 证书文件
-6. **安装描述文件**：安装 Mobileprovision 到系统
-7. **重签名动态库**：遍历 .dylib 和 .framework 进行 codesign
-8. **重签名 Appex**：对插件使用指定证书重签名（可选）
-9. **更新 Entitlements**：根据导出类型调整权限配置
-10. **重签名主 App**：使用新证书和权限签名整个应用
-11. **导出 IPA**：通过 xcodebuild -exportArchive 生成最终 IPA
+5. **注入动态库**：可选复制 dylib 到 App 根目录，并通过内嵌 zsign Mach-O 逻辑写入 load command
+6. **安装证书**：加载 P12 证书文件
+7. **安装描述文件**：安装 Mobileprovision 到系统
+8. **重签名动态库**：遍历 .dylib 和 .framework 进行签名
+9. **重签名 Appex**：对插件使用指定证书重签名（可选）
+10. **更新 Entitlements**：根据导出类型调整权限配置
+11. **重签名主 App**：使用新证书和权限签名整个应用
+12. **导出 IPA**：生成最终 IPA
 
 ## 导出类型说明
 
@@ -110,5 +113,6 @@ EasySign/
 - **SwiftUI**：图形界面框架
 - **Security.framework**：证书和密钥操作
 - **CryptoSwift**：数据摘要计算（通过 SPM 引入）
-- **OpenSSL.xcframework**：加密相关操作（Vendored）
+- **OpenSSL.xcframework**：内置 OpenSSL，用于 zsign 加密相关操作
+- **zsign 源码**：内嵌签名、打包和 Mach-O 动态库注入逻辑
 - **xcodebuild**：IPA 导出工具（系统自带）

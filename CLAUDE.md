@@ -58,21 +58,22 @@ Core signing logic lives in `ResignService/`:
 1. Extract IPA to temp workspace
 2. Update app bundle metadata (bundleId, displayName, version, build)
 3. Delete .DS_Store and __MACOSX
-4. Install p12 certificate and mobileprovision
-5. Codesign dynamic libraries (.dylib, .framework)
-6. Codesign appex plugins with optional separate certificates
-7. Update and apply entitlements based on export type
-8. Codesign main app bundle
-9. Copy to xcarchive template and run `xcodebuild -exportArchive`
-10. Copy resulting IPA to output path
+4. Optionally copy injected dylibs into the app root and add Mach-O load commands through embedded zsign source
+5. Install p12 certificate and mobileprovision
+6. Codesign dynamic libraries (.dylib, .framework)
+7. Codesign appex plugins with optional separate certificates
+8. Update and apply entitlements based on export type
+9. Codesign main app bundle
+10. Copy to xcarchive template and run `xcodebuild -exportArchive`
+11. Copy resulting IPA to output path
 
 ### Export Types
 `ResignExportType`: app-store, development, ad-hoc, enterprise, validation
 
 ### Resources (EasySign/Resources/)
 - `resign_template/`: xcarchive template used for `xcodebuild -exportArchive`
-- `resign_tools/optool`: External tool for code signing
 
 ### Vendored Dependencies
-- `Vendor/OpenSSL/`: OpenSSL xcframework for crypto operations
+- `Vendor/OpenSSL/`: Bundled OpenSSL xcframework for zsign crypto operations
+- `Vendor/ZSign/`: Embedded zsign source used by the zsign backend and Mach-O dylib injection
 - CocoaPods dependencies (Pods/) - including CryptoSwift

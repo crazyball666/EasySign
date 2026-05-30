@@ -280,13 +280,7 @@ extension ResignTask {
         guard let executablePath = appBundle.executableFilePath else {
             throw NSError(message: "找不到 App 主可执行文件")
         }
-        guard let optoolPath = Bundle.main.resourceURL?.appendingPathComponent("Resources/resign_tools/optool"),
-              FileManager.default.fileExists(atPath: optoolPath.path) else {
-            throw NSError(message: "找不到内置 optool")
-        }
-
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: optoolPath.path)
-
+        var loadCommandNames: [String] = []
         for dylibURL in dylibURLs {
             let targetURL = appBundle.path.appendingPathComponent(dylibURL.lastPathComponent)
             if FileManager.default.fileExists(atPath: targetURL.path) {
@@ -296,19 +290,10 @@ extension ResignTask {
 
             let loadCommandName = DylibInjection.loadCommandName(for: dylibURL)
             logger?.log(.INFO, "注入动态库：\(loadCommandName)")
-            try TaskCenter.execute(
-                lanuchPath: optoolPath.path,
-                arguments: [
-                    "install",
-                    "-c",
-                    "load",
-                    "-p",
-                    loadCommandName,
-                    "-t",
-                    executablePath.path
-                ]
-            )
+            loadCommandNames.append(loadCommandName)
         }
+
+        try ZSignBridge.injectDylibs(loadCommandNames, intoExecutable: executablePath.path, weakInject: false)
     }
     
     /// 重签 App

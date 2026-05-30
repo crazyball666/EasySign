@@ -27,7 +27,7 @@ EasySign 现在保留原有的系统重签逻辑，并新增一个内嵌的 zsig
 - 选择的 `.dylib` 会按文件名复制到 App 根目录，也就是主可执行文件同级目录。
 - 注入的 Mach-O load command 使用 `@executable_path/<dylib 文件名>`。
 - zsign 后端使用 zsign 内部的注入能力，注入后由 zsign 统一递归签名。
-- `系统 codesign` 后端使用 App 内嵌的 `Resources/resign_tools/optool` 修改主可执行文件，随后复用原有动态库重签和 App 重签流程。
+- `系统 codesign` 后端同样通过内嵌 zsign 源码里的 `ZMachO::InjectDylib` 修改主可执行文件，随后复用原有动态库重签和 App 重签流程。
 - 如果选择了多个同名 dylib，EasySign 会直接报错，避免互相覆盖。
 
 ## 内嵌依赖
@@ -49,6 +49,7 @@ EasySign 现在保留原有的系统重签逻辑，并新增一个内嵌的 zsig
 
 ```bash
 swiftc EasySign/ResignService/Model/DylibInjection.swift Tests/DylibInjectionTests.swift -o /tmp/easysign-dylib-injection-tests && /tmp/easysign-dylib-injection-tests
+sh Tests/SourceInjectionBackendTests.sh
 xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Debug build
 xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Release build
 ```
