@@ -93,6 +93,10 @@ class ContentViewModel: ObservableObject, LoggerProtocol {
 
     @Published var resignSuccessOutputPath: String?
 
+    @Published var ipaPreviewInfo: IPAPreviewInfo?
+
+    @Published var ipaPreviewLoading = false
+
     @Published var loading: Bool = false
 
     var selectedAppBundle: AppBundle? {
@@ -589,6 +593,14 @@ struct ResignContentView: View {
                         selectTitle: "选择",
                         selectIcon: "doc"
                     ) {
+                        Button(action: onTapPreview) {
+                            Label("预览", systemImage: "eye")
+                        }
+                        .buttonStyle(.bordered)
+                        .keyboardShortcut(.space, modifiers: [])
+                        .disabled(!canPreviewInput || viewModel.ipaPreviewLoading)
+                        .help("预览 IPA 内容（空格）")
+
                         Button(action: showIPAInfo) {
                             Label("编辑", systemImage: "slider.horizontal.3")
                         }
@@ -728,6 +740,9 @@ struct ResignContentView: View {
         .sheet(isPresented: $viewModel.loading) {
             CustomLoadingView(text: "重签中", color: .blue)
         }
+        .sheet(item: $viewModel.ipaPreviewInfo) { info in
+            IPAPreviewPanelView(info: info)
+        }
     }
 
 
@@ -750,6 +765,36 @@ struct ResignContentView: View {
             return panel.urls
         }
         return nil
+    }
+
+    private var canPreviewInput: Bool {
+        let inputURL = URL(fileURLWithPath: viewModel.inputFile)
+        return ["ipa", "zip", "app"].contains(inputURL.pathExtension.lowercased()) &&
+            FileManager.default.fileExists(atPath: inputURL.path)
+    }
+
+    private func onTapPreview() {
+        let inputURL = URL(fileURLWithPath: viewModel.inputFile)
+        guard canPreviewInput else {
+            viewModel.presentError = NSError(message: "请选择 IPA、ZIP 或 APP 后再预览")
+            return
+        }
+
+        viewModel.ipaPreviewLoading = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let previewInfo = try IPAPreviewService().preview(url: inputURL)
+                DispatchQueue.main.async {
+                    viewModel.ipaPreviewLoading = false
+                    viewModel.ipaPreviewInfo = previewInfo
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    viewModel.ipaPreviewLoading = false
+                    viewModel.presentError = error
+                }
+            }
+        }
     }
 
     private func showIPAInfo() {
