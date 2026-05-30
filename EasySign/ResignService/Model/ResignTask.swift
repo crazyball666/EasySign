@@ -385,14 +385,25 @@ extension ResignTask {
     }
     
     private func updateEntitlements(appBundle: AppBundle, mobileProvision: MobileProvision, logger: LoggerProtocol?) throws -> String {
-        var newEntitlements = try appBundle.getEntitlements()
-        logger?.log(.INFO, "原 entitlements：\(newEntitlements.toPlist())")
-        if let newEntitlementsString = taskInfo.entitlements {
+        var newEntitlements: [String: Any]
+        if let newEntitlementsString = taskInfo.entitlements,
+           !newEntitlementsString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            logger?.log(.INFO, "解析自定义 entitlements...")
             guard let data = newEntitlementsString.data(using: .utf8),
                   let dict = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
                 throw NSError(message: "新 entitlements 格式异常")
             }
             newEntitlements = dict
+            logger?.log(.INFO, "自定义 entitlements：\(newEntitlements.toPlist())")
+        } else {
+            do {
+                newEntitlements = try appBundle.getEntitlements()
+                logger?.log(.INFO, "原 entitlements：\(newEntitlements.toPlist())")
+            } catch {
+                logger?.log(.INFO, "读取原 entitlements 失败，改用描述文件 entitlements 作为基底：\(error.localizedDescription)")
+                newEntitlements = mobileProvision.entitlements
+                logger?.log(.INFO, "描述文件 entitlements：\(newEntitlements.toPlist())")
+            }
         }
         
         newEntitlements["application-identifier"] = "\(mobileProvision.teamId).\(appBundle.bundleId)"
