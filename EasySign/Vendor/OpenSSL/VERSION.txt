@@ -1,0 +1,6 @@
+OpenSSL 3.5.6 LTS
+Source: https://www.openssl.org/source/openssl-3.5.6.tar.gz
+SHA256: deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736
+Build: static macOS arm64/x86_64 xcframework
+Flags: no-shared no-tests no-apps no-ssl3 no-comp no-zlib no-module enable-legacy
+License: Apache License 2.0
