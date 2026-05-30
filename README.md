@@ -9,7 +9,7 @@ macOS 上的 iOS IPA 重签名工具，通过图形界面快速对 IPA 或 .app 
 - 支持编辑 entitlements 权限文件
 - 支持单独对 App Extension（Appex）使用不同证书重签名
 - 支持系统 codesign 与内嵌 zsign 两套重签后端，默认使用 zsign
-- 支持选择、粘贴和管理自定义 `.dylib`，并注入到主 App 可执行文件
+- 支持在主界面启用动态库注入，选择、粘贴和管理自定义 `.dylib` 后注入到主 App 可执行文件
 - 支持 5 种导出类型：App Store、Development、Ad-Hoc、Enterprise、Validation
 - 实时日志输出
 - 用户配置自动保存

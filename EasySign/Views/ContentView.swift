@@ -46,6 +46,7 @@ enum CacheKey: String {
     case selectedOutput = "selected_output"
     case selectedResignType = "selected_resign_type"
     case selectedResignBackend = "selected_resign_backend"
+    case selectedDylibInjectionEnabled = "selected_dylib_injection_enabled"
     case selectedInjectedDylibs = "selected_injected_dylibs"
 }
 
@@ -73,6 +74,8 @@ class ContentViewModel: ObservableObject, LoggerProtocol {
     @Published var mobileprovisionPath = ""
 
     @Published var injectedDylibPaths: [String] = []
+
+    @Published var isDylibInjectionEnabled = false
 
     @Published var resignType: ResignExportType = .dev
 
@@ -162,67 +165,74 @@ struct InputField<TailView: View>: View {
 }
 
 struct InjectedDylibPickerView: View {
+    @Binding var isEnabled: Bool
     @Binding var paths: [String]
     @Binding var text: String
     var addAction: () -> Void
 
     var body: some View {
         HStack(alignment: .top) {
-            Text("自定义动态库")
+            Text("动态库注入")
                 .frame(width: 100)
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    TextField("选择或粘贴 .dylib 路径", text: $text)
-                        .textFieldStyle(.roundedBorder)
+                Toggle("启用动态库注入", isOn: $isEnabled)
 
-                    Button(action: addAction) {
-                        Label("添加动态库", systemImage: "plus")
-                            .padding(.vertical, 3)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        TextField("选择或粘贴 .dylib 路径", text: $text)
+                            .textFieldStyle(.roundedBorder)
+
+                        Button(action: addAction) {
+                            Label("添加动态库", systemImage: "plus")
+                                .padding(.vertical, 3)
+                        }
                     }
-                }
 
-                if !paths.isEmpty {
-                    ScrollView(.vertical) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(Array(paths.enumerated()), id: \.offset) { index, path in
-                                HStack(spacing: 8) {
-                                    Image(systemName: "link")
-                                        .foregroundColor(.secondary)
+                    if !paths.isEmpty {
+                        ScrollView(.vertical) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(Array(paths.enumerated()), id: \.offset) { index, path in
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "link")
+                                            .foregroundColor(.secondary)
 
-                                    Text(URL(fileURLWithPath: path).lastPathComponent)
-                                        .font(.caption)
-                                        .frame(width: 120, alignment: .leading)
-                                        .lineLimit(1)
+                                        Text(URL(fileURLWithPath: path).lastPathComponent)
+                                            .font(.caption)
+                                            .frame(width: 120, alignment: .leading)
+                                            .lineLimit(1)
 
-                                    Text(path)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
+                                        Text(path)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
 
-                                    Spacer(minLength: 8)
+                                        Spacer(minLength: 8)
 
-                                    Button(action: {
-                                        paths = DylibInjection.removePath(at: index, from: paths)
-                                    }) {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .accessibilityLabel("移除动态库")
+                                        Button(action: {
+                                            paths = DylibInjection.removePath(at: index, from: paths)
+                                        }) {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .accessibilityLabel("移除动态库")
+                                        }
+                                        .buttonStyle(.borderless)
                                     }
-                                    .buttonStyle(.borderless)
                                 }
                             }
                         }
-                    }
-                    .frame(maxHeight: 74)
+                        .frame(maxHeight: 74)
 
-                    Button(action: {
-                        paths = []
-                    }) {
-                        Label("清空动态库", systemImage: "trash")
-                            .padding(.vertical, 3)
+                        Button(action: {
+                            paths = []
+                        }) {
+                            Label("清空动态库", systemImage: "trash")
+                                .padding(.vertical, 3)
+                        }
                     }
                 }
+                .disabled(!isEnabled)
+                .opacity(isEnabled ? 1 : 0.45)
             }
         }
         .padding(.horizontal, 8)
@@ -320,7 +330,8 @@ struct ResignContentView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading) {
+        ScrollView(.vertical) {
+            VStack(alignment: .leading) {
             InputField(title: "Input File", text: $viewModel.inputFile, selectAction: {
                 guard let selectedUrl = selectFile() else {
                     return
@@ -353,7 +364,11 @@ struct ResignContentView: View {
                 viewModel.mobileprovisionPath = selectedUrl.path
             }
 
-            InjectedDylibPickerView(paths: $viewModel.injectedDylibPaths, text: injectedDylibText) {
+            InjectedDylibPickerView(
+                isEnabled: $viewModel.isDylibInjectionEnabled,
+                paths: $viewModel.injectedDylibPaths,
+                text: injectedDylibText
+            ) {
                 guard let selectedUrls = selectFiles(allowsMultipleSelection: true, allowedExtensions: ["dylib"]) else {
                     return
                 }
@@ -364,7 +379,7 @@ struct ResignContentView: View {
             }
 
             HStack {
-                Text("Sign Backend")
+                Text("重签方式")
                     .frame(width: 100)
                 Picker(selection: $viewModel.resignBackend) {
                     ForEach(ResignBackend.allCases, id: \.rawValue) { option in
@@ -427,14 +442,22 @@ struct ResignContentView: View {
             }
             .frame(maxWidth: .infinity)
         }
-        .padding()
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear(perform: {
             viewModel.inputFile = UserDefaults.standard.string(forKey: CacheKey.selectedInput.rawValue) ?? ""
             viewModel.p12Path = UserDefaults.standard.string(forKey: CacheKey.selectedP12.rawValue) ?? ""
             viewModel.p12Password = UserDefaults.standard.string(forKey: CacheKey.selectedP12Password.rawValue) ?? ""
             viewModel.mobileprovisionPath = UserDefaults.standard.string(forKey: CacheKey.selectedMobileProvision.rawValue) ?? ""
-            viewModel.injectedDylibPaths = UserDefaults.standard.stringArray(forKey: CacheKey.selectedInjectedDylibs.rawValue) ?? []
+            let cachedInjectedDylibs = UserDefaults.standard.stringArray(forKey: CacheKey.selectedInjectedDylibs.rawValue) ?? []
+            viewModel.injectedDylibPaths = cachedInjectedDylibs
+            if UserDefaults.standard.object(forKey: CacheKey.selectedDylibInjectionEnabled.rawValue) == nil {
+                viewModel.isDylibInjectionEnabled = !cachedInjectedDylibs.isEmpty
+            } else {
+                viewModel.isDylibInjectionEnabled = UserDefaults.standard.bool(forKey: CacheKey.selectedDylibInjectionEnabled.rawValue)
+            }
             viewModel.resignBackend = ResignBackend(rawValue: UserDefaults.standard.string(forKey: CacheKey.selectedResignBackend.rawValue) ?? "") ?? .zsign
             viewModel.resignType = ResignExportType(rawValue: UserDefaults.standard.string(forKey: CacheKey.selectedResignType.rawValue) ?? "") ?? .dev
             viewModel.outputDir = UserDefaults.standard.string(forKey: CacheKey.selectedOutput.rawValue) ?? ""
@@ -501,6 +524,7 @@ struct ResignContentView: View {
         UserDefaults.standard.set(viewModel.p12Path, forKey: CacheKey.selectedP12.rawValue)
         UserDefaults.standard.set(viewModel.p12Password, forKey: CacheKey.selectedP12Password.rawValue)
         UserDefaults.standard.set(viewModel.mobileprovisionPath, forKey: CacheKey.selectedMobileProvision.rawValue)
+        UserDefaults.standard.set(viewModel.isDylibInjectionEnabled, forKey: CacheKey.selectedDylibInjectionEnabled.rawValue)
         UserDefaults.standard.set(viewModel.injectedDylibPaths, forKey: CacheKey.selectedInjectedDylibs.rawValue)
         UserDefaults.standard.set(viewModel.resignBackend.rawValue, forKey: CacheKey.selectedResignBackend.rawValue)
         UserDefaults.standard.set(viewModel.resignType.rawValue, forKey: CacheKey.selectedResignType.rawValue)
@@ -514,7 +538,7 @@ struct ResignContentView: View {
             appexResignInfos: nil,
             exportType: viewModel.resignType,
             backend: viewModel.resignBackend,
-            injectedDylibPaths: viewModel.injectedDylibPaths.map { URL(fileURLWithPath: $0) },
+            injectedDylibPaths: viewModel.isDylibInjectionEnabled ? viewModel.injectedDylibPaths.map { URL(fileURLWithPath: $0) } : [],
             outputPath: URL(fileURLWithPath: viewModel.outputDir).appendingPathComponent(Date.now.formatString(format: "yyyyMMddHHmmss") + ".ipa"),
             bundleId: viewModel.resignSetting?.bundleId,
             displayName: viewModel.resignSetting?.displayName,
