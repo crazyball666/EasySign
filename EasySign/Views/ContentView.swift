@@ -454,7 +454,7 @@ struct SidebarView: View {
     @Binding var selectedTab: NavigationTab
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             ForEach(NavigationTab.allCases, id: \.rawValue) { tab in
                 SidebarItem(
                     title: tab.rawValue,
@@ -467,8 +467,15 @@ struct SidebarView: View {
             Spacer()
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 12)
-        .background(Color(nsColor: .underPageBackgroundColor))
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor).opacity(0.55))
+                .frame(width: 1)
+        }
     }
 }
 
@@ -477,24 +484,50 @@ struct SidebarItem: View {
     let icon: String
     let isSelected: Bool
     let action: () -> Void
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 20, weight: .semibold))
-                Text(title)
-                    .font(.caption.weight(.medium))
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(itemBackground)
+
+                Capsule(style: .continuous)
+                    .fill(Color.accentColor)
+                    .frame(width: 3, height: 28)
+                    .opacity(isSelected ? 1 : 0)
+                    .padding(.leading, 2)
+
+                VStack(spacing: 5) {
+                    Image(systemName: icon)
+                        .font(.system(size: 18, weight: .medium))
+                        .symbolRenderingMode(.hierarchical)
+                    Text(title)
+                        .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
             .frame(maxWidth: .infinity)
-            .frame(height: 58)
-            .background(
-                RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
-                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+            .frame(height: 54)
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(isSelected ? Color.accentColor.opacity(0.16) : Color.clear, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.16), value: isSelected)
+        .animation(.easeOut(duration: 0.16), value: isHovered)
+    }
+
+    private var itemBackground: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.10)
+        }
+        return isHovered ? Color.primary.opacity(0.045) : Color.clear
     }
 }
 
