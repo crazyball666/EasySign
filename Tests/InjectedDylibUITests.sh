@@ -6,11 +6,17 @@ CONTENT_VIEW="EasySign/Views/ContentView.swift"
 rg -n "struct ResignPageHeader" "$CONTENT_VIEW" >/dev/null
 rg -n "struct ResignSectionView" "$CONTENT_VIEW" >/dev/null
 rg -n "struct FormRow" "$CONTENT_VIEW" >/dev/null
+rg -n "frame\\(maxWidth: \\.infinity, minHeight: 34, alignment: \\.leading\\)" "$CONTENT_VIEW" >/dev/null
 rg -n "struct LogPanelView" "$CONTENT_VIEW" >/dev/null
 rg -n "文件与证书|签名选项|输出与日志|开始重签" "$CONTENT_VIEW" >/dev/null
 rg -n "struct DropdownPickerRow" "$CONTENT_VIEW" >/dev/null
-rg -n "pickerStyle\\(\\.menu\\)" "$CONTENT_VIEW" >/dev/null
+rg -n "Menu \\{" "$CONTENT_VIEW" >/dev/null
+rg -n "chevron\\.up\\.chevron\\.down" "$CONTENT_VIEW" >/dev/null
+rg -n "Spacer\\(minLength: 8\\)" "$CONTENT_VIEW" >/dev/null
 if rg -n "frame\\(width: 220" "$CONTENT_VIEW" >/dev/null; then
+  exit 1
+fi
+if rg -n "pickerStyle\\(\\.menu\\)" "$CONTENT_VIEW" >/dev/null; then
   exit 1
 fi
 rg -n "struct InjectedDylibPickerView" "$CONTENT_VIEW" >/dev/null

@@ -202,7 +202,7 @@ struct FormRow<Content: View>: View {
             content
                 .frame(maxWidth: .infinity)
         }
-        .frame(minHeight: 34)
+        .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
     }
 }
 
@@ -281,25 +281,64 @@ struct InputField<TailView: View>: View {
     }
 }
 
-struct DropdownPickerRow<SelectionValue: Hashable, Content: View>: View {
+struct DropdownPickerRow<SelectionValue: Hashable>: View {
     let title: String
     @Binding var selection: SelectionValue
-    let content: Content
+    let options: [SelectionValue]
+    let displayTitle: (SelectionValue) -> String
 
-    init(title: String, selection: Binding<SelectionValue>, @ViewBuilder content: () -> Content) {
+    init(
+        title: String,
+        selection: Binding<SelectionValue>,
+        options: [SelectionValue],
+        displayTitle: @escaping (SelectionValue) -> String
+    ) {
         self.title = title
         self._selection = selection
-        self.content = content()
+        self.options = options
+        self.displayTitle = displayTitle
     }
 
     var body: some View {
         FormRow(title) {
-            Picker(selection: $selection) {
-                content
-            } label: {}
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Menu {
+                ForEach(options, id: \.self) { option in
+                    Button {
+                        selection = option
+                    } label: {
+                        if option == selection {
+                            Label(displayTitle(option), systemImage: "checkmark")
+                        } else {
+                            Text(displayTitle(option))
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(displayTitle(selection))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.primary.opacity(0.035))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .stroke(Color.primary.opacity(0.16), lineWidth: 1)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -563,19 +602,19 @@ struct ResignContentView: View {
                 }
 
                 ResignSectionView(title: "签名选项", systemImage: "checkmark.seal") {
-                    DropdownPickerRow(title: "重签方式", selection: $viewModel.resignBackend) {
-                        ForEach(ResignBackend.allCases, id: \.rawValue) { option in
-                            Text(option.displayName)
-                                .tag(option)
-                        }
-                    }
+                    DropdownPickerRow(
+                        title: "重签方式",
+                        selection: $viewModel.resignBackend,
+                        options: ResignBackend.allCases,
+                        displayTitle: { $0.displayName }
+                    )
 
-                    DropdownPickerRow(title: "导出类型", selection: $viewModel.resignType) {
-                        ForEach(ResignExportType.allCases, id: \.rawValue) { option in
-                            Text(option.rawValue)
-                                .tag(option)
-                        }
-                    }
+                    DropdownPickerRow(
+                        title: "导出类型",
+                        selection: $viewModel.resignType,
+                        options: ResignExportType.allCases,
+                        displayTitle: { $0.rawValue }
+                    )
 
                     InjectedDylibPickerView(
                         isEnabled: $viewModel.isDylibInjectionEnabled,
