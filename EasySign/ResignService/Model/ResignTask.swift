@@ -67,6 +67,9 @@ struct ResignTask {
         }
         try mobileProvision.install()
         logger?.log(.INFO, "App 描述文件名称：\(mobileProvision.name), Team ID: \(mobileProvision.teamId)")
+
+        logger?.log(.INFO, "注入动态库...")
+        try injectDylibsForApple(appBundle: appBundle)
         
         logger?.log(.INFO, "重签动态库...")
         try codesignDynamicLibrary(appBundle: appBundle, pkcs12: pkcs12)
@@ -119,6 +122,11 @@ struct ResignTask {
         logger?.log(.INFO, "删除包体内无用文件...")
         try TaskCenter.executeShell(command: "find -d \"\(appBundle.path.path)\" -name \".DS_Store\" -o -name \"__MACOSX\" | xargs rm -rf")
 
+        let injectedDylibs = try validatedInjectedDylibs()
+        if !injectedDylibs.isEmpty {
+            logger?.log(.INFO, "zsign 将注入动态库：\(injectedDylibs.map { $0.lastPathComponent }.joined(separator: ", "))")
+        }
+
         logger?.log(.INFO, "读取 App 描述文件...")
         guard let mobileProvision = try MobileProvision(file: taskInfo.mobileProvisionPath) else {
             throw NSError.init(message: "读取 App 描述文件异常")
@@ -138,6 +146,8 @@ struct ResignTask {
         options.entitlementsPath = entitlementsPath.path
         options.outputPath = taskInfo.outputPath.path
         options.temporaryDirectory = workspacePath.path
+        options.injectedDylibPaths = injectedDylibs.map { $0.path }
+        options.weakInject = false
         options.zipLevel = 0
         options.logHandler = { [logger] level, message in
             let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -234,6 +244,70 @@ extension ResignTask {
                 let cmd = "/usr/bin/codesign -vvv --continue -f -s \"\(pkcs12.certificate.sha1.hexString)\"  --generate-entitlement-der --preserve-metadata=identifier,flags,runtime \"\(item)\""
                 try TaskCenter.executeShell(command: cmd)
             }
+        }
+    }
+
+    private func validatedInjectedDylibs() throws -> [URL] {
+        let dylibURLs = taskInfo.injectedDylibPaths
+        guard !dylibURLs.isEmpty else {
+            return []
+        }
+
+        let duplicateFileNames = DylibInjection.duplicateFileNames(in: dylibURLs)
+        if !duplicateFileNames.isEmpty {
+            throw NSError(message: "注入动态库存在同名文件：\(duplicateFileNames.joined(separator: ", "))")
+        }
+
+        for dylibURL in dylibURLs {
+            if !FileManager.default.fileExists(atPath: dylibURL.path) {
+                throw NSError(message: "注入动态库不存在：\(dylibURL.path)")
+            }
+            if dylibURL.pathExtension.lowercased() != "dylib" {
+                throw NSError(message: "注入文件不是 dylib：\(dylibURL.path)")
+            }
+        }
+
+        return dylibURLs
+    }
+
+    private func injectDylibsForApple(appBundle: AppBundle) throws {
+        let dylibURLs = try validatedInjectedDylibs()
+        guard !dylibURLs.isEmpty else {
+            logger?.log(.INFO, "未选择动态库，跳过注入")
+            return
+        }
+
+        guard let executablePath = appBundle.executableFilePath else {
+            throw NSError(message: "找不到 App 主可执行文件")
+        }
+        guard let optoolPath = Bundle.main.resourceURL?.appendingPathComponent("Resources/resign_tools/optool"),
+              FileManager.default.fileExists(atPath: optoolPath.path) else {
+            throw NSError(message: "找不到内置 optool")
+        }
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: optoolPath.path)
+
+        for dylibURL in dylibURLs {
+            let targetURL = appBundle.path.appendingPathComponent(dylibURL.lastPathComponent)
+            if FileManager.default.fileExists(atPath: targetURL.path) {
+                try FileManager.default.removeItem(at: targetURL)
+            }
+            try FileManager.default.copyItem(at: dylibURL, to: targetURL)
+
+            let loadCommandName = DylibInjection.loadCommandName(for: dylibURL)
+            logger?.log(.INFO, "注入动态库：\(loadCommandName)")
+            try TaskCenter.execute(
+                lanuchPath: optoolPath.path,
+                arguments: [
+                    "install",
+                    "-c",
+                    "load",
+                    "-p",
+                    loadCommandName,
+                    "-t",
+                    executablePath.path
+                ]
+            )
         }
     }
     

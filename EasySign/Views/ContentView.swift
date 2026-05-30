@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 extension Binding where Value == Bool {
     init<T>(value: Binding<T?>) {
@@ -45,6 +46,7 @@ enum CacheKey: String {
     case selectedOutput = "selected_output"
     case selectedResignType = "selected_resign_type"
     case selectedResignBackend = "selected_resign_backend"
+    case selectedInjectedDylibs = "selected_injected_dylibs"
 }
 
 
@@ -69,6 +71,8 @@ class ContentViewModel: ObservableObject, LoggerProtocol {
     @Published var p12Password = ""
 
     @Published var mobileprovisionPath = ""
+
+    @Published var injectedDylibPaths: [String] = []
 
     @Published var resignType: ResignExportType = .dev
 
@@ -233,6 +237,14 @@ struct ResignContentView: View {
     @StateObject var viewModel = ContentViewModel()
     @State var logText = ""
 
+    private var injectedDylibText: Binding<String> {
+        Binding {
+            DylibInjection.displayText(from: viewModel.injectedDylibPaths)
+        } set: { newValue in
+            viewModel.injectedDylibPaths = DylibInjection.paths(from: newValue)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading) {
             InputField(title: "Input File", text: $viewModel.inputFile, selectAction: {
@@ -265,6 +277,22 @@ struct ResignContentView: View {
                     return
                 }
                 viewModel.mobileprovisionPath = selectedUrl.path
+            }
+
+            InputField(title: "Inject Dylibs", text: injectedDylibText, selectAction: {
+                guard let selectedUrls = selectFiles(allowsMultipleSelection: true, allowedExtensions: ["dylib"]) else {
+                    return
+                }
+                viewModel.injectedDylibPaths = selectedUrls.map { $0.path }
+            }) {
+                if !viewModel.injectedDylibPaths.isEmpty {
+                    Button(action: {
+                        viewModel.injectedDylibPaths = []
+                    }) {
+                        Text("Clear")
+                            .padding(.vertical, 3)
+                    }
+                }
             }
 
             HStack {
@@ -318,7 +346,7 @@ struct ResignContentView: View {
                 Text(viewModel.logString)
                     .frame(maxWidth: .infinity)
             }
-            .frame(height: 150)
+            .frame(height: 110)
             .padding(.init(top: 10, leading: 10, bottom: 10, trailing: 10))
             .background(Color.gray.opacity(0.2))
             .cornerRadius(10)
@@ -338,6 +366,7 @@ struct ResignContentView: View {
             viewModel.p12Path = UserDefaults.standard.string(forKey: CacheKey.selectedP12.rawValue) ?? ""
             viewModel.p12Password = UserDefaults.standard.string(forKey: CacheKey.selectedP12Password.rawValue) ?? ""
             viewModel.mobileprovisionPath = UserDefaults.standard.string(forKey: CacheKey.selectedMobileProvision.rawValue) ?? ""
+            viewModel.injectedDylibPaths = UserDefaults.standard.stringArray(forKey: CacheKey.selectedInjectedDylibs.rawValue) ?? []
             viewModel.resignBackend = ResignBackend(rawValue: UserDefaults.standard.string(forKey: CacheKey.selectedResignBackend.rawValue) ?? "") ?? .zsign
             viewModel.resignType = ResignExportType(rawValue: UserDefaults.standard.string(forKey: CacheKey.selectedResignType.rawValue) ?? "") ?? .dev
             viewModel.outputDir = UserDefaults.standard.string(forKey: CacheKey.selectedOutput.rawValue) ?? ""
@@ -354,12 +383,22 @@ struct ResignContentView: View {
 
 
     private func selectFile(isDirectory: Bool = false) -> URL? {
+        selectFiles(isDirectory: isDirectory)?.first
+    }
+
+    private func selectFiles(isDirectory: Bool = false, allowsMultipleSelection: Bool = false, allowedExtensions: [String]? = nil) -> [URL]? {
         let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = allowsMultipleSelection
         panel.canChooseFiles = !isDirectory
         panel.canChooseDirectories = isDirectory
+        if let allowedExtensions {
+            let allowedTypes = allowedExtensions.compactMap { UTType(filenameExtension: $0) }
+            if !allowedTypes.isEmpty {
+                panel.allowedContentTypes = allowedTypes
+            }
+        }
         if panel.runModal() == .OK {
-            return panel.url
+            return panel.urls
         }
         return nil
     }
@@ -394,6 +433,7 @@ struct ResignContentView: View {
         UserDefaults.standard.set(viewModel.p12Path, forKey: CacheKey.selectedP12.rawValue)
         UserDefaults.standard.set(viewModel.p12Password, forKey: CacheKey.selectedP12Password.rawValue)
         UserDefaults.standard.set(viewModel.mobileprovisionPath, forKey: CacheKey.selectedMobileProvision.rawValue)
+        UserDefaults.standard.set(viewModel.injectedDylibPaths, forKey: CacheKey.selectedInjectedDylibs.rawValue)
         UserDefaults.standard.set(viewModel.resignBackend.rawValue, forKey: CacheKey.selectedResignBackend.rawValue)
         UserDefaults.standard.set(viewModel.resignType.rawValue, forKey: CacheKey.selectedResignType.rawValue)
         UserDefaults.standard.set(viewModel.outputDir, forKey: CacheKey.selectedOutput.rawValue)
@@ -406,6 +446,7 @@ struct ResignContentView: View {
             appexResignInfos: nil,
             exportType: viewModel.resignType,
             backend: viewModel.resignBackend,
+            injectedDylibPaths: viewModel.injectedDylibPaths.map { URL(fileURLWithPath: $0) },
             outputPath: URL(fileURLWithPath: viewModel.outputDir).appendingPathComponent(Date.now.formatString(format: "yyyyMMddHHmmss") + ".ipa"),
             bundleId: viewModel.resignSetting?.bundleId,
             displayName: viewModel.resignSetting?.displayName,

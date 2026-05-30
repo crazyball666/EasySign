@@ -19,6 +19,8 @@ static NSString * const ZSignBridgeErrorDomain = @"com.EasySign.zsign";
         _mobileProvisionPath = @"";
         _outputPath = @"";
         _temporaryDirectory = @"";
+        _injectedDylibPaths = @[];
+        _weakInject = NO;
         _zipLevel = 0;
     }
     return self;
@@ -107,6 +109,14 @@ static BOOL ZSignBridgeCopyAppIntoPayload(NSString *inputPath, NSString *archive
     if (options.temporaryDirectory.length == 0) {
         return ZSignBridgeFail(error, @"临时目录为空");
     }
+    for (NSString *dylibPath in options.injectedDylibPaths) {
+        if (![fileManager fileExistsAtPath:dylibPath]) {
+            return ZSignBridgeFail(error, [NSString stringWithFormat:@"注入动态库不存在：%@", dylibPath]);
+        }
+        if (![dylibPath.pathExtension.lowercaseString isEqualToString:@"dylib"]) {
+            return ZSignBridgeFail(error, [NSString stringWithFormat:@"注入文件不是 dylib：%@", dylibPath]);
+        }
+    }
 
     NSString *bridgeWorkspace = [options.temporaryDirectory stringByAppendingPathComponent:@"zsign_bridge"];
     [fileManager removeItemAtPath:bridgeWorkspace error:nil];
@@ -159,6 +169,9 @@ static BOOL ZSignBridgeCopyAppIntoPayload(NSString *inputPath, NSString *archive
 
         ZBundle bundle;
         std::vector<std::string> dylibFiles;
+        for (NSString *dylibPath in options.injectedDylibPaths) {
+            dylibFiles.push_back(ZSignBridgeString(dylibPath));
+        }
         std::vector<std::string> removeDylibNames;
         if (!bundle.SignFolder(&signAsset,
                                ZSignBridgeString(signRootPath),
@@ -168,7 +181,7 @@ static BOOL ZSignBridgeCopyAppIntoPayload(NSString *inputPath, NSString *archive
                                dylibFiles,
                                removeDylibNames,
                                true,
-                               false,
+                               options.weakInject,
                                false,
                                false)) {
             localError = ZSignBridgeMakeError(@"zsign 签名失败");

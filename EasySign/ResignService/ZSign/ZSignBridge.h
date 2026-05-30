@@ -13,6 +13,8 @@ typedef void (^ZSignBridgeLogHandler)(NSInteger level, NSString *message);
 @property (nonatomic, copy, nullable) NSString *entitlementsPath;
 @property (nonatomic, copy) NSString *outputPath;
 @property (nonatomic, copy) NSString *temporaryDirectory;
+@property (nonatomic, copy) NSArray<NSString *> *injectedDylibPaths;
+@property (nonatomic) BOOL weakInject;
 @property (nonatomic) NSInteger zipLevel;
 @property (nonatomic, copy, nullable) ZSignBridgeLogHandler logHandler;
 

@@ -44,6 +44,7 @@ struct ResignTaskInfo {
     var appexResignInfos: [String: AppexResignInfo]?
     var exportType: ResignExportType
     var backend: ResignBackend
+    var injectedDylibPaths: [URL]
     var outputPath: URL
     
     var bundleId: String?
