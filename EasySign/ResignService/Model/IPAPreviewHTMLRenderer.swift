@@ -165,12 +165,16 @@ private extension IPAPreviewHTMLRenderer {
             ("App ID", profile.applicationIdentifier),
             ("创建时间", format(profile.creationDate)),
             ("过期时间", format(profile.expirationDate)),
+            ("过期状态", profile.expirationDate.map(expirationStatus) ?? "-"),
             ("设备数", profile.provisionsAllDevices ? "全部设备" : "\(profile.provisionedDeviceCount)"),
+            ("证书数", "\(profile.certificates.count)"),
+            ("Entitlements", "\(profile.entitlementKeys.count)"),
             ("APS", profile.apsEnvironment ?? "-"),
             ("调试权限", profile.getTaskAllow.map { $0 ? "YES" : "NO" } ?? "-")
         ]
 
         return section("描述文件", rows: rows) +
+            listSection("设备列表", values: deviceValues(profile)) +
             listSection("签名证书", values: profile.certificates.map(certificateDescription)) +
             listSection("Entitlements", values: profile.entitlementKeys)
     }
@@ -206,8 +210,17 @@ private extension IPAPreviewHTMLRenderer {
 
     static func certificateDescription(_ certificate: IPAPreviewCertificate) -> String {
         var parts = [certificate.commonName]
+        if !certificate.organization.isEmpty {
+            parts.append(certificate.organization)
+        }
+        if !certificate.countryName.isEmpty {
+            parts.append(certificate.countryName)
+        }
         if !certificate.teamIdentifier.isEmpty {
             parts.append("Team ID: \(certificate.teamIdentifier)")
+        }
+        if let notBefore = certificate.notBefore {
+            parts.append("生效: \(format(notBefore))")
         }
         if let notAfter = certificate.notAfter {
             parts.append("过期: \(format(notAfter))")
@@ -216,6 +229,17 @@ private extension IPAPreviewHTMLRenderer {
             parts.append("SHA1: \(certificate.sha1Fingerprint)")
         }
         return parts.filter { !$0.isEmpty }.joined(separator: "  ")
+    }
+
+    static func deviceValues(_ profile: IPAPreviewProvisioningProfile) -> [String] {
+        if profile.provisionsAllDevices {
+            return ["全部设备"]
+        }
+        return profile.provisionedDevices
+    }
+
+    static func expirationStatus(_ date: Date) -> String {
+        date < Date() ? "已过期" : "有效至 \(format(date))"
     }
 
     static func format(_ date: Date?) -> String {

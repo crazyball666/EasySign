@@ -14,7 +14,7 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
     override func loadView() {
         let rootView = NSView()
         rootView.wantsLayer = true
-        rootView.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+        rootView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.drawsBackground = false
@@ -178,18 +178,27 @@ private extension PreviewViewController {
             ("UUID", profile.uuid),
             ("创建时间", format(profile.creationDate)),
             ("过期时间", format(profile.expirationDate)),
+            ("过期状态", profile.expirationDate.map(expirationStatus) ?? "-"),
             ("设备数", profile.provisionsAllDevices ? "全部设备" : "\(profile.provisionedDeviceCount)"),
+            ("证书数", "\(profile.certificates.count)"),
+            ("Entitlements", "\(profile.entitlementKeys.count)"),
             ("APS", profile.apsEnvironment ?? "-"),
             ("调试权限", profile.getTaskAllow.map { $0 ? "YES" : "NO" } ?? "-")
         ]
 
-        let card = sectionCard(title: "描述文件", rows: rows)
-        let stack = card.subviews.compactMap { $0 as? NSStackView }.first
-        if let stack {
-            addFullWidth(separator(), to: stack)
-            addFullWidth(listBlock(title: "签名证书", values: profile.certificates.map(certificateDescription)), to: stack)
-            addFullWidth(listBlock(title: "Entitlements", values: profile.entitlementKeys, monospaced: true), to: stack)
+        let card = cardContainer()
+        let stack = cardStack(title: "描述文件")
+        card.addSubview(stack)
+        pin(stack, to: card, inset: 18)
+
+        addFullWidth(profileSummaryBadges(profile), to: stack)
+        for row in rows {
+            addFullWidth(keyValueRow(row.0, row.1.isEmpty ? "-" : row.1), to: stack)
         }
+        addFullWidth(separator(), to: stack)
+        addFullWidth(listBlock(title: "设备列表", values: deviceValues(profile), monospaced: true), to: stack)
+        addFullWidth(listBlock(title: "签名证书", values: profile.certificates.map(certificateDescription)), to: stack)
+        addFullWidth(listBlock(title: "Entitlements", values: profile.entitlementKeys, monospaced: true), to: stack)
         return card
     }
 
@@ -223,10 +232,14 @@ private extension PreviewViewController {
         let view = NSView()
         view.translatesAutoresizingMaskIntoConstraints = false
         view.wantsLayer = true
-        view.layer?.cornerRadius = 14
-        view.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        view.layer?.cornerRadius = 16
+        view.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
         view.layer?.borderWidth = 1
-        view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+        view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.28).cgColor
+        view.layer?.shadowColor = NSColor.black.withAlphaComponent(0.10).cgColor
+        view.layer?.shadowOpacity = 1
+        view.layer?.shadowOffset = CGSize(width: 0, height: -1)
+        view.layer?.shadowRadius = 8
         return view
     }
 
@@ -292,6 +305,26 @@ private extension PreviewViewController {
         return stack
     }
 
+    func profileSummaryBadges(_ profile: IPAPreviewProvisioningProfile) -> NSView {
+        let row = NSStackView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.orientation = .horizontal
+        row.alignment = .leading
+        row.spacing = 8
+        row.addArrangedSubview(badge(profile.profileType, tint: .systemIndigo))
+        row.addArrangedSubview(badge("Team \(profile.teamIdentifier.isEmpty ? "-" : profile.teamIdentifier)", tint: .systemGreen))
+        row.addArrangedSubview(badge(deviceSummary(profile), tint: .systemBlue))
+        row.addArrangedSubview(badge(profile.expirationDate.map(expirationStatus) ?? "有效期未知", tint: expirationTint(profile.expirationDate)))
+        return row
+    }
+
+    func deviceValues(_ profile: IPAPreviewProvisioningProfile) -> [String] {
+        if profile.provisionsAllDevices {
+            return ["全部设备"]
+        }
+        return profile.provisionedDevices
+    }
+
     func badge(_ text: String, tint: NSColor) -> NSView {
         let label = label(text.isEmpty ? "-" : text, font: .systemFont(ofSize: 12, weight: .semibold), color: tint)
         label.maximumNumberOfLines = 1
@@ -350,8 +383,17 @@ private extension PreviewViewController {
 
     func certificateDescription(_ certificate: IPAPreviewCertificate) -> String {
         var parts = [certificate.commonName]
+        if !certificate.organization.isEmpty {
+            parts.append(certificate.organization)
+        }
+        if !certificate.countryName.isEmpty {
+            parts.append(certificate.countryName)
+        }
         if !certificate.teamIdentifier.isEmpty {
             parts.append("Team ID: \(certificate.teamIdentifier)")
+        }
+        if let notBefore = certificate.notBefore {
+            parts.append("生效: \(format(notBefore))")
         }
         if let notAfter = certificate.notAfter {
             parts.append("过期: \(format(notAfter))")
@@ -360,6 +402,24 @@ private extension PreviewViewController {
             parts.append("SHA1: \(certificate.sha1Fingerprint)")
         }
         return parts.filter { !$0.isEmpty }.joined(separator: "  ")
+    }
+
+    func deviceSummary(_ profile: IPAPreviewProvisioningProfile) -> String {
+        if profile.provisionsAllDevices {
+            return "全部设备"
+        }
+        return "\(profile.provisionedDeviceCount) 台设备"
+    }
+
+    func expirationStatus(_ date: Date) -> String {
+        date < Date() ? "已过期" : "有效至 \(format(date))"
+    }
+
+    func expirationTint(_ date: Date?) -> NSColor {
+        guard let date else {
+            return .systemGray
+        }
+        return date < Date() ? .systemRed : .systemOrange
     }
 
     func format(_ date: Date?) -> String {

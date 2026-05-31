@@ -26,6 +26,7 @@ struct IPAPreviewProvisioningProfile: Equatable {
     let creationDate: Date?
     let expirationDate: Date?
     let provisionedDeviceCount: Int
+    let provisionedDevices: [String]
     let provisionsAllDevices: Bool
     let apsEnvironment: String?
     let getTaskAllow: Bool?
@@ -437,6 +438,7 @@ private extension IPAPreviewService {
             creationDate: plist["CreationDate"] as? Date,
             expirationDate: plist["ExpirationDate"] as? Date,
             provisionedDeviceCount: provisionedDevices?.count ?? 0,
+            provisionedDevices: provisionedDevices?.sorted() ?? [],
             provisionsAllDevices: provisionsAllDevices,
             apsEnvironment: entitlements["aps-environment"] as? String,
             getTaskAllow: getTaskAllow,

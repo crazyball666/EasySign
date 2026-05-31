@@ -54,6 +54,8 @@ rg -n "addFullWidth" "$EXT_PROVIDER" >/dev/null
 rg -n "textField\\.alignment = \\.left" "$EXT_PROVIDER" >/dev/null
 ! rg -n "stack\\.alignment = \\.width" "$EXT_PROVIDER" >/dev/null
 ! rg -n "NSGridView|keyLabel\\.alignment = \\.right" "$EXT_PROVIDER" >/dev/null
+rg -n "设备列表" "$EXT_PROVIDER" >/dev/null
+rg -n "profile\\.provisionedDevices" "$EXT_PROVIDER" >/dev/null
 rg -n "static func html\\(for info: IPAPreviewInfo\\)" "$HTML_RENDERER" >/dev/null
 ! rg -n "/usr/bin/(unzip|security)" "$PREVIEW_SERVICE" >/dev/null
 ! rg -n "Process\\(" "$PREVIEW_SERVICE" >/dev/null
