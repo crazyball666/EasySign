@@ -161,7 +161,7 @@ private extension PreviewViewController {
             ("最低系统", info.minimumOSVersion ?? "-"),
             ("可执行文件", info.executableName ?? "-")
         ]
-        return sectionCard(title: "基础信息", rows: rows, columns: 2)
+        return sectionCard(title: "基础信息", rows: rows)
     }
 
     func provisioningCard(_ profile: IPAPreviewProvisioningProfile?) -> NSView {
@@ -183,12 +183,12 @@ private extension PreviewViewController {
             ("调试权限", profile.getTaskAllow.map { $0 ? "YES" : "NO" } ?? "-")
         ]
 
-        let card = sectionCard(title: "描述文件", rows: rows, columns: 2)
+        let card = sectionCard(title: "描述文件", rows: rows)
         let stack = card.subviews.compactMap { $0 as? NSStackView }.first
         if let stack {
-            stack.addArrangedSubview(separator())
-            stack.addArrangedSubview(listBlock(title: "签名证书", values: profile.certificates.map(certificateDescription)))
-            stack.addArrangedSubview(listBlock(title: "Entitlements", values: profile.entitlementKeys, monospaced: true))
+            addFullWidth(separator(), to: stack)
+            addFullWidth(listBlock(title: "签名证书", values: profile.certificates.map(certificateDescription)), to: stack)
+            addFullWidth(listBlock(title: "Entitlements", values: profile.entitlementKeys, monospaced: true), to: stack)
         }
         return card
     }
@@ -200,36 +200,20 @@ private extension PreviewViewController {
         pin(stack, to: card, inset: 18)
 
         for row in rows {
-            stack.addArrangedSubview(listBlock(title: row.0, values: row.1, monospaced: row.0 != "App Extension"))
+            addFullWidth(listBlock(title: row.0, values: row.1, monospaced: row.0 != "App Extension"), to: stack)
         }
 
         return card
     }
 
-    func sectionCard(title: String, rows: [(String, String)], columns: Int = 1) -> NSView {
+    func sectionCard(title: String, rows: [(String, String)]) -> NSView {
         let card = cardContainer()
         let stack = cardStack(title: title)
         card.addSubview(stack)
         pin(stack, to: card, inset: 18)
 
-        if columns == 2 {
-            let grid = NSGridView(views: rows.map { row in
-                let key = label(row.0, font: .systemFont(ofSize: 12, weight: .medium), color: .tertiaryLabelColor)
-                key.maximumNumberOfLines = 1
-                let value = label(row.1.isEmpty ? "-" : row.1, font: .systemFont(ofSize: 13, weight: .medium), color: .labelColor)
-                return [key, value]
-            })
-            grid.translatesAutoresizingMaskIntoConstraints = false
-            grid.rowSpacing = 8
-            grid.columnSpacing = 12
-            grid.xPlacement = .leading
-            grid.column(at: 0).xPlacement = .trailing
-            grid.column(at: 0).width = 82
-            stack.addArrangedSubview(grid)
-        } else {
-            for row in rows {
-                stack.addArrangedSubview(keyValueRow(row.0, row.1.isEmpty ? "-" : row.1))
-            }
+        for row in rows {
+            addFullWidth(keyValueRow(row.0, row.1.isEmpty ? "-" : row.1), to: stack)
         }
 
         return card
@@ -250,10 +234,11 @@ private extension PreviewViewController {
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
-        stack.alignment = .width
+        stack.alignment = .leading
         stack.distribution = .fill
         stack.spacing = 12
-        stack.addArrangedSubview(label(title, font: .systemFont(ofSize: 16, weight: .semibold), color: .labelColor))
+        let titleLabel = label(title, font: .systemFont(ofSize: 16, weight: .semibold), color: .labelColor)
+        addFullWidth(titleLabel, to: stack)
         return stack
     }
 
@@ -262,7 +247,6 @@ private extension PreviewViewController {
         row.translatesAutoresizingMaskIntoConstraints = false
 
         let keyLabel = label(key, font: .systemFont(ofSize: 12, weight: .medium), color: .tertiaryLabelColor)
-        keyLabel.alignment = .right
         keyLabel.maximumNumberOfLines = 1
         keyLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -292,17 +276,17 @@ private extension PreviewViewController {
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
-        stack.alignment = .width
+        stack.alignment = .leading
         stack.spacing = 6
-        stack.addArrangedSubview(label(title, font: .systemFont(ofSize: 12, weight: .medium), color: .tertiaryLabelColor))
+        addFullWidth(label(title, font: .systemFont(ofSize: 12, weight: .medium), color: .tertiaryLabelColor), to: stack)
 
         let displayValues = values.isEmpty ? ["无"] : values
         for value in displayValues {
-            stack.addArrangedSubview(label(
+            addFullWidth(label(
                 value,
                 font: monospaced ? .monospacedSystemFont(ofSize: 12, weight: .regular) : .systemFont(ofSize: 13),
                 color: .labelColor
-            ))
+            ), to: stack)
         }
 
         return stack
@@ -338,13 +322,21 @@ private extension PreviewViewController {
 
     func label(_ text: String, font: NSFont, color: NSColor) -> NSTextField {
         let textField = NSTextField(labelWithString: text)
+        textField.translatesAutoresizingMaskIntoConstraints = false
         textField.font = font
         textField.textColor = color
+        textField.alignment = .left
         textField.lineBreakMode = .byTruncatingMiddle
         textField.maximumNumberOfLines = 2
         textField.isSelectable = true
         textField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return textField
+    }
+
+    func addFullWidth(_ view: NSView, to stack: NSStackView) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(view)
+        view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
     }
 
     func pin(_ child: NSView, to parent: NSView, inset: CGFloat) {
