@@ -5,6 +5,7 @@
 
 import AppKit
 import CoreImage
+import Darwin
 import Foundation
 
 struct QRCodeScreenScanResult: Equatable {
@@ -114,9 +115,9 @@ enum QRCodeService {
     }
 
     static func scanScreen() -> QRCodeScreenScanResult {
-        let captureURL = FileManager.default.temporaryDirectory
+        let captureURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("easysign-qrcode-\(UUID().uuidString).png")
-        defer { try? FileManager.default.removeItem(at: captureURL) }
+        defer { unlink(captureURL.path) }
 
         do {
             try runProcess("/usr/sbin/screencapture", arguments: ["-x", "-t", "png", captureURL.path])
@@ -124,9 +125,14 @@ enum QRCodeService {
             return QRCodeScreenScanResult(codes: [], message: "截取屏幕失败，请确认已授权屏幕录制权限")
         }
 
-        guard let image = NSImage(contentsOf: captureURL),
-              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        else {
+        guard let image = NSImage(contentsOf: captureURL) else {
+            return QRCodeScreenScanResult(codes: [], message: "读取屏幕截图失败")
+        }
+
+        var imageRect = NSRect(origin: .zero, size: image.size)
+        let context: NSGraphicsContext? = nil
+        let hints: [NSImageRep.HintKey: Any]? = nil
+        guard let cgImage = image.cgImage(forProposedRect: &imageRect, context: context, hints: hints) else {
             return QRCodeScreenScanResult(codes: [], message: "读取屏幕截图失败")
         }
 
