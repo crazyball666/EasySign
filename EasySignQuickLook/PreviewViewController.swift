@@ -9,12 +9,12 @@ import Quartz
 final class PreviewViewController: NSViewController, QLPreviewingController {
     private let scrollView = NSScrollView()
     private let contentView = NSView()
-    private let stackView = NSStackView()
+    private let contentStack = NSStackView()
 
     override func loadView() {
         let rootView = NSView()
         rootView.wantsLayer = true
-        rootView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        rootView.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.drawsBackground = false
@@ -22,13 +22,14 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
         scrollView.borderType = .noBorder
 
         contentView.translatesAutoresizingMaskIntoConstraints = false
-        stackView.translatesAutoresizingMaskIntoConstraints = false
-        stackView.orientation = .vertical
-        stackView.alignment = .width
-        stackView.spacing = 18
-        stackView.edgeInsets = NSEdgeInsets(top: 26, left: 26, bottom: 26, right: 26)
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.orientation = .vertical
+        contentStack.alignment = .width
+        contentStack.distribution = .fill
+        contentStack.spacing = 14
+        contentStack.edgeInsets = NSEdgeInsets(top: 28, left: 34, bottom: 28, right: 34)
 
-        contentView.addSubview(stackView)
+        contentView.addSubview(contentStack)
         scrollView.documentView = contentView
         rootView.addSubview(scrollView)
 
@@ -43,14 +44,14 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
             contentView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
             contentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
 
-            stackView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            stackView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            stackView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            stackView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+            contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            contentStack.topAnchor.constraint(equalTo: contentView.topAnchor),
+            contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
         ])
 
         view = rootView
-        preferredContentSize = NSSize(width: 680, height: 760)
+        preferredContentSize = NSSize(width: 760, height: 820)
     }
 
     func preparePreviewOfFile(at url: URL) async throws {
@@ -59,7 +60,7 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
 
         await MainActor.run {
             self.title = title
-            self.preferredContentSize = NSSize(width: 680, height: 760)
+            self.preferredContentSize = NSSize(width: 760, height: 820)
             self.render(info: info)
         }
     }
@@ -67,83 +68,110 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
 
 private extension PreviewViewController {
     func render(info: IPAPreviewInfo) {
-        stackView.arrangedSubviews.forEach { subview in
-            stackView.removeArrangedSubview(subview)
+        contentStack.arrangedSubviews.forEach { subview in
+            contentStack.removeArrangedSubview(subview)
             subview.removeFromSuperview()
         }
 
-        stackView.addArrangedSubview(headerView(info: info))
-        stackView.addArrangedSubview(sectionView(title: "基础信息", rows: [
+        contentStack.addArrangedSubview(headerCard(info: info))
+        contentStack.addArrangedSubview(summaryGrid(info: info))
+        contentStack.addArrangedSubview(sectionCard(title: "签名信息", rows: [
+            ("状态", info.signingDescription),
+            ("CodeResources", info.codeSignature.codeResourcesPath ?? "未发现")
+        ]))
+        contentStack.addArrangedSubview(provisioningCard(info.provisioningProfile))
+        contentStack.addArrangedSubview(listCard(title: "组件", rows: [
+            ("App Extension", info.appexes.map { "\($0.name.isEmpty ? $0.bundleIdentifier : $0.name)  \($0.bundleIdentifier)" }),
+            ("Frameworks", info.frameworks),
+            ("动态库", info.dynamicLibraries)
+        ]))
+    }
+
+    func headerCard(info: IPAPreviewInfo) -> NSView {
+        let card = cardContainer()
+        let iconView = NSImageView()
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.wantsLayer = true
+        iconView.layer?.cornerRadius = 18
+        iconView.layer?.masksToBounds = true
+        iconView.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        iconView.image = info.iconData.flatMap(NSImage.init(data:)) ?? NSImage(named: NSImage.applicationIconName)
+
+        let titleStack = NSStackView()
+        titleStack.translatesAutoresizingMaskIntoConstraints = false
+        titleStack.orientation = .vertical
+        titleStack.alignment = .leading
+        titleStack.spacing = 7
+
+        titleStack.addArrangedSubview(label(
+            info.appName.isEmpty ? info.fileName : info.appName,
+            font: .systemFont(ofSize: 28, weight: .semibold),
+            color: .labelColor
+        ))
+        titleStack.addArrangedSubview(label(
+            info.bundleIdentifier.isEmpty ? "未读取到 Bundle ID" : info.bundleIdentifier,
+            font: .systemFont(ofSize: 14, weight: .medium),
+            color: .secondaryLabelColor
+        ))
+
+        let badgeRow = NSStackView()
+        badgeRow.orientation = .horizontal
+        badgeRow.alignment = .centerY
+        badgeRow.spacing = 8
+        badgeRow.addArrangedSubview(badge(info.versionDescription, tint: .systemBlue))
+        if let teamId = info.provisioningProfile?.teamIdentifier, !teamId.isEmpty {
+            badgeRow.addArrangedSubview(badge("Team \(teamId)", tint: .systemGreen))
+        }
+        if let profileType = info.provisioningProfile?.profileType, !profileType.isEmpty {
+            badgeRow.addArrangedSubview(badge(profileType, tint: .systemIndigo))
+        }
+        titleStack.addArrangedSubview(badgeRow)
+
+        card.addSubview(iconView)
+        card.addSubview(titleStack)
+
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 22),
+            iconView.topAnchor.constraint(equalTo: card.topAnchor, constant: 22),
+            iconView.widthAnchor.constraint(equalToConstant: 82),
+            iconView.heightAnchor.constraint(equalToConstant: 82),
+
+            titleStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 18),
+            titleStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -22),
+            titleStack.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
+            titleStack.topAnchor.constraint(greaterThanOrEqualTo: card.topAnchor, constant: 18),
+            card.bottomAnchor.constraint(greaterThanOrEqualTo: iconView.bottomAnchor, constant: 22),
+            card.bottomAnchor.constraint(greaterThanOrEqualTo: titleStack.bottomAnchor, constant: 22)
+        ])
+
+        return card
+    }
+
+    func summaryGrid(info: IPAPreviewInfo) -> NSView {
+        let rows: [(String, String)] = [
             ("文件", info.fileName),
             ("App 目录", info.appDirectoryName),
             ("Bundle ID", info.bundleIdentifier),
             ("版本", info.versionDescription),
             ("最低系统", info.minimumOSVersion ?? "-"),
             ("可执行文件", info.executableName ?? "-")
-        ]))
-        stackView.addArrangedSubview(sectionView(title: "签名信息", rows: [
-            ("签名状态", info.signingDescription),
-            ("CodeResources", info.codeSignature.codeResourcesPath ?? "未发现")
-        ]))
-        stackView.addArrangedSubview(provisioningSection(info.provisioningProfile))
-        stackView.addArrangedSubview(listSection(title: "App Extension", values: info.appexes.map {
-            "\($0.name.isEmpty ? $0.bundleIdentifier : $0.name)  \($0.bundleIdentifier)"
-        }))
-        stackView.addArrangedSubview(listSection(title: "Frameworks", values: info.frameworks))
-        stackView.addArrangedSubview(listSection(title: "动态库", values: info.dynamicLibraries))
+        ]
+        return sectionCard(title: "基础信息", rows: rows, columns: 2)
     }
 
-    func headerView(info: IPAPreviewInfo) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 16
-
-        let iconView = NSImageView()
-        iconView.imageScaling = .scaleProportionallyUpOrDown
-        iconView.wantsLayer = true
-        iconView.layer?.cornerRadius = 16
-        iconView.layer?.masksToBounds = true
-        iconView.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        iconView.image = info.iconData.flatMap(NSImage.init(data:)) ?? NSImage(named: NSImage.applicationIconName)
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            iconView.widthAnchor.constraint(equalToConstant: 72),
-            iconView.heightAnchor.constraint(equalToConstant: 72)
-        ])
-
-        let textStack = NSStackView()
-        textStack.orientation = .vertical
-        textStack.alignment = .leading
-        textStack.spacing = 5
-        textStack.addArrangedSubview(label(
-            info.appName.isEmpty ? info.fileName : info.appName,
-            font: .systemFont(ofSize: 24, weight: .semibold),
-            color: .labelColor
-        ))
-        textStack.addArrangedSubview(label(
-            info.bundleIdentifier.isEmpty ? "未读取到 Bundle ID" : info.bundleIdentifier,
-            font: .systemFont(ofSize: 13),
-            color: .secondaryLabelColor
-        ))
-
-        row.addArrangedSubview(iconView)
-        row.addArrangedSubview(textStack)
-        return row
-    }
-
-    func provisioningSection(_ profile: IPAPreviewProvisioningProfile?) -> NSView {
+    func provisioningCard(_ profile: IPAPreviewProvisioningProfile?) -> NSView {
         guard let profile else {
-            return sectionView(title: "描述文件", rows: [("状态", "未内嵌描述文件")])
+            return sectionCard(title: "描述文件", rows: [("状态", "未内嵌描述文件")])
         }
 
         let rows: [(String, String)] = [
             ("名称", profile.name),
             ("类型", profile.profileType),
-            ("UUID", profile.uuid),
             ("Team Name", profile.teamName),
             ("Team ID", profile.teamIdentifier),
             ("App ID", profile.applicationIdentifier),
+            ("UUID", profile.uuid),
             ("创建时间", format(profile.creationDate)),
             ("过期时间", format(profile.expirationDate)),
             ("设备数", profile.provisionsAllDevices ? "全部设备" : "\(profile.provisionedDeviceCount)"),
@@ -151,70 +179,177 @@ private extension PreviewViewController {
             ("调试权限", profile.getTaskAllow.map { $0 ? "YES" : "NO" } ?? "-")
         ]
 
+        let card = sectionCard(title: "描述文件", rows: rows, columns: 2)
+        let stack = card.subviews.compactMap { $0 as? NSStackView }.first
+        if let stack {
+            stack.addArrangedSubview(separator())
+            stack.addArrangedSubview(listBlock(title: "签名证书", values: profile.certificates.map(certificateDescription)))
+            stack.addArrangedSubview(listBlock(title: "Entitlements", values: profile.entitlementKeys, monospaced: true))
+        }
+        return card
+    }
+
+    func listCard(title: String, rows: [(String, [String])]) -> NSView {
+        let card = cardContainer()
+        let stack = cardStack(title: title)
+        card.addSubview(stack)
+        pin(stack, to: card, inset: 18)
+
+        for row in rows {
+            stack.addArrangedSubview(listBlock(title: row.0, values: row.1, monospaced: row.0 != "App Extension"))
+        }
+
+        return card
+    }
+
+    func sectionCard(title: String, rows: [(String, String)], columns: Int = 1) -> NSView {
+        let card = cardContainer()
+        let stack = cardStack(title: title)
+        card.addSubview(stack)
+        pin(stack, to: card, inset: 18)
+
+        if columns == 2 {
+            let grid = NSGridView(views: rows.map { row in
+                let key = label(row.0, font: .systemFont(ofSize: 12, weight: .medium), color: .tertiaryLabelColor)
+                key.maximumNumberOfLines = 1
+                let value = label(row.1.isEmpty ? "-" : row.1, font: .systemFont(ofSize: 13, weight: .medium), color: .labelColor)
+                return [key, value]
+            })
+            grid.translatesAutoresizingMaskIntoConstraints = false
+            grid.rowSpacing = 8
+            grid.columnSpacing = 12
+            grid.xPlacement = .leading
+            grid.column(at: 0).xPlacement = .trailing
+            grid.column(at: 0).width = 82
+            stack.addArrangedSubview(grid)
+        } else {
+            for row in rows {
+                stack.addArrangedSubview(keyValueRow(row.0, row.1.isEmpty ? "-" : row.1))
+            }
+        }
+
+        return card
+    }
+
+    func cardContainer() -> NSView {
+        let view = NSView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.wantsLayer = true
+        view.layer?.cornerRadius = 14
+        view.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        view.layer?.borderWidth = 1
+        view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+        return view
+    }
+
+    func cardStack(title: String) -> NSStackView {
         let stack = NSStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .width
-        stack.spacing = 14
-        stack.addArrangedSubview(sectionView(title: "描述文件", rows: rows))
-        stack.addArrangedSubview(listSection(title: "签名证书", values: profile.certificates.map(certificateDescription)))
-        stack.addArrangedSubview(listSection(title: "Entitlements", values: profile.entitlementKeys))
+        stack.distribution = .fill
+        stack.spacing = 12
+        stack.addArrangedSubview(label(title, font: .systemFont(ofSize: 16, weight: .semibold), color: .labelColor))
         return stack
     }
 
-    func sectionView(title: String, rows: [(String, String)]) -> NSView {
-        let container = NSStackView()
-        container.orientation = .vertical
-        container.alignment = .width
-        container.spacing = 8
-        container.addArrangedSubview(separator())
-        container.addArrangedSubview(label(title, font: .systemFont(ofSize: 15, weight: .semibold), color: .labelColor))
+    func keyValueRow(_ key: String, _ value: String) -> NSView {
+        let row = NSView()
+        row.translatesAutoresizingMaskIntoConstraints = false
 
-        for row in rows {
-            container.addArrangedSubview(rowView(name: row.0, value: row.1.isEmpty ? "-" : row.1))
-        }
+        let keyLabel = label(key, font: .systemFont(ofSize: 12, weight: .medium), color: .tertiaryLabelColor)
+        keyLabel.alignment = .right
+        keyLabel.maximumNumberOfLines = 1
+        keyLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        return container
-    }
+        let valueLabel = label(value, font: .systemFont(ofSize: 13, weight: .regular), color: .labelColor)
+        valueLabel.translatesAutoresizingMaskIntoConstraints = false
 
-    func listSection(title: String, values: [String]) -> NSView {
-        let rows = values.isEmpty ? [(" ", "无")] : values.map { (" ", $0) }
-        return sectionView(title: title, rows: rows)
-    }
+        row.addSubview(keyLabel)
+        row.addSubview(valueLabel)
 
-    func rowView(name: String, value: String) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .firstBaseline
-        row.spacing = 14
+        NSLayoutConstraint.activate([
+            keyLabel.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+            keyLabel.topAnchor.constraint(equalTo: row.topAnchor, constant: 1),
+            keyLabel.widthAnchor.constraint(equalToConstant: 112),
 
-        let nameLabel = label(name, font: .systemFont(ofSize: 13, weight: .semibold), color: .secondaryLabelColor)
-        nameLabel.alignment = .right
-        nameLabel.translatesAutoresizingMaskIntoConstraints = false
-        nameLabel.widthAnchor.constraint(equalToConstant: 118).isActive = true
+            valueLabel.leadingAnchor.constraint(equalTo: keyLabel.trailingAnchor, constant: 14),
+            valueLabel.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+            valueLabel.topAnchor.constraint(equalTo: row.topAnchor),
 
-        let valueLabel = label(value, font: .systemFont(ofSize: 13), color: .labelColor)
-        valueLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        valueLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            row.bottomAnchor.constraint(greaterThanOrEqualTo: keyLabel.bottomAnchor),
+            row.bottomAnchor.constraint(equalTo: valueLabel.bottomAnchor)
+        ])
 
-        row.addArrangedSubview(nameLabel)
-        row.addArrangedSubview(valueLabel)
         return row
     }
 
-    func label(_ text: String, font: NSFont, color: NSColor) -> NSTextField {
-        let textField = NSTextField(labelWithString: text)
-        textField.font = font
-        textField.textColor = color
-        textField.lineBreakMode = .byWordWrapping
-        textField.maximumNumberOfLines = 0
-        textField.isSelectable = true
-        return textField
+    func listBlock(title: String, values: [String], monospaced: Bool = false) -> NSView {
+        let stack = NSStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = 6
+        stack.addArrangedSubview(label(title, font: .systemFont(ofSize: 12, weight: .medium), color: .tertiaryLabelColor))
+
+        let displayValues = values.isEmpty ? ["无"] : values
+        for value in displayValues {
+            stack.addArrangedSubview(label(
+                value,
+                font: monospaced ? .monospacedSystemFont(ofSize: 12, weight: .regular) : .systemFont(ofSize: 13),
+                color: .labelColor
+            ))
+        }
+
+        return stack
+    }
+
+    func badge(_ text: String, tint: NSColor) -> NSView {
+        let label = label(text.isEmpty ? "-" : text, font: .systemFont(ofSize: 12, weight: .semibold), color: tint)
+        label.maximumNumberOfLines = 1
+
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 8
+        container.layer?.backgroundColor = tint.withAlphaComponent(0.12).cgColor
+        container.addSubview(label)
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 9),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -9),
+            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 4),
+            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -4)
+        ])
+
+        return container
     }
 
     func separator() -> NSView {
         let view = NSBox()
         view.boxType = .separator
         return view
+    }
+
+    func label(_ text: String, font: NSFont, color: NSColor) -> NSTextField {
+        let textField = NSTextField(labelWithString: text)
+        textField.font = font
+        textField.textColor = color
+        textField.lineBreakMode = .byTruncatingMiddle
+        textField.maximumNumberOfLines = 2
+        textField.isSelectable = true
+        textField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return textField
+    }
+
+    func pin(_ child: NSView, to parent: NSView, inset: CGFloat) {
+        NSLayoutConstraint.activate([
+            child.leadingAnchor.constraint(equalTo: parent.leadingAnchor, constant: inset),
+            child.trailingAnchor.constraint(equalTo: parent.trailingAnchor, constant: -inset),
+            child.topAnchor.constraint(equalTo: parent.topAnchor, constant: inset),
+            child.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -inset)
+        ])
     }
 
     func certificateDescription(_ certificate: IPAPreviewCertificate) -> String {
