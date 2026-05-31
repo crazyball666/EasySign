@@ -3,6 +3,7 @@
 //  EasySign
 //
 
+import Compression
 import CryptoKit
 import Foundation
 import Security
@@ -104,6 +105,9 @@ enum IPAPreviewError: LocalizedError {
     case missingAppBundle
     case missingInfoPlist
     case invalidInfoPlist
+    case invalidArchive
+    case missingArchiveEntry(String)
+    case unsupportedCompressionMethod(UInt16)
     case commandFailed(String)
 
     var errorDescription: String? {
@@ -116,6 +120,12 @@ enum IPAPreviewError: LocalizedError {
             return "找不到 App 的 Info.plist"
         case .invalidInfoPlist:
             return "Info.plist 格式异常"
+        case .invalidArchive:
+            return "IPA/ZIP 文件结构异常"
+        case .missingArchiveEntry(let entry):
+            return "IPA/ZIP 中找不到 \(entry)"
+        case .unsupportedCompressionMethod(let method):
+            return "暂不支持 ZIP 压缩方式 \(method)"
         case .commandFailed(let message):
             return message
         }
@@ -143,17 +153,18 @@ final class IPAPreviewService {
 
 private extension IPAPreviewService {
     func previewArchive(_ archiveURL: URL) throws -> IPAPreviewInfo {
-        let entries = try listArchiveEntries(archiveURL)
+        let archive = try ZIPArchiveReader(url: archiveURL)
+        let entries = archive.entryNames()
         guard let infoEntry = entries.first(where: { isAppInfoEntry($0) }) else {
             throw IPAPreviewError.missingAppBundle
         }
 
         let appPrefix = String(infoEntry.dropLast("Info.plist".count))
         let appDirectoryName = appDirectoryName(fromArchivePrefix: appPrefix)
-        let info = try appInfo(from: try extractArchiveEntry(infoEntry, from: archiveURL))
-        let embeddedProfile = try archiveProvisioningProfile(archiveURL: archiveURL, entries: entries, appPrefix: appPrefix)
-        let appexes = try archiveAppexes(archiveURL: archiveURL, entries: entries, appPrefix: appPrefix)
-        let iconData = try archiveIconData(archiveURL: archiveURL, entries: entries, appPrefix: appPrefix, info: info)
+        let info = try appInfo(from: try archive.data(for: infoEntry))
+        let embeddedProfile = try archiveProvisioningProfile(archive: archive, entries: entries, appPrefix: appPrefix)
+        let appexes = try archiveAppexes(archive: archive, entries: entries, appPrefix: appPrefix)
+        let iconData = try archiveIconData(archive: archive, entries: entries, appPrefix: appPrefix, info: info)
         let codeSignature = archiveCodeSignature(entries: entries, appPrefix: appPrefix)
 
         return IPAPreviewInfo(
@@ -228,17 +239,6 @@ private extension IPAPreviewService {
 }
 
 private extension IPAPreviewService {
-    func listArchiveEntries(_ archiveURL: URL) throws -> [String] {
-        let data = try runProcess("/usr/bin/unzip", arguments: ["-Z1", archiveURL.path])
-        return String(decoding: data, as: UTF8.self)
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-    }
-
-    func extractArchiveEntry(_ entry: String, from archiveURL: URL) throws -> Data {
-        try runProcess("/usr/bin/unzip", arguments: ["-p", archiveURL.path, entry])
-    }
-
     func isAppInfoEntry(_ entry: String) -> Bool {
         entry.range(of: #"^Payload/[^/]+\.app/Info\.plist$"#, options: .regularExpression) != nil
     }
@@ -247,30 +247,30 @@ private extension IPAPreviewService {
         appPrefix.split(separator: "/").first(where: { $0.hasSuffix(".app") }).map(String.init) ?? ""
     }
 
-    func archiveAppexes(archiveURL: URL, entries: [String], appPrefix: String) throws -> [IPAPreviewEmbeddedBundle] {
+    func archiveAppexes(archive: ZIPArchiveReader, entries: [String], appPrefix: String) throws -> [IPAPreviewEmbeddedBundle] {
         let infoEntries = entries
             .filter { $0.hasPrefix(appPrefix + "PlugIns/") && $0.hasSuffix(".appex/Info.plist") }
             .sorted()
 
         return try infoEntries.map { entry in
-            let info = try appInfo(from: extractArchiveEntry(entry, from: archiveURL))
+            let info = try appInfo(from: archive.data(for: entry))
             return embeddedBundle(from: info)
         }
     }
 
-    func archiveProvisioningProfile(archiveURL: URL, entries: [String], appPrefix: String) throws -> IPAPreviewProvisioningProfile? {
+    func archiveProvisioningProfile(archive: ZIPArchiveReader, entries: [String], appPrefix: String) throws -> IPAPreviewProvisioningProfile? {
         let profileEntry = appPrefix + "embedded.mobileprovision"
         guard entries.contains(profileEntry) else {
             return nil
         }
-        return try decodeProvisioningProfile(data: extractArchiveEntry(profileEntry, from: archiveURL))
+        return try decodeProvisioningProfile(data: archive.data(for: profileEntry))
     }
 
-    func archiveIconData(archiveURL: URL, entries: [String], appPrefix: String, info: [String: Any]) throws -> Data? {
+    func archiveIconData(archive: ZIPArchiveReader, entries: [String], appPrefix: String, info: [String: Any]) throws -> Data? {
         guard let iconEntry = iconEntry(entries: entries, appPrefix: appPrefix, info: info) else {
             return nil
         }
-        return try? extractArchiveEntry(iconEntry, from: archiveURL)
+        return try? archive.data(for: iconEntry)
     }
 
     func archiveCodeSignature(entries: [String], appPrefix: String) -> IPAPreviewCodeSignature {
@@ -446,13 +446,27 @@ private extension IPAPreviewService {
     }
 
     func decodedProvisioningPlistData(from data: Data) -> Data? {
-        let tempURL = fileManager.temporaryDirectory.appendingPathComponent("easysign-\(UUID().uuidString).mobileprovision")
-        guard (try? data.write(to: tempURL)) != nil else {
+        var decoder: CMSDecoder?
+        guard CMSDecoderCreate(&decoder) == errSecSuccess, let decoder else {
             return nil
         }
-        defer { try? fileManager.removeItem(at: tempURL) }
+        let updateStatus = data.withUnsafeBytes { rawBuffer -> OSStatus in
+            guard let baseAddress = rawBuffer.baseAddress else {
+                return errSecParam
+            }
+            return CMSDecoderUpdateMessage(decoder, baseAddress, data.count)
+        }
+        guard updateStatus == errSecSuccess,
+              CMSDecoderFinalizeMessage(decoder) == errSecSuccess
+        else {
+            return nil
+        }
 
-        return try? runProcess("/usr/bin/security", arguments: ["cms", "-D", "-i", tempURL.path])
+        var content: CFData?
+        guard CMSDecoderCopyContent(decoder, &content) == errSecSuccess, let content else {
+            return nil
+        }
+        return content as Data
     }
 
     func profileType(provisionsAllDevices: Bool, provisionedDevices: [String]?, getTaskAllow: Bool?) -> String {
@@ -535,25 +549,244 @@ private extension IPAPreviewService {
         (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
     }
 
-    func runProcess(_ executable: String, arguments: [String]) throws -> Data {
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-        try process.run()
-        process.waitUntilExit()
+}
 
-        let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        if process.terminationStatus == 0 {
-            return output
+private final class ZIPArchiveReader {
+    private struct Entry {
+        let name: String
+        let flags: UInt16
+        let compressionMethod: UInt16
+        let compressedSize: UInt64
+        let uncompressedSize: UInt64
+        let localHeaderOffset: UInt64
+    }
+
+    private let fileHandle: FileHandle
+    private let archiveSize: UInt64
+    private let entries: [Entry]
+
+    init(url: URL) throws {
+        fileHandle = try FileHandle(forReadingFrom: url)
+        archiveSize = UInt64((try url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        entries = try ZIPArchiveReader.loadEntries(fileHandle: fileHandle, archiveSize: archiveSize)
+    }
+
+    deinit {
+        try? fileHandle.close()
+    }
+
+    func entryNames() -> [String] {
+        entries.map(\.name)
+    }
+
+    func data(for name: String) throws -> Data {
+        guard let entry = entries.first(where: { $0.name == name }) else {
+            throw IPAPreviewError.missingArchiveEntry(name)
+        }
+        guard entry.flags & 0x0001 == 0 else {
+            throw IPAPreviewError.invalidArchive
         }
 
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        let message = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        throw IPAPreviewError.commandFailed(message?.isEmpty == false ? message! : "\(executable) 执行失败")
+        let localHeader = try readData(offset: entry.localHeaderOffset, length: 30)
+        guard localHeader.zipUInt32(at: 0) == 0x04034b50 else {
+            throw IPAPreviewError.invalidArchive
+        }
+
+        let fileNameLength = UInt64(localHeader.zipUInt16(at: 26))
+        let extraFieldLength = UInt64(localHeader.zipUInt16(at: 28))
+        let dataOffset = entry.localHeaderOffset + 30 + fileNameLength + extraFieldLength
+        let compressedData = try readData(offset: dataOffset, length: entry.compressedSize)
+
+        switch entry.compressionMethod {
+        case 0:
+            return compressedData
+        case 8:
+            return try inflate(compressedData, expectedSize: entry.uncompressedSize)
+        default:
+            throw IPAPreviewError.unsupportedCompressionMethod(entry.compressionMethod)
+        }
+    }
+}
+
+private extension ZIPArchiveReader {
+    private static func loadEntries(fileHandle: FileHandle, archiveSize: UInt64) throws -> [Entry] {
+        let (centralDirectoryOffset, centralDirectorySize, totalEntries) = try centralDirectoryLocation(
+            fileHandle: fileHandle,
+            archiveSize: archiveSize
+        )
+        let centralDirectory = try readData(
+            fileHandle: fileHandle,
+            offset: centralDirectoryOffset,
+            length: centralDirectorySize
+        )
+
+        var cursor = 0
+        var result: [Entry] = []
+        result.reserveCapacity(totalEntries)
+
+        for _ in 0..<totalEntries {
+            guard centralDirectory.canRead(offset: cursor, length: 46),
+                  centralDirectory.zipUInt32(at: cursor) == 0x02014b50
+            else {
+                throw IPAPreviewError.invalidArchive
+            }
+
+            let flags = centralDirectory.zipUInt16(at: cursor + 8)
+            let compressionMethod = centralDirectory.zipUInt16(at: cursor + 10)
+            let compressedSize = UInt64(centralDirectory.zipUInt32(at: cursor + 20))
+            let uncompressedSize = UInt64(centralDirectory.zipUInt32(at: cursor + 24))
+            let fileNameLength = Int(centralDirectory.zipUInt16(at: cursor + 28))
+            let extraFieldLength = Int(centralDirectory.zipUInt16(at: cursor + 30))
+            let commentLength = Int(centralDirectory.zipUInt16(at: cursor + 32))
+            let localHeaderOffset = UInt64(centralDirectory.zipUInt32(at: cursor + 42))
+            let fileNameOffset = cursor + 46
+            let headerLength = 46 + fileNameLength + extraFieldLength + commentLength
+
+            guard compressedSize < 0xffffffff,
+                  uncompressedSize < 0xffffffff,
+                  localHeaderOffset < 0xffffffff,
+                  centralDirectory.canRead(offset: cursor, length: headerLength)
+            else {
+                throw IPAPreviewError.invalidArchive
+            }
+
+            let fileNameData = centralDirectory.subdata(in: fileNameOffset..<(fileNameOffset + fileNameLength))
+            let fileName = String(data: fileNameData, encoding: .utf8) ?? String(decoding: fileNameData, as: UTF8.self)
+            result.append(Entry(
+                name: fileName,
+                flags: flags,
+                compressionMethod: compressionMethod,
+                compressedSize: compressedSize,
+                uncompressedSize: uncompressedSize,
+                localHeaderOffset: localHeaderOffset
+            ))
+            cursor += headerLength
+        }
+
+        return result
+    }
+
+    static func centralDirectoryLocation(
+        fileHandle: FileHandle,
+        archiveSize: UInt64
+    ) throws -> (offset: UInt64, size: UInt64, totalEntries: Int) {
+        let maxCommentLength = UInt64(UInt16.max)
+        let endRecordLength: UInt64 = 22
+        let tailLength = min(archiveSize, maxCommentLength + endRecordLength)
+        let tail = try readData(fileHandle: fileHandle, offset: archiveSize - tailLength, length: tailLength)
+
+        guard tail.count >= Int(endRecordLength) else {
+            throw IPAPreviewError.invalidArchive
+        }
+
+        var cursor = tail.count - Int(endRecordLength)
+        while cursor >= 0 {
+            if tail.zipUInt32(at: cursor) == 0x06054b50 {
+                let commentLength = Int(tail.zipUInt16(at: cursor + 20))
+                if cursor + Int(endRecordLength) + commentLength == tail.count {
+                    let diskNumber = tail.zipUInt16(at: cursor + 4)
+                    let centralDirectoryDisk = tail.zipUInt16(at: cursor + 6)
+                    let totalEntries = tail.zipUInt16(at: cursor + 10)
+                    let centralDirectorySize = tail.zipUInt32(at: cursor + 12)
+                    let centralDirectoryOffset = tail.zipUInt32(at: cursor + 16)
+
+                    guard diskNumber == 0,
+                          centralDirectoryDisk == 0,
+                          totalEntries < 0xffff,
+                          centralDirectorySize < 0xffffffff,
+                          centralDirectoryOffset < 0xffffffff
+                    else {
+                        throw IPAPreviewError.invalidArchive
+                    }
+
+                    return (
+                        UInt64(centralDirectoryOffset),
+                        UInt64(centralDirectorySize),
+                        Int(totalEntries)
+                    )
+                }
+            }
+
+            if cursor == 0 {
+                break
+            }
+            cursor -= 1
+        }
+
+        throw IPAPreviewError.invalidArchive
+    }
+
+    func readData(offset: UInt64, length: UInt64) throws -> Data {
+        try Self.readData(fileHandle: fileHandle, offset: offset, length: length)
+    }
+
+    static func readData(fileHandle: FileHandle, offset: UInt64, length: UInt64) throws -> Data {
+        guard length <= UInt64(Int.max) else {
+            throw IPAPreviewError.invalidArchive
+        }
+
+        try fileHandle.seek(toOffset: offset)
+        guard let data = try fileHandle.read(upToCount: Int(length)),
+              data.count == Int(length)
+        else {
+            throw IPAPreviewError.invalidArchive
+        }
+        return data
+    }
+
+    func inflate(_ data: Data, expectedSize: UInt64) throws -> Data {
+        guard expectedSize <= UInt64(Int.max) else {
+            throw IPAPreviewError.invalidArchive
+        }
+
+        let outputSize = Int(expectedSize)
+        guard outputSize > 0 else {
+            return Data()
+        }
+
+        var output = Data(count: outputSize)
+        let decodedSize = output.withUnsafeMutableBytes { outputBuffer -> Int in
+            data.withUnsafeBytes { inputBuffer -> Int in
+                guard let outputBase = outputBuffer.bindMemory(to: UInt8.self).baseAddress,
+                      let inputBase = inputBuffer.bindMemory(to: UInt8.self).baseAddress
+                else {
+                    return 0
+                }
+
+                return compression_decode_buffer(
+                    outputBase,
+                    outputSize,
+                    inputBase,
+                    data.count,
+                    nil,
+                    COMPRESSION_ZLIB
+                )
+            }
+        }
+
+        guard decodedSize == outputSize else {
+            throw IPAPreviewError.invalidArchive
+        }
+
+        return output
+    }
+}
+
+private extension Data {
+    func canRead(offset: Int, length: Int) -> Bool {
+        offset >= 0 && length >= 0 && offset + length <= count
+    }
+
+    func zipUInt16(at offset: Int) -> UInt16 {
+        UInt16(self[offset]) |
+            (UInt16(self[offset + 1]) << 8)
+    }
+
+    func zipUInt32(at offset: Int) -> UInt32 {
+        UInt32(self[offset]) |
+            (UInt32(self[offset + 1]) << 8) |
+            (UInt32(self[offset + 2]) << 16) |
+            (UInt32(self[offset + 3]) << 24)
     }
 }
 
