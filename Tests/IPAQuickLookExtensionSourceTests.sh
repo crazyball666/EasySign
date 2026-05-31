@@ -47,6 +47,9 @@ rg -n "IPAPreviewService\\(\\)\\.preview\\(url: url\\)" "$EXT_PROVIDER" >/dev/nu
 rg -n "NSScrollView" "$EXT_PROVIDER" >/dev/null
 rg -n "NSStackView" "$EXT_PROVIDER" >/dev/null
 rg -n "render\\(info: info\\)" "$EXT_PROVIDER" >/dev/null
+rg -n "addPreviewCard" "$EXT_PROVIDER" >/dev/null
+rg -n "widthAnchor\\.constraint\\(equalTo: contentStack\\.widthAnchor\\)" "$EXT_PROVIDER" >/dev/null
+! rg -n "contentStack\\.edgeInsets" "$EXT_PROVIDER" >/dev/null
 rg -n "static func html\\(for info: IPAPreviewInfo\\)" "$HTML_RENDERER" >/dev/null
 ! rg -n "/usr/bin/(unzip|security)" "$PREVIEW_SERVICE" >/dev/null
 ! rg -n "Process\\(" "$PREVIEW_SERVICE" >/dev/null

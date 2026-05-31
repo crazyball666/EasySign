@@ -24,10 +24,9 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
         contentView.translatesAutoresizingMaskIntoConstraints = false
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         contentStack.orientation = .vertical
-        contentStack.alignment = .width
+        contentStack.alignment = .leading
         contentStack.distribution = .fill
         contentStack.spacing = 14
-        contentStack.edgeInsets = NSEdgeInsets(top: 28, left: 34, bottom: 28, right: 34)
 
         contentView.addSubview(contentStack)
         scrollView.documentView = contentView
@@ -44,10 +43,10 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
             contentView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
             contentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
 
-            contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            contentStack.topAnchor.constraint(equalTo: contentView.topAnchor),
-            contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+            contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 34),
+            contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -34),
+            contentStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 28),
+            contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -28)
         ])
 
         view = rootView
@@ -73,18 +72,23 @@ private extension PreviewViewController {
             subview.removeFromSuperview()
         }
 
-        contentStack.addArrangedSubview(headerCard(info: info))
-        contentStack.addArrangedSubview(summaryGrid(info: info))
-        contentStack.addArrangedSubview(sectionCard(title: "签名信息", rows: [
+        addPreviewCard(headerCard(info: info))
+        addPreviewCard(summaryGrid(info: info))
+        addPreviewCard(sectionCard(title: "签名信息", rows: [
             ("状态", info.signingDescription),
             ("CodeResources", info.codeSignature.codeResourcesPath ?? "未发现")
         ]))
-        contentStack.addArrangedSubview(provisioningCard(info.provisioningProfile))
-        contentStack.addArrangedSubview(listCard(title: "组件", rows: [
+        addPreviewCard(provisioningCard(info.provisioningProfile))
+        addPreviewCard(listCard(title: "组件", rows: [
             ("App Extension", info.appexes.map { "\($0.name.isEmpty ? $0.bundleIdentifier : $0.name)  \($0.bundleIdentifier)" }),
             ("Frameworks", info.frameworks),
             ("动态库", info.dynamicLibraries)
         ]))
+    }
+
+    func addPreviewCard(_ card: NSView) {
+        contentStack.addArrangedSubview(card)
+        card.widthAnchor.constraint(equalTo: contentStack.widthAnchor).isActive = true
     }
 
     func headerCard(info: IPAPreviewInfo) -> NSView {
