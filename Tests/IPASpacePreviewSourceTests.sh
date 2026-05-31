@@ -16,6 +16,8 @@ rg -n "struct IPAPreviewInfo: Identifiable" "$PREVIEW_SERVICE" >/dev/null
 rg -n "provisionedDevices: \\[String\\]" "$PREVIEW_SERVICE" >/dev/null
 rg -n "设备列表" "$PREVIEW_VIEW" >/dev/null
 rg -n "profile\\.provisionedDevices" "$PREVIEW_VIEW" >/dev/null
+rg -n "highlightTint" "$PREVIEW_VIEW" >/dev/null
+! rg -n "profileBadges|deviceSummary\\(" "$PREVIEW_VIEW" >/dev/null
 rg -n "签名信息" "$PREVIEW_VIEW" >/dev/null
 rg -n "IPAPreviewCertificate" "$PREVIEW_SERVICE" >/dev/null
 rg -n "IPAPreviewCodeSignature" "$PREVIEW_SERVICE" >/dev/null

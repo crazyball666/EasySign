@@ -30,21 +30,19 @@ struct IPAPreviewPanelView: View {
 
                     if let profile = info.provisioningProfile {
                         previewSection("描述文件") {
-                            profileBadges(profile)
                             previewRow("名称", profile.name)
-                            previewRow("类型", profile.profileType)
+                            previewRow("类型", profile.profileType, tint: highlightTint(for: "类型", expirationDate: nil))
                             previewRow("UUID", profile.uuid)
                             previewRow("Team Name", profile.teamName)
-                            previewRow("Team ID", profile.teamIdentifier)
+                            previewRow("Team ID", profile.teamIdentifier, tint: highlightTint(for: "Team ID", expirationDate: nil))
                             previewRow("App ID", profile.applicationIdentifier)
                             previewRow("创建时间", profile.creationDate?.formatString(format: "yyyy-MM-dd HH:mm:ss") ?? "-")
-                            previewRow("过期时间", profile.expirationDate?.formatString(format: "yyyy-MM-dd HH:mm:ss") ?? "-")
-                            previewRow("过期状态", profile.expirationDate.map(expirationStatus) ?? "-")
-                            previewRow("设备数", profile.provisionsAllDevices ? "全部设备" : "\(profile.provisionedDeviceCount)")
-                            previewRow("证书数", "\(profile.certificates.count)")
-                            previewRow("Entitlements", "\(profile.entitlementKeys.count)")
-                            previewRow("APS", profile.apsEnvironment ?? "-")
-                            previewRow("调试权限", profile.getTaskAllow.map { $0 ? "YES" : "NO" } ?? "-")
+                            previewRow("过期时间", profile.expirationDate?.formatString(format: "yyyy-MM-dd HH:mm:ss") ?? "-", tint: highlightTint(for: "过期时间", expirationDate: profile.expirationDate))
+                            previewRow("设备数", profile.provisionsAllDevices ? "全部设备" : "\(profile.provisionedDeviceCount)", tint: highlightTint(for: "设备数", expirationDate: nil))
+                            previewRow("证书数", "\(profile.certificates.count)", tint: highlightTint(for: "证书数", expirationDate: nil))
+                            previewRow("Entitlements", "\(profile.entitlementKeys.count)", tint: highlightTint(for: "Entitlements", expirationDate: nil))
+                            previewRow("APS", profile.apsEnvironment ?? "-", tint: highlightTint(for: "APS", expirationDate: nil))
+                            previewRow("调试权限", profile.getTaskAllow.map { $0 ? "YES" : "NO" } ?? "-", tint: highlightTint(for: "调试权限", expirationDate: nil))
                         }
 
                         previewListSection("设备列表", values: deviceValues(profile), monospaced: true)
@@ -156,29 +154,19 @@ struct IPAPreviewPanelView: View {
         }
     }
 
-    private func previewRow(_ title: String, _ value: String) -> some View {
+    private func previewRow(_ title: String, _ value: String, tint: Color? = nil) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(title)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
                 .frame(width: 94, alignment: .leading)
             Text(value.isEmpty ? "-" : value)
-                .font(.subheadline)
+                .font(tint == nil ? .subheadline : .subheadline.weight(.medium))
+                .foregroundStyle(tint ?? .primary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func profileBadges(_ profile: IPAPreviewProvisioningProfile) -> some View {
-        HStack(spacing: 8) {
-            badge(profile.profileType, tint: .indigo)
-            badge("Team \(profile.teamIdentifier.isEmpty ? "-" : profile.teamIdentifier)", tint: .green)
-            badge(deviceSummary(profile), tint: .blue)
-            badge(profile.expirationDate.map(expirationStatus) ?? "有效期未知", tint: expirationTint(profile.expirationDate))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.bottom, 2)
     }
 
     private func badge(_ text: String, tint: Color) -> some View {
@@ -221,21 +209,25 @@ struct IPAPreviewPanelView: View {
         return parts.filter { !$0.isEmpty }.joined(separator: "  ")
     }
 
-    private func deviceSummary(_ profile: IPAPreviewProvisioningProfile) -> String {
-        if profile.provisionsAllDevices {
-            return "全部设备"
+    private func highlightTint(for title: String, expirationDate: Date?) -> Color? {
+        switch title {
+        case "类型":
+            return .indigo
+        case "Team ID":
+            return .green
+        case "过期时间":
+            guard let expirationDate else {
+                return nil
+            }
+            return expirationDate < Date() ? .red : .orange
+        case "设备数":
+            return .blue
+        case "证书数", "Entitlements":
+            return .purple
+        case "APS", "调试权限":
+            return .green
+        default:
+            return nil
         }
-        return "\(profile.provisionedDeviceCount) 台设备"
-    }
-
-    private func expirationStatus(_ date: Date) -> String {
-        date < Date() ? "已过期" : "有效至 \(date.formatString(format: "yyyy-MM-dd"))"
-    }
-
-    private func expirationTint(_ date: Date?) -> Color {
-        guard let date else {
-            return .gray
-        }
-        return date < Date() ? .red : .orange
     }
 }

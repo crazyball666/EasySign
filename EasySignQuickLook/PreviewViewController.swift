@@ -178,7 +178,6 @@ private extension PreviewViewController {
             ("UUID", profile.uuid),
             ("创建时间", format(profile.creationDate)),
             ("过期时间", format(profile.expirationDate)),
-            ("过期状态", profile.expirationDate.map(expirationStatus) ?? "-"),
             ("设备数", profile.provisionsAllDevices ? "全部设备" : "\(profile.provisionedDeviceCount)"),
             ("证书数", "\(profile.certificates.count)"),
             ("Entitlements", "\(profile.entitlementKeys.count)"),
@@ -191,9 +190,9 @@ private extension PreviewViewController {
         card.addSubview(stack)
         pin(stack, to: card, inset: 18)
 
-        addFullWidth(profileSummaryBadges(profile), to: stack)
         for row in rows {
-            addFullWidth(keyValueRow(row.0, row.1.isEmpty ? "-" : row.1), to: stack)
+            let value = row.1.isEmpty ? "-" : row.1
+            addFullWidth(keyValueRow(row.0, value, valueColor: highlightColor(for: row.0, value: value)), to: stack)
         }
         addFullWidth(separator(), to: stack)
         addFullWidth(listBlock(title: "设备列表", values: deviceValues(profile), monospaced: true), to: stack)
@@ -255,7 +254,7 @@ private extension PreviewViewController {
         return stack
     }
 
-    func keyValueRow(_ key: String, _ value: String) -> NSView {
+    func keyValueRow(_ key: String, _ value: String, valueColor: NSColor? = nil) -> NSView {
         let row = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
 
@@ -263,7 +262,7 @@ private extension PreviewViewController {
         keyLabel.maximumNumberOfLines = 1
         keyLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let valueLabel = label(value, font: .systemFont(ofSize: 13, weight: .regular), color: .labelColor)
+        let valueLabel = label(value, font: .systemFont(ofSize: 13, weight: valueColor == nil ? .regular : .medium), color: valueColor ?? .labelColor)
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
 
         row.addSubview(keyLabel)
@@ -303,19 +302,6 @@ private extension PreviewViewController {
         }
 
         return stack
-    }
-
-    func profileSummaryBadges(_ profile: IPAPreviewProvisioningProfile) -> NSView {
-        let row = NSStackView()
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.orientation = .horizontal
-        row.alignment = .leading
-        row.spacing = 8
-        row.addArrangedSubview(badge(profile.profileType, tint: .systemIndigo))
-        row.addArrangedSubview(badge("Team \(profile.teamIdentifier.isEmpty ? "-" : profile.teamIdentifier)", tint: .systemGreen))
-        row.addArrangedSubview(badge(deviceSummary(profile), tint: .systemBlue))
-        row.addArrangedSubview(badge(profile.expirationDate.map(expirationStatus) ?? "有效期未知", tint: expirationTint(profile.expirationDate)))
-        return row
     }
 
     func deviceValues(_ profile: IPAPreviewProvisioningProfile) -> [String] {
@@ -404,22 +390,26 @@ private extension PreviewViewController {
         return parts.filter { !$0.isEmpty }.joined(separator: "  ")
     }
 
-    func deviceSummary(_ profile: IPAPreviewProvisioningProfile) -> String {
-        if profile.provisionsAllDevices {
-            return "全部设备"
+    func highlightColor(for key: String, value: String) -> NSColor? {
+        guard value != "-" else {
+            return nil
         }
-        return "\(profile.provisionedDeviceCount) 台设备"
-    }
-
-    func expirationStatus(_ date: Date) -> String {
-        date < Date() ? "已过期" : "有效至 \(format(date))"
-    }
-
-    func expirationTint(_ date: Date?) -> NSColor {
-        guard let date else {
-            return .systemGray
+        switch key {
+        case "类型":
+            return .systemIndigo
+        case "Team ID":
+            return .systemGreen
+        case "过期时间":
+            return .systemOrange
+        case "设备数":
+            return .systemBlue
+        case "证书数", "Entitlements":
+            return .systemPurple
+        case "APS", "调试权限":
+            return .systemGreen
+        default:
+            return nil
         }
-        return date < Date() ? .systemRed : .systemOrange
     }
 
     func format(_ date: Date?) -> String {

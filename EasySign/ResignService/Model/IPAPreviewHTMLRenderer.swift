@@ -165,7 +165,6 @@ private extension IPAPreviewHTMLRenderer {
             ("App ID", profile.applicationIdentifier),
             ("创建时间", format(profile.creationDate)),
             ("过期时间", format(profile.expirationDate)),
-            ("过期状态", profile.expirationDate.map(expirationStatus) ?? "-"),
             ("设备数", profile.provisionsAllDevices ? "全部设备" : "\(profile.provisionedDeviceCount)"),
             ("证书数", "\(profile.certificates.count)"),
             ("Entitlements", "\(profile.entitlementKeys.count)"),
@@ -236,10 +235,6 @@ private extension IPAPreviewHTMLRenderer {
             return ["全部设备"]
         }
         return profile.provisionedDevices
-    }
-
-    static func expirationStatus(_ date: Date) -> String {
-        date < Date() ? "已过期" : "有效至 \(format(date))"
     }
 
     static func format(_ date: Date?) -> String {
