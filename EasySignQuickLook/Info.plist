@@ -25,24 +25,42 @@
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>
-		<dict>
-			<key>QLIsDataBasedPreview</key>
-			<true/>
-			<key>QLSupportedContentTypes</key>
-			<array>
-				<string>com.apple.itunes.ipa</string>
-				<string>public.zip-archive</string>
-				<string>com.apple.application-bundle</string>
-			</array>
-			<key>QLSupportsSearchableItems</key>
-			<false/>
-		</dict>
+			<dict>
+				<key>QLIsDataBasedPreview</key>
+				<true/>
+				<key>QLSupportedContentTypes</key>
+				<array>
+					<string>com.apple.itunes.ipa</string>
+				</array>
+				<key>QLSupportsSearchableItems</key>
+				<false/>
+			</dict>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.quicklook.preview</string>
-		<key>NSExtensionPrincipalClass</key>
-		<string>$(PRODUCT_MODULE_NAME).PreviewProvider</string>
+			<key>NSExtensionPrincipalClass</key>
+			<string>$(PRODUCT_MODULE_NAME).PreviewProvider</string>
+		</dict>
+		<key>NSHumanReadableCopyright</key>
+		<string></string>
+		<key>UTImportedTypeDeclarations</key>
+		<array>
+			<dict>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.zip-archive</string>
+				</array>
+				<key>UTTypeDescription</key>
+				<string>iOS App Archive</string>
+				<key>UTTypeIdentifier</key>
+				<string>com.apple.itunes.ipa</string>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>ipa</string>
+					</array>
+				</dict>
+			</dict>
+		</array>
 	</dict>
-	<key>NSHumanReadableCopyright</key>
-	<string></string>
-</dict>
 </plist>
