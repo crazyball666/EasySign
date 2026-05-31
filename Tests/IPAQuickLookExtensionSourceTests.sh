@@ -41,11 +41,12 @@ rg -n "UTTypeConformsTo" "$EXT_INFO" >/dev/null
 rg -n "public\\.zip-archive" "$EXT_INFO" >/dev/null
 
 rg -n "final class PreviewViewController: NSViewController, QLPreviewingController" "$EXT_PROVIDER" >/dev/null
-rg -n "WKWebView" "$EXT_PROVIDER" >/dev/null
+! rg -n "WKWebView|import WebKit|loadHTMLString" "$EXT_PROVIDER" >/dev/null
 rg -n "preparePreviewOfFile\\(at url: URL\\)" "$EXT_PROVIDER" >/dev/null
 rg -n "IPAPreviewService\\(\\)\\.preview\\(url: url\\)" "$EXT_PROVIDER" >/dev/null
-rg -n "IPAPreviewHTMLRenderer\\.html\\(for: info\\)" "$EXT_PROVIDER" >/dev/null
-rg -n "webView\\.loadHTMLString" "$EXT_PROVIDER" >/dev/null
+rg -n "NSScrollView" "$EXT_PROVIDER" >/dev/null
+rg -n "NSStackView" "$EXT_PROVIDER" >/dev/null
+rg -n "render\\(info: info\\)" "$EXT_PROVIDER" >/dev/null
 rg -n "static func html\\(for info: IPAPreviewInfo\\)" "$HTML_RENDERER" >/dev/null
 ! rg -n "/usr/bin/(unzip|security)" "$PREVIEW_SERVICE" >/dev/null
 ! rg -n "Process\\(" "$PREVIEW_SERVICE" >/dev/null
