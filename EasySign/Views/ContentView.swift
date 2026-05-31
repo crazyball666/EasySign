@@ -451,6 +451,7 @@ struct LogPanelView: View {
 
 enum NavigationTab: String, CaseIterable {
     case resign = "重签"
+    case qrcode = "二维码"
     case devices = "设备"
 }
 
@@ -462,7 +463,7 @@ struct SidebarView: View {
             ForEach(NavigationTab.allCases, id: \.rawValue) { tab in
                 SidebarItem(
                     title: tab.rawValue,
-                    icon: tab == .resign ? "doc.badge.gearshape" : "iphone",
+                    icon: tab == .resign ? "doc.badge.gearshape" : (tab == .qrcode ? "qrcode" : "iphone"),
                     isSelected: selectedTab == tab
                 ) {
                     selectedTab = tab
@@ -550,6 +551,8 @@ struct ContentView: View {
                 switch selectedTab {
                 case .resign:
                     ResignContentView()
+                case .qrcode:
+                    QRCodeToolView()
                 case .devices:
                     DeviceView()
                 }
