@@ -7,6 +7,9 @@ import Compression
 import CryptoKit
 import Foundation
 import Security
+#if DEBUG
+import os
+#endif
 
 struct IPAPreviewEmbeddedBundle: Identifiable, Equatable {
     var id: String { bundleIdentifier }
@@ -152,27 +155,79 @@ final class IPAPreviewService {
     }
 }
 
+private struct IPAPreviewTiming {
+#if DEBUG
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "EasySign",
+        category: "IPAPreview"
+    )
+
+    private let fileName: String
+    private let startTime: CFAbsoluteTime
+    private var lastStepTime: CFAbsoluteTime
+#endif
+
+    init(fileName: String) {
+#if DEBUG
+        self.fileName = fileName
+        let now = CFAbsoluteTimeGetCurrent()
+        startTime = now
+        lastStepTime = now
+#endif
+    }
+
+    mutating func step(_ name: String) {
+#if DEBUG
+        let now = CFAbsoluteTimeGetCurrent()
+        let totalMilliseconds = (now - startTime) * 1000
+        let stepMilliseconds = (now - lastStepTime) * 1000
+        lastStepTime = now
+        let currentFileName = fileName
+        Self.logger.debug("\(currentFileName, privacy: .public) \(name, privacy: .public) total=\(totalMilliseconds, format: .fixed(precision: 1))ms step=\(stepMilliseconds, format: .fixed(precision: 1))ms")
+#endif
+    }
+}
+
+private struct IPAPreviewArchiveEntries {
+    let infoEntry: String
+    let appDirectoryName: String
+    let profileEntry: String?
+    let codeResourcesPath: String?
+    let appexInfoEntries: [String]
+    let pngEntries: [String]
+    let frameworks: [String]
+    let dynamicLibraries: [String]
+}
+
 private extension IPAPreviewService {
     func previewArchive(_ archiveURL: URL) throws -> IPAPreviewInfo {
+        var timing = IPAPreviewTiming(fileName: archiveURL.lastPathComponent)
         let archive = try ZIPArchiveReader(url: archiveURL)
-        let entries = archive.entryNames()
-        guard let infoEntry = entries.first(where: { isAppInfoEntry($0) }) else {
-            throw IPAPreviewError.missingAppBundle
-        }
+        timing.step("loadEntries")
 
-        let appPrefix = String(infoEntry.dropLast("Info.plist".count))
-        let appDirectoryName = appDirectoryName(fromArchivePrefix: appPrefix)
-        let info = try appInfo(from: try archive.data(for: infoEntry))
-        let embeddedProfile = try archiveProvisioningProfile(archive: archive, entries: entries, appPrefix: appPrefix)
-        let appexes = try archiveAppexes(archive: archive, entries: entries, appPrefix: appPrefix)
-        let iconData = try archiveIconData(archive: archive, entries: entries, appPrefix: appPrefix, info: info)
-        let codeSignature = archiveCodeSignature(entries: entries, appPrefix: appPrefix)
+        let archiveEntries = try archiveEntries(from: archive)
+        timing.step("indexEntries")
+
+        let info = try appInfo(from: try archive.data(for: archiveEntries.infoEntry))
+        timing.step("readInfoPlist")
+
+        let embeddedProfile = try archiveProvisioningProfile(archive: archive, profileEntry: archiveEntries.profileEntry)
+        timing.step("decodeProvisioningProfile")
+
+        let appexes = try archiveAppexes(archive: archive, infoEntries: archiveEntries.appexInfoEntries)
+        timing.step("readAppexInfo")
+
+        let iconData = try archiveIconData(archive: archive, pngEntries: archiveEntries.pngEntries, info: info)
+        timing.step("readIcon")
+
+        let codeSignature = archiveCodeSignature(codeResourcesPath: archiveEntries.codeResourcesPath)
+        timing.step("buildPreview")
 
         return IPAPreviewInfo(
             fileURL: archiveURL,
             fileName: archiveURL.lastPathComponent,
             fileSize: fileSize(archiveURL),
-            appDirectoryName: appDirectoryName,
+            appDirectoryName: archiveEntries.appDirectoryName,
             appName: displayName(from: info),
             bundleIdentifier: info["CFBundleIdentifier"] as? String ?? "",
             version: info["CFBundleShortVersionString"] as? String ?? "",
@@ -183,8 +238,8 @@ private extension IPAPreviewService {
             codeSignature: codeSignature,
             provisioningProfile: embeddedProfile,
             appexes: appexes,
-            frameworks: frameworkNames(in: entries, appPrefix: appPrefix),
-            dynamicLibraries: dynamicLibraryNames(in: entries, appPrefix: appPrefix)
+            frameworks: archiveEntries.frameworks,
+            dynamicLibraries: archiveEntries.dynamicLibraries
         )
     }
 
@@ -248,37 +303,88 @@ private extension IPAPreviewService {
         appPrefix.split(separator: "/").first(where: { $0.hasSuffix(".app") }).map(String.init) ?? ""
     }
 
-    func archiveAppexes(archive: ZIPArchiveReader, entries: [String], appPrefix: String) throws -> [IPAPreviewEmbeddedBundle] {
-        let infoEntries = entries
-            .filter { $0.hasPrefix(appPrefix + "PlugIns/") && $0.hasSuffix(".appex/Info.plist") }
-            .sorted()
+    func archiveEntries(from archive: ZIPArchiveReader) throws -> IPAPreviewArchiveEntries {
+        guard let infoEntry = archive.firstEntryName(where: isAppInfoEntry) else {
+            throw IPAPreviewError.missingAppBundle
+        }
 
+        let appPrefix = String(infoEntry.dropLast("Info.plist".count))
+        let profilePath = appPrefix + "embedded.mobileprovision"
+        let codeResourcesPath = appPrefix + "_CodeSignature/CodeResources"
+        let plugInsPrefix = appPrefix + "PlugIns/"
+        let frameworksPrefix = appPrefix + "Frameworks/"
+
+        var profileEntry: String?
+        var codeResourcesEntry: String?
+        var appexInfoEntries: [String] = []
+        var pngEntries: [String] = []
+        var frameworkNames = Set<String>()
+        var dylibNames = Set<String>()
+
+        archive.forEachEntryName { entry in
+            guard entry.hasPrefix(appPrefix) else {
+                return
+            }
+
+            if entry == profilePath {
+                profileEntry = entry
+            }
+            if entry == codeResourcesPath {
+                codeResourcesEntry = entry
+            }
+            if entry.hasPrefix(plugInsPrefix), entry.hasSuffix(".appex/Info.plist") {
+                appexInfoEntries.append(entry)
+            }
+            if entry.hasPrefix(frameworksPrefix),
+               let frameworkName = entry.dropFirst(frameworksPrefix.count).split(separator: "/").first.map(String.init),
+               frameworkName.hasSuffix(".framework") {
+                frameworkNames.insert(frameworkName)
+            }
+            if entry.hasSuffix(".dylib") {
+                dylibNames.insert(URL(fileURLWithPath: entry).lastPathComponent)
+            }
+            if entry.lowercased().hasSuffix(".png") {
+                pngEntries.append(entry)
+            }
+        }
+
+        return IPAPreviewArchiveEntries(
+            infoEntry: infoEntry,
+            appDirectoryName: appDirectoryName(fromArchivePrefix: appPrefix),
+            profileEntry: profileEntry,
+            codeResourcesPath: codeResourcesEntry,
+            appexInfoEntries: appexInfoEntries.sorted(),
+            pngEntries: pngEntries,
+            frameworks: frameworkNames.sorted(),
+            dynamicLibraries: dylibNames.sorted()
+        )
+    }
+
+    func archiveAppexes(archive: ZIPArchiveReader, infoEntries: [String]) throws -> [IPAPreviewEmbeddedBundle] {
         return try infoEntries.map { entry in
             let info = try appInfo(from: archive.data(for: entry))
             return embeddedBundle(from: info)
         }
     }
 
-    func archiveProvisioningProfile(archive: ZIPArchiveReader, entries: [String], appPrefix: String) throws -> IPAPreviewProvisioningProfile? {
-        let profileEntry = appPrefix + "embedded.mobileprovision"
-        guard entries.contains(profileEntry) else {
+    func archiveProvisioningProfile(archive: ZIPArchiveReader, profileEntry: String?) throws -> IPAPreviewProvisioningProfile? {
+        guard let profileEntry else {
             return nil
         }
         return try decodeProvisioningProfile(data: archive.data(for: profileEntry))
     }
 
-    func archiveIconData(archive: ZIPArchiveReader, entries: [String], appPrefix: String, info: [String: Any]) throws -> Data? {
-        guard let iconEntry = iconEntry(entries: entries, appPrefix: appPrefix, info: info) else {
+    func archiveIconData(archive: ZIPArchiveReader, pngEntries: [String], info: [String: Any]) throws -> Data? {
+        guard let iconEntry = iconEntry(pngEntries: pngEntries, info: info) else {
             return nil
         }
         return try? archive.data(for: iconEntry)
     }
 
-    func archiveCodeSignature(entries: [String], appPrefix: String) -> IPAPreviewCodeSignature {
-        let codeResources = appPrefix + "_CodeSignature/CodeResources"
+    func archiveCodeSignature(codeResourcesPath: String?) -> IPAPreviewCodeSignature {
         return IPAPreviewCodeSignature(
-            hasCodeResources: entries.contains(codeResources),
-            codeResourcesPath: entries.contains(codeResources) ? codeResources : nil
+            hasCodeResources: codeResourcesPath != nil,
+            codeResourcesPath: codeResourcesPath
         )
     }
 }
@@ -370,19 +476,35 @@ private extension IPAPreviewService {
     }
 
     func iconEntry(entries: [String], appPrefix: String, info: [String: Any]) -> String? {
+        iconEntry(
+            pngEntries: entries.filter { $0.hasPrefix(appPrefix) && $0.lowercased().hasSuffix(".png") },
+            info: info
+        )
+    }
+
+    func iconEntry(pngEntries: [String], info: [String: Any]) -> String? {
         let names = iconBaseNames(from: info)
         guard !names.isEmpty else {
             return nil
         }
 
-        let pngEntries = entries
-            .filter { $0.hasPrefix(appPrefix) && $0.lowercased().hasSuffix(".png") }
-            .sorted { iconScore($0) > iconScore($1) }
+        var bestEntry: String?
+        var bestScore = 0
 
-        return pngEntries.first { entry in
+        for entry in pngEntries {
             let baseName = URL(fileURLWithPath: entry).deletingPathExtension().lastPathComponent
-            return names.contains { baseName == $0 || baseName.hasPrefix($0 + "@") }
+            guard names.contains(where: { baseName == $0 || baseName.hasPrefix($0 + "@") }) else {
+                continue
+            }
+
+            let score = iconScore(entry)
+            if score > bestScore {
+                bestEntry = entry
+                bestScore = score
+            }
         }
+
+        return bestEntry
     }
 
     func iconBaseNames(from info: [String: Any]) -> [String] {
@@ -488,14 +610,16 @@ private extension IPAPreviewService {
 
         var commonName: CFString?
         SecCertificateCopyCommonName(certificate, &commonName)
+        let values = certificateValues(certificate)
+        let subjectValues = certificateSubjectValues(from: values)
         let der = SecCertificateCopyData(certificate) as Data
         return IPAPreviewCertificate(
             commonName: commonName as String? ?? certificateSummary(certificate),
-            organization: certificateSubjectValue(certificate, oid: kSecOIDOrganizationName),
-            teamIdentifier: certificateSubjectValue(certificate, oid: kSecOIDOrganizationalUnitName),
-            countryName: certificateSubjectValue(certificate, oid: kSecOIDCountryName),
-            notBefore: certificateDate(certificate, oid: kSecOIDX509V1ValidityNotBefore),
-            notAfter: certificateDate(certificate, oid: kSecOIDX509V1ValidityNotAfter),
+            organization: subjectValue(subjectValues, oid: kSecOIDOrganizationName),
+            teamIdentifier: subjectValue(subjectValues, oid: kSecOIDOrganizationalUnitName),
+            countryName: subjectValue(subjectValues, oid: kSecOIDCountryName),
+            notBefore: certificateDate(from: values, oid: kSecOIDX509V1ValidityNotBefore),
+            notAfter: certificateDate(from: values, oid: kSecOIDX509V1ValidityNotAfter),
             sha1Fingerprint: sha1Fingerprint(der)
         )
     }
@@ -504,29 +628,40 @@ private extension IPAPreviewService {
         SecCertificateCopySubjectSummary(certificate) as String? ?? ""
     }
 
-    func certificateSubjectValue(_ certificate: SecCertificate, oid: CFString) -> String {
-        guard let result = SecCertificateCopyValues(certificate, [kSecOIDX509V1SubjectName] as CFArray, nil) as? [CFString: [CFString: Any]],
-              let subject = result[kSecOIDX509V1SubjectName],
-              let subjectItems = subject[kSecPropertyKeyValue] as? [[CFString: Any]]
-        else {
-            return ""
-        }
-
-        for item in subjectItems {
-            guard let rawLabel = item[kSecPropertyKeyLabel] else {
-                continue
-            }
-            let label = rawLabel as! CFString
-            if CFEqual(label, oid), let value = item[kSecPropertyKeyValue] {
-                return "\(value)"
-            }
-        }
-        return ""
+    func certificateValues(_ certificate: SecCertificate) -> [CFString: [CFString: Any]] {
+        let keys: [CFString] = [
+            kSecOIDX509V1SubjectName,
+            kSecOIDX509V1ValidityNotBefore,
+            kSecOIDX509V1ValidityNotAfter
+        ]
+        return SecCertificateCopyValues(certificate, keys as CFArray, nil) as? [CFString: [CFString: Any]] ?? [:]
     }
 
-    func certificateDate(_ certificate: SecCertificate, oid: CFString) -> Date? {
-        guard let result = SecCertificateCopyValues(certificate, [oid] as CFArray, nil) as? [CFString: [CFString: Any]],
-              let dict = result[oid],
+    func certificateSubjectValues(from result: [CFString: [CFString: Any]]) -> [String: String] {
+        guard let subject = result[kSecOIDX509V1SubjectName],
+              let subjectItems = subject[kSecPropertyKeyValue] as? [[CFString: Any]]
+        else {
+            return [:]
+        }
+
+        var values: [String: String] = [:]
+        for item in subjectItems {
+            guard let rawLabel = item[kSecPropertyKeyLabel] as? String,
+                  let value = item[kSecPropertyKeyValue]
+            else {
+                continue
+            }
+            values[rawLabel] = "\(value)"
+        }
+        return values
+    }
+
+    func subjectValue(_ values: [String: String], oid: CFString) -> String {
+        values[oid as String] ?? ""
+    }
+
+    func certificateDate(from result: [CFString: [CFString: Any]], oid: CFString) -> Date? {
+        guard let dict = result[oid],
               let value = dict[kSecPropertyKeyValue]
         else {
             return nil
@@ -565,24 +700,37 @@ private final class ZIPArchiveReader {
 
     private let fileHandle: FileHandle
     private let archiveSize: UInt64
-    private let entries: [Entry]
+    private let entriesByName: [String: Entry]
 
     init(url: URL) throws {
         fileHandle = try FileHandle(forReadingFrom: url)
         archiveSize = UInt64((try url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-        entries = try ZIPArchiveReader.loadEntries(fileHandle: fileHandle, archiveSize: archiveSize)
+        let loadedEntries = try ZIPArchiveReader.loadEntries(fileHandle: fileHandle, archiveSize: archiveSize)
+
+        var indexedEntries: [String: Entry] = [:]
+        indexedEntries.reserveCapacity(loadedEntries.count)
+        for entry in loadedEntries where indexedEntries[entry.name] == nil {
+            indexedEntries[entry.name] = entry
+        }
+        entriesByName = indexedEntries
     }
 
     deinit {
         try? fileHandle.close()
     }
 
-    func entryNames() -> [String] {
-        entries.map(\.name)
+    func firstEntryName(where predicate: (String) -> Bool) -> String? {
+        entriesByName.keys.first(where: predicate)
+    }
+
+    func forEachEntryName(_ body: (String) -> Void) {
+        for name in entriesByName.keys {
+            body(name)
+        }
     }
 
     func data(for name: String) throws -> Data {
-        guard let entry = entries.first(where: { $0.name == name }) else {
+        guard let entry = entriesByName[name] else {
             throw IPAPreviewError.missingArchiveEntry(name)
         }
         guard entry.flags & 0x0001 == 0 else {
@@ -652,8 +800,10 @@ private extension ZIPArchiveReader {
                 throw IPAPreviewError.invalidArchive
             }
 
-            let fileNameData = centralDirectory.subdata(in: fileNameOffset..<(fileNameOffset + fileNameLength))
-            let fileName = String(data: fileNameData, encoding: .utf8) ?? String(decoding: fileNameData, as: UTF8.self)
+            let fileName = centralDirectory.withUnsafeBytes { rawBuffer -> String in
+                let bytes = rawBuffer.bindMemory(to: UInt8.self)
+                return String(decoding: bytes[fileNameOffset..<(fileNameOffset + fileNameLength)], as: UTF8.self)
+            }
             result.append(Entry(
                 name: fileName,
                 flags: flags,
