@@ -7,7 +7,7 @@
 EasySign 起初是"iOS IPA 重签"垂直工具，重签功能做扎实之后，又陆续加入了二维码生成/扫描、设备管理两个相对独立的 tab，外加 Finder QuickLook 扩展。三个 tab 的代码各自为政：
 
 - **重签 tab** 写在 `ContentView.swift` 主体里（750×670 固定窗口），表单 + 同步 11 步流水线
-- **二维码 tab** 是一个 11 行的 SwiftUI view，AirDrop/Share 接好但和重签完全没关联
+- **二维码 tab** 是一个小 SwiftUI view，AirDrop/Share 接好但和重签完全没关联
 - **设备 tab** 是 1.5k LoC 的独立子系统（MobileDevice.framework / AFC / House Arrest / FileBrowser），有自己的拖拽、进度、冲突解决，但也没有和重签打通
 
 这 4 块是 4 个半成品的独立产品，缺的是把它们串成"iOS 开发者日常工作流"的产品骨架。
@@ -240,7 +240,9 @@ public final class ServiceHub {
         )
     }
     
-    /// 启动时校验：所有工具声明的服务是否都已注册
+    /// 启动时校验：所有工具声明的服务是否都已注册。
+    /// 在 DEBUG 启动时强制调用（见 §11 阶段 1 / §13.4 契约测试），
+    /// Release 模式不调用以避免 release 崩溃。
     public func validate() {
         for tool in ToolRegistry.allTools {
             for key in tool.requiredServices {
@@ -734,6 +736,8 @@ easysign://run/<runId>             # 打开历史 run 的 log
 
 6 阶段渐进，每阶段独立可回退：
 
+> **实现计划拆分**：本设计对应的实现计划会按阶段拆为 5-6 份 plan（阶段 1 ~ 阶段 5 各自一份，阶段 6 是独立工具的 spec+plan）。本 spec 描述整体方向；具体 plan 在 `writing-plans` 阶段产出。
+
 ### 阶段 1：搭建 Shell 骨架
 
 - 新建 `Shell/` 目录
@@ -745,19 +749,20 @@ easysign://run/<runId>             # 打开历史 run 的 log
 
 ### 阶段 2：切到 ShellView（不改工具）
 
-- `ContentView.swift` 拆分为 `Features/Resign/ResignContentView.swift` + `Features/QRCode/QRCodeToolView.swift`（已有）+ `Features/Devices/DeviceView.swift`（已有）
-- 每个 View 顶层加 `Tool` 实现壳
+- `ContentView.swift` 内的 Resign tab 拆出为 `Features/Resign/ResignContentView.swift` + `ResignViewModel.swift`（沿用现有 `ContentViewModel` 的逻辑，类重命名为 `ResignViewModel`）
+- `QRCodeToolView.swift`、`DeviceView.swift` 已是独立文件，物理移动到 `Features/QRCode/` 和 `Features/Devices/` 即可
+- 每个 View 顶层加 `Tool` 实现壳（`ResignTool` / `QRCodeTool` / `DevicesTool`）
 - `ShellView` 根据 `useShell` 渲染：true 用 Tool 协议驱动，false 保持原 `ContentView`
 - `useShell` 切到 `true` 验证三个 tab 工作正常
 - 提交：`feat(shell): migrate tab views to feature folders`
 
 ### 阶段 3：抽共享服务
 
-- 抽出 `LoggerService`（基于 `LoggerProtocol`）
-- 抽出 `SettingsStore`（迁移 `UserDefaults` 9 个 key）
+- 抽出 `LoggerService`（基于现有 `LoggerProtocol`）
+- 抽出 `SettingsStore`（迁移 `UserDefaults` 9 个 key，键名保持一致）
 - 抽出 `RecentFilesService`
 - 抽出 `ArtifactStore`（暂时只是骨架）
-- `ContentViewModel` 改用 `LoggerService` / `SettingsStore` / `RecentFilesService`
+- `ResignViewModel` 改用 `LoggerService` / `SettingsStore` / `RecentFilesService`（替换现有 9 个 `CacheKey` 写入和 `ContentViewModel.logString` 拼接）
 - 提交：`feat(services): extract logger, settings, recent files, artifact store`
 
 ### 阶段 4：业务服务
