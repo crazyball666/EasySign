@@ -69,6 +69,11 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
             self.render(info: info)
         }
     }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        print("[QuickLook] view.frame=\(view.frame) window=\(view.window?.frame ?? .zero)")
+    }
 }
 
 private extension PreviewViewController {
