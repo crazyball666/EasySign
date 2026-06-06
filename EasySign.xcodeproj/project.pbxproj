@@ -7,12 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		35E391FEC21DCF69196B87C9 /* EasySign/ResignService/Model/IPAPreviewHTMLRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02DE45FEF3088A40C5BD1BBE /* EasySign/ResignService/Model/IPAPreviewHTMLRenderer.swift */; };
+		35E391FEC21DCF69196B87C9 /* EasySign/Core/Resigning/Model/IPAPreviewHTMLRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02DE45FEF3088A40C5BD1BBE /* EasySign/Core/Resigning/Model/IPAPreviewHTMLRenderer.swift */; };
 		7C0000010000000100000001 /* MobileDevice.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C0000010000000100000002 /* MobileDevice.framework */; };
 		7C047AFF2DFE61D30063989A /* CryptoSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 7C047AFE2DFE61D30063989A /* CryptoSwift */; };
 		89101DE4E299978AEB7F8BBA /* Quartz.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E0DF986375702FE59B3232BD /* Quartz.framework */; };
 		CCF9D857907B66510FC637BF /* EasySignQuickLook.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 8C95EA07F8B625C31232873C /* EasySignQuickLook.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		D3FF28E2DE9FAD905A4A8614 /* EasySign/ResignService/Model/IPAPreviewService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 411CFFCB18359A293F5DDB68 /* EasySign/ResignService/Model/IPAPreviewService.swift */; };
+		D3FF28E2DE9FAD905A4A8614 /* EasySign/Core/Resigning/Model/IPAPreviewService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 411CFFCB18359A293F5DDB68 /* EasySign/Core/Resigning/Model/IPAPreviewService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -50,8 +50,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		02DE45FEF3088A40C5BD1BBE /* EasySign/ResignService/Model/IPAPreviewHTMLRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EasySign/ResignService/Model/IPAPreviewHTMLRenderer.swift; sourceTree = SOURCE_ROOT; };
-		411CFFCB18359A293F5DDB68 /* EasySign/ResignService/Model/IPAPreviewService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EasySign/ResignService/Model/IPAPreviewService.swift; sourceTree = SOURCE_ROOT; };
+		02DE45FEF3088A40C5BD1BBE /* EasySign/Core/Resigning/Model/IPAPreviewHTMLRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EasySign/Core/Resigning/Model/IPAPreviewHTMLRenderer.swift; sourceTree = SOURCE_ROOT; };
+		411CFFCB18359A293F5DDB68 /* EasySign/Core/Resigning/Model/IPAPreviewService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EasySign/Core/Resigning/Model/IPAPreviewService.swift; sourceTree = SOURCE_ROOT; };
 		4817C90FD13E6007607F3D0A /* libPods-iFocus.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-iFocus.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		7C0000010000000100000002 /* MobileDevice.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MobileDevice.framework; path = /System/Library/PrivateFrameworks/MobileDevice.framework; sourceTree = "<absolute>"; };
 		7CD6C1A72C4197E900C1DB7F /* EasySign.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EasySign.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -141,8 +141,8 @@
 		9BECE0D232327CF9954C05E7 /* Shared Preview Sources */ = {
 			isa = PBXGroup;
 			children = (
-				411CFFCB18359A293F5DDB68 /* EasySign/ResignService/Model/IPAPreviewService.swift */,
-				02DE45FEF3088A40C5BD1BBE /* EasySign/ResignService/Model/IPAPreviewHTMLRenderer.swift */,
+				411CFFCB18359A293F5DDB68 /* EasySign/Core/Resigning/Model/IPAPreviewService.swift */,
+				02DE45FEF3088A40C5BD1BBE /* EasySign/Core/Resigning/Model/IPAPreviewHTMLRenderer.swift */,
 			);
 			name = "Shared Preview Sources";
 			sourceTree = "<group>";
@@ -273,8 +273,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				35E391FEC21DCF69196B87C9 /* EasySign/ResignService/Model/IPAPreviewHTMLRenderer.swift in Sources */,
-				D3FF28E2DE9FAD905A4A8614 /* EasySign/ResignService/Model/IPAPreviewService.swift in Sources */,
+				35E391FEC21DCF69196B87C9 /* EasySign/Core/Resigning/Model/IPAPreviewHTMLRenderer.swift in Sources */,
+				D3FF28E2DE9FAD905A4A8614 /* EasySign/Core/Resigning/Model/IPAPreviewService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

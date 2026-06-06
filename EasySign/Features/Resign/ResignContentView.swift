@@ -6,6 +6,10 @@
 //
 
 import SwiftUI
+
+enum KeychainKey {
+    static let p12Password = "resign.p12Password"
+}
 import UniformTypeIdentifiers
 
 extension Binding where Value == Bool {
@@ -52,7 +56,7 @@ enum CacheKey: String {
 
 
 class ContentViewModel: ObservableObject, LoggerProtocol {
-    func log(_ level: LogLevel, _ text: String) {
+    func log(_ level: LegacyLogLevel, _ text: String) {
         DispatchQueue.main.async {
             self.logString += "[\(level.rawValue)] \(text)\n"
         }
@@ -424,7 +428,7 @@ struct InjectedDylibPickerView: View {
     }
 }
 
-struct LogPanelView: View {
+struct LegacyLogPanelView: View {
     let logText: String
 
     var body: some View {
@@ -449,122 +453,13 @@ struct LogPanelView: View {
 }
 
 
-enum NavigationTab: String, CaseIterable {
-    case resign = "重签"
-    case qrcode = "二维码"
-    case devices = "设备"
-}
-
-struct SidebarView: View {
-    @Binding var selectedTab: NavigationTab
-
-    var body: some View {
-        VStack(spacing: 6) {
-            ForEach(NavigationTab.allCases, id: \.rawValue) { tab in
-                SidebarItem(
-                    title: tab.rawValue,
-                    icon: tab == .resign ? "doc.badge.gearshape" : (tab == .qrcode ? "qrcode" : "iphone"),
-                    isSelected: selectedTab == tab
-                ) {
-                    selectedTab = tab
-                }
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 8)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor).opacity(0.55))
-                .frame(width: 1)
-        }
-    }
-}
-
-struct SidebarItem: View {
-    let title: String
-    let icon: String
-    let isSelected: Bool
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(itemBackground)
-
-                Capsule(style: .continuous)
-                    .fill(Color.accentColor)
-                    .frame(width: 3, height: 28)
-                    .opacity(isSelected ? 1 : 0)
-                    .padding(.leading, 2)
-
-                VStack(spacing: 5) {
-                    Image(systemName: icon)
-                        .font(.system(size: 18, weight: .medium))
-                        .symbolRenderingMode(.hierarchical)
-                    Text(title)
-                        .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 54)
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(isSelected ? Color.accentColor.opacity(0.16) : Color.clear, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-        .animation(.easeOut(duration: 0.16), value: isSelected)
-        .animation(.easeOut(duration: 0.16), value: isHovered)
-    }
-
-    private var itemBackground: Color {
-        if isSelected {
-            return Color.accentColor.opacity(0.10)
-        }
-        return isHovered ? Color.primary.opacity(0.045) : Color.clear
-    }
-}
 
 
-struct ContentView: View {
-    @State private var selectedTab: NavigationTab = .resign
-
-    var body: some View {
-        HStack(spacing: 0) {
-            // 侧边栏
-            SidebarView(selectedTab: $selectedTab)
-                .frame(width: 80)
-
-            // 内容区域
-            Group {
-                switch selectedTab {
-                case .resign:
-                    ResignContentView()
-                case .qrcode:
-                    QRCodeToolView()
-                case .devices:
-                    DeviceView()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-}
 
 struct ResignContentView: View {
     @StateObject var viewModel = ContentViewModel()
     @State var logText = ""
+    @State private var validationError: String?
 
     private var injectedDylibText: Binding<String> {
         Binding {
@@ -694,7 +589,7 @@ struct ResignContentView: View {
                         selectIcon: "folder"
                     )
 
-                    LogPanelView(logText: viewModel.logString)
+                    LegacyLogPanelView(logText: viewModel.logString)
 
                     HStack {
                         Spacer()
@@ -716,7 +611,12 @@ struct ResignContentView: View {
         .onAppear(perform: {
             viewModel.inputFile = UserDefaults.standard.string(forKey: CacheKey.selectedInput.rawValue) ?? ""
             viewModel.p12Path = UserDefaults.standard.string(forKey: CacheKey.selectedP12.rawValue) ?? ""
-            viewModel.p12Password = UserDefaults.standard.string(forKey: CacheKey.selectedP12Password.rawValue) ?? ""
+            // P12 密码从 Keychain 读取（兼容旧 UserDefaults 数据）
+            viewModel.p12Password = KeychainService.shared.get(KeychainKey.p12Password)
+                ?? UserDefaults.standard.string(forKey: CacheKey.selectedP12Password.rawValue)
+                ?? ""
+            // 清理明文 UserDefaults（一次性迁移）
+            UserDefaults.standard.removeObject(forKey: CacheKey.selectedP12Password.rawValue)
             viewModel.mobileprovisionPath = UserDefaults.standard.string(forKey: CacheKey.selectedMobileProvision.rawValue) ?? ""
             let cachedInjectedDylibs = UserDefaults.standard.stringArray(forKey: CacheKey.selectedInjectedDylibs.rawValue) ?? []
             viewModel.injectedDylibPaths = cachedInjectedDylibs
@@ -735,9 +635,20 @@ struct ResignContentView: View {
             Text(viewModel.presentError?.localizedDescription ?? "")
         }
         .alert("重签成功", isPresented: Binding(value: $viewModel.resignSuccessOutputPath)) {
-            Button("OK", role: .cancel) {}
+            Button("在 Finder 中显示") { revealOutputInFinder() }
+            Button("复制路径") { copyOutputPath() }
+            Button("分享") { shareOutput() }
+            Button("关闭", role: .cancel) {}
         } message: {
             Text("IPA 已导出到：\n\(viewModel.resignSuccessOutputPath ?? "")")
+        }
+        .alert("无法开始", isPresented: Binding(
+            get: { validationError != nil },
+            set: { if !$0 { validationError = nil } }
+        )) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(validationError ?? "")
         }
         .sheet(isPresented: $viewModel.loading) {
             CustomLoadingView(text: "重签中", color: .blue)
@@ -824,10 +735,70 @@ struct ResignContentView: View {
         }
     }
 
+    // MARK: - Pre-flight validation
+    private func validateBeforeStart() -> String? {
+        if viewModel.inputFile.isEmpty { return "请选择 IPA 文件" }
+        if !FileManager.default.fileExists(atPath: viewModel.inputFile) {
+            return "IPA 文件不存在：\(viewModel.inputFile)"
+        }
+        if viewModel.p12Path.isEmpty { return "请选择 P12 证书" }
+        if !FileManager.default.fileExists(atPath: viewModel.p12Path) {
+            return "P12 文件不存在：\(viewModel.p12Path)"
+        }
+        if viewModel.p12Password.isEmpty { return "请输入 P12 密码" }
+        if viewModel.mobileprovisionPath.isEmpty { return "请选择 mobileprovision" }
+        if !FileManager.default.fileExists(atPath: viewModel.mobileprovisionPath) {
+            return "mobileprovision 不存在：\(viewModel.mobileprovisionPath)"
+        }
+        if viewModel.outputDir.isEmpty { return "请选择输出目录" }
+        var isDir: ObjCBool = false
+        if !FileManager.default.fileExists(atPath: viewModel.outputDir, isDirectory: &isDir) || !isDir.boolValue {
+            return "输出目录不存在或不是目录：\(viewModel.outputDir)"
+        }
+        if viewModel.isDylibInjectionEnabled {
+            for dylib in viewModel.injectedDylibPaths {
+                if !FileManager.default.fileExists(atPath: dylib) {
+                    return "注入 dylib 不存在：\(dylib)"
+                }
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Success actions (alert 4 动作)
+    private func revealOutputInFinder() {
+        guard let path = viewModel.resignSuccessOutputPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    private func copyOutputPath() {
+        guard let path = viewModel.resignSuccessOutputPath else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+    }
+
+    private func shareOutput() {
+        guard let path = viewModel.resignSuccessOutputPath else { return }
+        let url = URL(fileURLWithPath: path)
+        let picker = NSSharingServicePicker(items: [url])
+        if let window = NSApp.keyWindow, let contentView = window.contentView {
+            picker.show(relativeTo: contentView.bounds, of: contentView, preferredEdge: .minY)
+        }
+    }
+
     private func onTapStart() {
+        // 前置校验
+        if let err = validateBeforeStart() {
+            validationError = err
+            return
+        }
+
+        // 同步密码到 Keychain（如果用户希望"记住"）
+        KeychainService.shared.set(viewModel.p12Password, for: KeychainKey.p12Password)
+
         UserDefaults.standard.set(viewModel.inputFile, forKey: CacheKey.selectedInput.rawValue)
         UserDefaults.standard.set(viewModel.p12Path, forKey: CacheKey.selectedP12.rawValue)
-        UserDefaults.standard.set(viewModel.p12Password, forKey: CacheKey.selectedP12Password.rawValue)
+        // P12 密码改存 Keychain（不再明文 UserDefaults）
         UserDefaults.standard.set(viewModel.mobileprovisionPath, forKey: CacheKey.selectedMobileProvision.rawValue)
         UserDefaults.standard.set(viewModel.isDylibInjectionEnabled, forKey: CacheKey.selectedDylibInjectionEnabled.rawValue)
         UserDefaults.standard.set(viewModel.injectedDylibPaths, forKey: CacheKey.selectedInjectedDylibs.rawValue)
@@ -872,5 +843,5 @@ struct ResignContentView: View {
 }
 
 #Preview {
-    ContentView()
+    ResignContentView()
 }
