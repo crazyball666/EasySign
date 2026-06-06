@@ -52,7 +52,7 @@ enum CacheKey: String {
 
 
 class ContentViewModel: ObservableObject, LoggerProtocol {
-    func log(_ level: LogLevel, _ text: String) {
+    func log(_ level: LegacyLogLevel, _ text: String) {
         DispatchQueue.main.async {
             self.logString += "[\(level.rawValue)] \(text)\n"
         }
@@ -449,94 +449,11 @@ struct LogPanelView: View {
 }
 
 
-enum NavigationTab: String, CaseIterable {
-    case resign = "重签"
-    case qrcode = "二维码"
-    case devices = "设备"
-}
-
-struct SidebarView: View {
-    @Binding var selectedTab: NavigationTab
-
-    var body: some View {
-        VStack(spacing: 6) {
-            ForEach(NavigationTab.allCases, id: \.rawValue) { tab in
-                SidebarItem(
-                    title: tab.rawValue,
-                    icon: tab == .resign ? "doc.badge.gearshape" : (tab == .qrcode ? "qrcode" : "iphone"),
-                    isSelected: selectedTab == tab
-                ) {
-                    selectedTab = tab
-                }
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 8)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .overlay(alignment: .trailing) {
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor).opacity(0.55))
-                .frame(width: 1)
-        }
-    }
-}
-
-struct SidebarItem: View {
-    let title: String
-    let icon: String
-    let isSelected: Bool
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(itemBackground)
-
-                Capsule(style: .continuous)
-                    .fill(Color.accentColor)
-                    .frame(width: 3, height: 28)
-                    .opacity(isSelected ? 1 : 0)
-                    .padding(.leading, 2)
-
-                VStack(spacing: 5) {
-                    Image(systemName: icon)
-                        .font(.system(size: 18, weight: .medium))
-                        .symbolRenderingMode(.hierarchical)
-                    Text(title)
-                        .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 54)
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(isSelected ? Color.accentColor.opacity(0.16) : Color.clear, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-        .animation(.easeOut(duration: 0.16), value: isSelected)
-        .animation(.easeOut(duration: 0.16), value: isHovered)
-    }
-
-    private var itemBackground: Color {
-        if isSelected {
-            return Color.accentColor.opacity(0.10)
-        }
-        return isHovered ? Color.primary.opacity(0.045) : Color.clear
-    }
-}
 
 
+#if false
+// 旧的 ContentView（带 tab 切换的根视图）已被新 RootView 取代。保留 #if false 防止破坏
+// ResignContentView 的结构，等清理阶段统一删除。
 struct ContentView: View {
     @State private var selectedTab: NavigationTab = .resign
 
@@ -561,6 +478,7 @@ struct ContentView: View {
         }
     }
 }
+#endif
 
 struct ResignContentView: View {
     @StateObject var viewModel = ContentViewModel()
@@ -872,5 +790,5 @@ struct ResignContentView: View {
 }
 
 #Preview {
-    ContentView()
+    ResignContentView()
 }

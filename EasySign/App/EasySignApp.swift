@@ -9,11 +9,18 @@ import SwiftUI
 
 @main
 struct EasySignApp: App {
+    @State private var hub: ServiceHub
+
+    init() {
+        let h = ServiceHub.live()
+        h.validate()
+        _hub = State(initialValue: h)
+    }
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .frame(width: 750, height: 670)
+            RootView(hub: hub)
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
     }
 }
