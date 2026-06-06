@@ -21,6 +21,6 @@ struct EasySignApp: App {
         WindowGroup {
             RootView(hub: hub)
         }
-        .windowResizability(.contentMinSize)
+        .windowResizability(.contentSize)
     }
 }

@@ -18,7 +18,7 @@ struct RootView: View {
         .safeAreaInset(edge: .bottom) {
             StatusBar(currentTool: currentTool, artifactStore: hub.artifact)
         }
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(minWidth: 750, minHeight: 670)  // 保持原有固定窗口尺寸
     }
 
     @ViewBuilder

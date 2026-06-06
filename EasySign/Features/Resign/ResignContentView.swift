@@ -451,34 +451,6 @@ struct LogPanelView: View {
 
 
 
-#if false
-// 旧的 ContentView（带 tab 切换的根视图）已被新 RootView 取代。保留 #if false 防止破坏
-// ResignContentView 的结构，等清理阶段统一删除。
-struct ContentView: View {
-    @State private var selectedTab: NavigationTab = .resign
-
-    var body: some View {
-        HStack(spacing: 0) {
-            // 侧边栏
-            SidebarView(selectedTab: $selectedTab)
-                .frame(width: 80)
-
-            // 内容区域
-            Group {
-                switch selectedTab {
-                case .resign:
-                    ResignContentView()
-                case .qrcode:
-                    QRCodeToolView()
-                case .devices:
-                    DeviceView()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-}
-#endif
 
 struct ResignContentView: View {
     @StateObject var viewModel = ContentViewModel()

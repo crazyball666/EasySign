@@ -22,8 +22,9 @@ public struct LogEntry: Identifiable, Codable {
 }
 
 public final class LoggerService {
-    private var buffer: [LogEntry] = []
-    public private(set) var currentRunId: UUID?
+    private let queue = DispatchQueue(label: "LoggerService")
+    private var _buffer: [LogEntry] = []
+    private var _currentRunId: UUID?
 
     public init() {}
 
@@ -34,17 +35,23 @@ public final class LoggerService {
     }
 
     public func log(_ level: LogLevel, tool: String, category: String, _ message: String) {
-        let entry = LogEntry(runId: currentRunId, level: level,
-                              category: category, tool: tool, message: message)
-        buffer.append(entry)
-        if buffer.count > 1000 { buffer.removeFirst() }
+        queue.sync {
+            let entry = LogEntry(runId: _currentRunId, level: level,
+                                  category: category, tool: tool, message: message)
+            _buffer.append(entry)
+            if _buffer.count > 1000 { _buffer.removeFirst() }
+        }
     }
 
-    public var recentEntries: [LogEntry] { buffer }
+    public var recentEntries: [LogEntry] {
+        queue.sync { _buffer }
+    }
 
     public func entries(forRun runId: UUID) -> [LogEntry] {
-        buffer.filter { $0.runId == runId }
+        queue.sync { _buffer.filter { $0.runId == runId } }
     }
 
-    public func setCurrentRun(_ runId: UUID?) { currentRunId = runId }
+    public func setCurrentRun(_ runId: UUID?) {
+        queue.sync { _currentRunId = runId }
+    }
 }

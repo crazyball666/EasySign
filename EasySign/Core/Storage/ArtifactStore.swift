@@ -7,6 +7,9 @@ public final class ArtifactStore: ObservableObject {
     private var artifacts: [UUID: ResignArtifact] = [:]
     private let queue = DispatchQueue(label: "ArtifactStore")
 
+    /// @Published 触发 SwiftUI 重新渲染。StatusBar 等观察者依赖此。
+    @Published private(set) var sortedArtifacts: [ResignArtifact] = []
+
     public init(logger: LoggerService) {
         self.logger = logger
         let support = FileManager.default.urls(for: .applicationSupportDirectory,
@@ -16,6 +19,7 @@ public final class ArtifactStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         self.storeURL = dir.appendingPathComponent("artifacts.json")
         load()
+        recomputeSorted()
     }
 
     @discardableResult
@@ -28,7 +32,11 @@ public final class ArtifactStore: ObservableObject {
                                        finishedAt: nil, inputIPA: inputIPA, outputIPA: nil,
                                        logPath: logs, workspacePath: workspace,
                                        status: .running, tool: tool, summary: "")
-        queue.sync { artifacts[runId] = artifact; save() }
+        queue.sync {
+            artifacts[runId] = artifact
+            save()
+            recomputeSortedLocked()
+        }
         logger.setCurrentRun(runId)
         return runId
     }
@@ -36,13 +44,15 @@ public final class ArtifactStore: ObservableObject {
     public func finishRun(_ runId: UUID, status: ResignArtifact.Status,
                           outputIPA: URL?, summary: String) {
         queue.sync {
-            guard var a = artifacts[runId] else { return }
-            a = ResignArtifact(id: a.id, runId: a.runId, startedAt: a.startedAt,
-                                finishedAt: Date(), inputIPA: a.inputIPA, outputIPA: outputIPA,
-                                logPath: a.logPath, workspacePath: a.workspacePath,
-                                status: status, tool: a.tool, summary: summary)
-            artifacts[runId] = a
+            guard let prev = artifacts[runId] else { return }
+            let updated = ResignArtifact(id: prev.id, runId: prev.runId, startedAt: prev.startedAt,
+                                          finishedAt: Date(), inputIPA: prev.inputIPA,
+                                          outputIPA: outputIPA, logPath: prev.logPath,
+                                          workspacePath: prev.workspacePath, status: status,
+                                          tool: prev.tool, summary: summary)
+            artifacts[runId] = updated
             save()
+            recomputeSortedLocked()
         }
         logger.setCurrentRun(nil)
     }
@@ -63,6 +73,10 @@ public final class ArtifactStore: ObservableObject {
         }
     }
 
+    public var latest: ResignArtifact? {
+        queue.sync { sortedArtifacts.first }
+    }
+
     public func revealInFinder(_ url: URL) {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
@@ -75,7 +89,22 @@ public final class ArtifactStore: ObservableObject {
                 artifacts.removeValue(forKey: id)
             }
             save()
+            recomputeSortedLocked()
         }
+    }
+
+    /// 在 queue 内调用：刷新 published 数组。
+    private func recomputeSortedLocked() {
+        let sorted = artifacts.values.sorted { $0.startedAt > $1.startedAt }
+        // 在主线程发布，避免 ObservableObject 跨线程警告
+        DispatchQueue.main.async { [weak self] in
+            self?.sortedArtifacts = sorted
+        }
+    }
+
+    /// 在 queue 外调用：便利方法。
+    private func recomputeSorted() {
+        queue.sync { recomputeSortedLocked() }
     }
 
     private func makeLogsDir() -> URL {

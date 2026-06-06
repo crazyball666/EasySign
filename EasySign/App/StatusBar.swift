@@ -13,7 +13,7 @@ struct StatusBar: View {
                     .font(.caption)
             }
             Spacer()
-            if let last = artifactStore.allArtifacts(limit: 1).first {
+            if let last = artifactStore.latest {
                 StatusBadge(status: last.status)
             }
         }

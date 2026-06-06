@@ -5,8 +5,8 @@ struct DevicesTool: Tool {
     let subtitle = "浏览已连接 iOS 设备的文件"
     let icon = "iphone"
     let accentColor = Color.purple
-    let category: ToolCategory = .active
-    let sortOrder = 0
+    let category: ToolCategory = .frequent
+    let sortOrder = 2
 
     var requiredServices: Set<ServiceKey> { [.logger] }
 
