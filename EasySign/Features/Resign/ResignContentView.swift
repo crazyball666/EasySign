@@ -424,7 +424,7 @@ struct InjectedDylibPickerView: View {
     }
 }
 
-struct LogPanelView: View {
+struct LegacyLogPanelView: View {
     let logText: String
 
     var body: some View {
@@ -584,7 +584,7 @@ struct ResignContentView: View {
                         selectIcon: "folder"
                     )
 
-                    LogPanelView(logText: viewModel.logString)
+                    LegacyLogPanelView(logText: viewModel.logString)
 
                     HStack {
                         Spacer()

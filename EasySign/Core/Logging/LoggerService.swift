@@ -21,7 +21,7 @@ public struct LogEntry: Identifiable, Codable {
     }
 }
 
-public final class LoggerService {
+public final class LoggerService: ObservableObject {
     private let queue = DispatchQueue(label: "LoggerService")
     private var _buffer: [LogEntry] = []
     private var _currentRunId: UUID?
