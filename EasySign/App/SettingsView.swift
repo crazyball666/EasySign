@@ -1,0 +1,89 @@
+import SwiftUI
+
+struct SettingsView: View {
+    @ObservedObject var settings: SettingsStore
+
+    var body: some View {
+        TabView {
+            generalTab.tabItem { Label("常规", systemImage: "gear") }
+            filesTab.tabItem { Label("文件", systemImage: "doc") }
+            aboutTab.tabItem { Label("关于", systemImage: "info.circle") }
+        }
+        .frame(width: 480, height: 320)
+    }
+
+    private var generalTab: some View {
+        Form {
+            Toggle("启动时恢复上次工具", isOn: launchRestoresBinding)
+            Toggle("启用实验性功能", isOn: experimentalBinding)
+        }
+        .padding(16)
+    }
+
+    private var filesTab: some View {
+        Form {
+            Stepper(value: recentFilesCapBinding, in: 1...50) {
+                Text("最近文件保留数量：\(recentFilesCapBinding.wrappedValue)")
+            }
+            Stepper(value: logRetentionBinding, in: 7...90) {
+                Text("日志保留天数：\(logRetentionBinding.wrappedValue)")
+            }
+            HStack {
+                Text("工作区保留天数")
+                Spacer()
+                Text("\(workspaceRetentionBinding.wrappedValue)")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+    }
+
+    private var aboutTab: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "signature")
+                .font(.system(size: 48))
+                .foregroundStyle(.blue)
+            Text("EasySign").font(.title)
+            Text("iOS/macOS 重签 + 工具集")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding()
+    }
+
+    private var launchRestoresBinding: Binding<Bool> {
+        Binding(
+            get: { settings.bool(.launchRestoresLastTool) },
+            set: { settings.set($0, for: .launchRestoresLastTool) }
+        )
+    }
+
+    private var experimentalBinding: Binding<Bool> {
+        Binding(
+            get: { settings.bool(.enableExperimental) },
+            set: { settings.set($0, for: .enableExperimental) }
+        )
+    }
+
+    private var recentFilesCapBinding: Binding<Int> {
+        Binding(
+            get: { max(1, settings.int(.recentFilesCap) == 0 ? 20 : settings.int(.recentFilesCap)) },
+            set: { settings.set($0, for: .recentFilesCap) }
+        )
+    }
+
+    private var logRetentionBinding: Binding<Int> {
+        Binding(
+            get: { settings.int(.logRetentionDays) == 0 ? 30 : settings.int(.logRetentionDays) },
+            set: { settings.set($0, for: .logRetentionDays) }
+        )
+    }
+
+    private var workspaceRetentionBinding: Binding<Int> {
+        Binding(
+            get: { settings.int(.workspaceRetentionDays) == 0 ? 7 : settings.int(.workspaceRetentionDays) },
+            set: { settings.set($0, for: .workspaceRetentionDays) }
+        )
+    }
+}

@@ -22,5 +22,9 @@ struct EasySignApp: App {
             RootView(hub: hub)
         }
         .windowResizability(.contentSize)
+
+        Settings {
+            SettingsView(settings: hub.settings)
+        }
     }
 }

@@ -6,6 +6,10 @@
 //
 
 import SwiftUI
+
+enum KeychainKey {
+    static let p12Password = "resign.p12Password"
+}
 import UniformTypeIdentifiers
 
 extension Binding where Value == Bool {
@@ -455,6 +459,7 @@ struct LegacyLogPanelView: View {
 struct ResignContentView: View {
     @StateObject var viewModel = ContentViewModel()
     @State var logText = ""
+    @State private var validationError: String?
 
     private var injectedDylibText: Binding<String> {
         Binding {
@@ -606,7 +611,12 @@ struct ResignContentView: View {
         .onAppear(perform: {
             viewModel.inputFile = UserDefaults.standard.string(forKey: CacheKey.selectedInput.rawValue) ?? ""
             viewModel.p12Path = UserDefaults.standard.string(forKey: CacheKey.selectedP12.rawValue) ?? ""
-            viewModel.p12Password = UserDefaults.standard.string(forKey: CacheKey.selectedP12Password.rawValue) ?? ""
+            // P12 密码从 Keychain 读取（兼容旧 UserDefaults 数据）
+            viewModel.p12Password = KeychainService.shared.get(KeychainKey.p12Password)
+                ?? UserDefaults.standard.string(forKey: CacheKey.selectedP12Password.rawValue)
+                ?? ""
+            // 清理明文 UserDefaults（一次性迁移）
+            UserDefaults.standard.removeObject(forKey: CacheKey.selectedP12Password.rawValue)
             viewModel.mobileprovisionPath = UserDefaults.standard.string(forKey: CacheKey.selectedMobileProvision.rawValue) ?? ""
             let cachedInjectedDylibs = UserDefaults.standard.stringArray(forKey: CacheKey.selectedInjectedDylibs.rawValue) ?? []
             viewModel.injectedDylibPaths = cachedInjectedDylibs
@@ -625,9 +635,20 @@ struct ResignContentView: View {
             Text(viewModel.presentError?.localizedDescription ?? "")
         }
         .alert("重签成功", isPresented: Binding(value: $viewModel.resignSuccessOutputPath)) {
-            Button("OK", role: .cancel) {}
+            Button("在 Finder 中显示") { revealOutputInFinder() }
+            Button("复制路径") { copyOutputPath() }
+            Button("分享") { shareOutput() }
+            Button("关闭", role: .cancel) {}
         } message: {
             Text("IPA 已导出到：\n\(viewModel.resignSuccessOutputPath ?? "")")
+        }
+        .alert("无法开始", isPresented: Binding(
+            get: { validationError != nil },
+            set: { if !$0 { validationError = nil } }
+        )) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(validationError ?? "")
         }
         .sheet(isPresented: $viewModel.loading) {
             CustomLoadingView(text: "重签中", color: .blue)
@@ -714,10 +735,70 @@ struct ResignContentView: View {
         }
     }
 
+    // MARK: - Pre-flight validation
+    private func validateBeforeStart() -> String? {
+        if viewModel.inputFile.isEmpty { return "请选择 IPA 文件" }
+        if !FileManager.default.fileExists(atPath: viewModel.inputFile) {
+            return "IPA 文件不存在：\(viewModel.inputFile)"
+        }
+        if viewModel.p12Path.isEmpty { return "请选择 P12 证书" }
+        if !FileManager.default.fileExists(atPath: viewModel.p12Path) {
+            return "P12 文件不存在：\(viewModel.p12Path)"
+        }
+        if viewModel.p12Password.isEmpty { return "请输入 P12 密码" }
+        if viewModel.mobileprovisionPath.isEmpty { return "请选择 mobileprovision" }
+        if !FileManager.default.fileExists(atPath: viewModel.mobileprovisionPath) {
+            return "mobileprovision 不存在：\(viewModel.mobileprovisionPath)"
+        }
+        if viewModel.outputDir.isEmpty { return "请选择输出目录" }
+        var isDir: ObjCBool = false
+        if !FileManager.default.fileExists(atPath: viewModel.outputDir, isDirectory: &isDir) || !isDir.boolValue {
+            return "输出目录不存在或不是目录：\(viewModel.outputDir)"
+        }
+        if viewModel.isDylibInjectionEnabled {
+            for dylib in viewModel.injectedDylibPaths {
+                if !FileManager.default.fileExists(atPath: dylib) {
+                    return "注入 dylib 不存在：\(dylib)"
+                }
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Success actions (alert 4 动作)
+    private func revealOutputInFinder() {
+        guard let path = viewModel.resignSuccessOutputPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    private func copyOutputPath() {
+        guard let path = viewModel.resignSuccessOutputPath else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+    }
+
+    private func shareOutput() {
+        guard let path = viewModel.resignSuccessOutputPath else { return }
+        let url = URL(fileURLWithPath: path)
+        let picker = NSSharingServicePicker(items: [url])
+        if let window = NSApp.keyWindow, let contentView = window.contentView {
+            picker.show(relativeTo: contentView.bounds, of: contentView, preferredEdge: .minY)
+        }
+    }
+
     private func onTapStart() {
+        // 前置校验
+        if let err = validateBeforeStart() {
+            validationError = err
+            return
+        }
+
+        // 同步密码到 Keychain（如果用户希望"记住"）
+        KeychainService.shared.set(viewModel.p12Password, for: KeychainKey.p12Password)
+
         UserDefaults.standard.set(viewModel.inputFile, forKey: CacheKey.selectedInput.rawValue)
         UserDefaults.standard.set(viewModel.p12Path, forKey: CacheKey.selectedP12.rawValue)
-        UserDefaults.standard.set(viewModel.p12Password, forKey: CacheKey.selectedP12Password.rawValue)
+        // P12 密码改存 Keychain（不再明文 UserDefaults）
         UserDefaults.standard.set(viewModel.mobileprovisionPath, forKey: CacheKey.selectedMobileProvision.rawValue)
         UserDefaults.standard.set(viewModel.isDylibInjectionEnabled, forKey: CacheKey.selectedDylibInjectionEnabled.rawValue)
         UserDefaults.standard.set(viewModel.injectedDylibPaths, forKey: CacheKey.selectedInjectedDylibs.rawValue)
