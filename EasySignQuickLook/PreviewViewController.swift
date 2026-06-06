@@ -43,14 +43,14 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
             contentView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
             contentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
 
-            contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 34),
-            contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -34),
-            contentStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 28),
-            contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -28)
+            contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
+            contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+            contentStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 20),
+            contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20)
         ])
 
         view = rootView
-        preferredContentSize = NSSize(width: 760, height: 820)
+        preferredContentSize = NSSize(width: 820, height: 880)
     }
 
     func preparePreviewOfFile(at url: URL) async throws {
@@ -59,7 +59,7 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
 
         await MainActor.run {
             self.title = title
-            self.preferredContentSize = NSSize(width: 760, height: 820)
+            self.preferredContentSize = NSSize(width: 820, height: 880)
             self.render(info: info)
         }
     }
@@ -540,9 +540,9 @@ private extension PreviewViewController {
         NSLayoutConstraint.activate([
             keyLabel.leadingAnchor.constraint(equalTo: row.leadingAnchor),
             keyLabel.topAnchor.constraint(equalTo: row.topAnchor, constant: 1),
-            keyLabel.widthAnchor.constraint(equalToConstant: 96),
+            keyLabel.widthAnchor.constraint(equalToConstant: 88),
 
-            valueLabel.leadingAnchor.constraint(equalTo: keyLabel.trailingAnchor, constant: 12),
+            valueLabel.leadingAnchor.constraint(equalTo: keyLabel.trailingAnchor, constant: 14),
             valueLabel.trailingAnchor.constraint(equalTo: row.trailingAnchor),
             valueLabel.topAnchor.constraint(equalTo: row.topAnchor),
             valueLabel.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -1)
