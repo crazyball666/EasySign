@@ -26,7 +26,7 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
         contentStack.orientation = .vertical
         contentStack.alignment = .leading
         contentStack.distribution = .fill
-        contentStack.spacing = 14
+        contentStack.spacing = 12
 
         contentView.addSubview(contentStack)
         scrollView.documentView = contentView
@@ -43,10 +43,10 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
             contentView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
             contentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
 
-            contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 34),
-            contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -34),
-            contentStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 28),
-            contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -28)
+            contentStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 24),
+            contentStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -24),
+            contentStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 24),
+            contentStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24)
         ])
 
         view = rootView
@@ -97,32 +97,33 @@ private extension PreviewViewController {
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.wantsLayer = true
-        iconView.layer?.cornerRadius = 18
+        iconView.layer?.cornerRadius = 15
         iconView.layer?.masksToBounds = true
-        iconView.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        iconView.layer?.borderWidth = 1
+        iconView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.4).cgColor
         iconView.image = info.iconData.flatMap(NSImage.init(data:)) ?? NSImage(named: NSImage.applicationIconName)
 
         let titleStack = NSStackView()
         titleStack.translatesAutoresizingMaskIntoConstraints = false
         titleStack.orientation = .vertical
         titleStack.alignment = .leading
-        titleStack.spacing = 7
+        titleStack.spacing = 5
 
         titleStack.addArrangedSubview(label(
             info.appName.isEmpty ? info.fileName : info.appName,
-            font: .systemFont(ofSize: 28, weight: .semibold),
+            font: .systemFont(ofSize: 21, weight: .bold),
             color: .labelColor
         ))
         titleStack.addArrangedSubview(label(
             info.bundleIdentifier.isEmpty ? "未读取到 Bundle ID" : info.bundleIdentifier,
-            font: .systemFont(ofSize: 14, weight: .medium),
+            font: .systemFont(ofSize: 12.5, weight: .regular),
             color: .secondaryLabelColor
         ))
 
         let badgeRow = NSStackView()
         badgeRow.orientation = .horizontal
         badgeRow.alignment = .centerY
-        badgeRow.spacing = 8
+        badgeRow.spacing = 6
         badgeRow.addArrangedSubview(badge(info.versionDescription, tint: .systemBlue))
         if let teamId = info.provisioningProfile?.teamIdentifier, !teamId.isEmpty {
             badgeRow.addArrangedSubview(badge("Team \(teamId)", tint: .systemGreen))
@@ -130,23 +131,33 @@ private extension PreviewViewController {
         if let profileType = info.provisioningProfile?.profileType, !profileType.isEmpty {
             badgeRow.addArrangedSubview(badge(profileType, tint: .systemIndigo))
         }
-        titleStack.addArrangedSubview(badgeRow)
+        let badgeWrap = NSView()
+        badgeWrap.translatesAutoresizingMaskIntoConstraints = false
+        badgeWrap.addSubview(badgeRow)
+        NSLayoutConstraint.activate([
+            badgeRow.leadingAnchor.constraint(equalTo: badgeWrap.leadingAnchor),
+            badgeRow.topAnchor.constraint(equalTo: badgeWrap.topAnchor),
+            badgeRow.bottomAnchor.constraint(equalTo: badgeWrap.bottomAnchor),
+            badgeRow.trailingAnchor.constraint(lessThanOrEqualTo: badgeWrap.trailingAnchor)
+        ])
+        titleStack.addArrangedSubview(badgeWrap)
+        titleStack.setCustomSpacing(11, after: titleStack.arrangedSubviews[1])
 
         card.addSubview(iconView)
         card.addSubview(titleStack)
 
         NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 22),
-            iconView.topAnchor.constraint(equalTo: card.topAnchor, constant: 22),
-            iconView.widthAnchor.constraint(equalToConstant: 82),
-            iconView.heightAnchor.constraint(equalToConstant: 82),
+            iconView.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
+            iconView.topAnchor.constraint(equalTo: card.topAnchor, constant: 20),
+            iconView.widthAnchor.constraint(equalToConstant: 72),
+            iconView.heightAnchor.constraint(equalToConstant: 72),
 
-            titleStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 18),
-            titleStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -22),
+            titleStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 16),
+            titleStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
             titleStack.centerYAnchor.constraint(equalTo: iconView.centerYAnchor),
-            titleStack.topAnchor.constraint(greaterThanOrEqualTo: card.topAnchor, constant: 18),
-            card.bottomAnchor.constraint(greaterThanOrEqualTo: iconView.bottomAnchor, constant: 22),
-            card.bottomAnchor.constraint(greaterThanOrEqualTo: titleStack.bottomAnchor, constant: 22)
+            titleStack.topAnchor.constraint(greaterThanOrEqualTo: card.topAnchor, constant: 16),
+            card.bottomAnchor.constraint(greaterThanOrEqualTo: iconView.bottomAnchor, constant: 20),
+            card.bottomAnchor.constraint(greaterThanOrEqualTo: titleStack.bottomAnchor, constant: 20)
         ])
 
         return card
@@ -245,14 +256,10 @@ private extension PreviewViewController {
         let view = NSView()
         view.translatesAutoresizingMaskIntoConstraints = false
         view.wantsLayer = true
-        view.layer?.cornerRadius = 16
-        view.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+        view.layer?.cornerRadius = 12
+        view.layer?.backgroundColor = NSColor.textBackgroundColor.withAlphaComponent(0.5).cgColor
         view.layer?.borderWidth = 1
-        view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.28).cgColor
-        view.layer?.shadowColor = NSColor.black.withAlphaComponent(0.10).cgColor
-        view.layer?.shadowOpacity = 1
-        view.layer?.shadowOffset = CGSize(width: 0, height: -1)
-        view.layer?.shadowRadius = 8
+        view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.6).cgColor
         return view
     }
 
@@ -266,16 +273,17 @@ private extension PreviewViewController {
         }
     }
 
-    func validityDot(_ status: ValidityStatus) -> String {
-        switch status {
-        case .valid:        return "🟢"
-        case .expiringSoon: return "🟠"
-        case .expired:      return "🔴"
-        case .notYetValid:  return "🟡"
+    func validityLabel(_ status: ValidityStatus, days: Int?) -> String {
+        var text = status.label
+        if let days {
+            if days > 0 { text += " · 还剩 \(days) 天" }
+            else if days == 0 { text += " · 今天到期" }
+            else { text += " · 已过期 \(-days) 天" }
         }
+        return text
     }
 
-    // 单张证书：纯纵向彩色卡片（只用 label + addFullWidth，零横向固定尺寸约束）
+    // 单张证书：纯纵向卡片（只用 label/badge + addFullWidth，零固定尺寸横向约束）
     func certCardView(_ cert: IPAPreviewCertificate) -> NSView {
         let status = cert.validityStatus
         let tint = validityColor(status)
@@ -283,32 +291,26 @@ private extension PreviewViewController {
         let card = NSView()
         card.translatesAutoresizingMaskIntoConstraints = false
         card.wantsLayer = true
-        card.layer?.cornerRadius = 11
-        card.layer?.backgroundColor = tint.withAlphaComponent(0.07).cgColor
+        card.layer?.cornerRadius = 10
+        card.layer?.backgroundColor = NSColor.textBackgroundColor.withAlphaComponent(0.5).cgColor
         card.layer?.borderWidth = 1
-        card.layer?.borderColor = tint.withAlphaComponent(0.45).cgColor
+        card.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
 
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 4
+        stack.spacing = 6
         card.addSubview(stack)
-        pin(stack, to: card, inset: 13)
-
-        // 状态行
-        var statusLine = "\(validityDot(status)) \(status.label)"
-        if let days = cert.daysUntilExpiry {
-            if days > 0 { statusLine += " · 还剩 \(days) 天" }
-            else if days == 0 { statusLine += " · 今天到期" }
-            else { statusLine += " · 已过期 \(-days) 天" }
-        }
-        addFullWidth(label(statusLine, font: .systemFont(ofSize: 13, weight: .semibold), color: tint), to: stack)
+        pin(stack, to: card, inset: 14)
 
         // 名称行
         var nameLine = cert.commonName.isEmpty ? "(无 CN)" : cert.commonName
         if !cert.organization.isEmpty { nameLine += "  ·  \(cert.organization)" }
-        addFullWidth(label(nameLine, font: .systemFont(ofSize: 13, weight: .medium), color: .labelColor), to: stack)
+        addFullWidth(label(nameLine, font: .systemFont(ofSize: 13.5, weight: .semibold), color: .labelColor), to: stack)
+
+        // 状态胶囊（左对齐，不拉伸）
+        addFullWidth(leftAligned(badge(validityLabel(status, days: cert.daysUntilExpiry), tint: tint)), to: stack)
 
         // 日期/团队行
         var meta: [String] = []
@@ -316,14 +318,14 @@ private extension PreviewViewController {
         if let na = cert.notAfter { meta.append("过期 \(format(na))") }
         if !cert.teamIdentifier.isEmpty { meta.append("Team \(cert.teamIdentifier)") }
         if !meta.isEmpty {
-            addFullWidth(label(meta.joined(separator: "  ·  "),
-                              font: .systemFont(ofSize: 12), color: .secondaryLabelColor), to: stack)
+            addFullWidth(label(meta.joined(separator: "   "),
+                              font: .systemFont(ofSize: 11.5), color: .secondaryLabelColor), to: stack)
         }
 
         // SHA-1
         if !cert.sha1Fingerprint.isEmpty {
             addFullWidth(label("SHA-1  \(cert.sha1Fingerprint)",
-                              font: .monospacedSystemFont(ofSize: 11, weight: .regular),
+                              font: .monospacedSystemFont(ofSize: 10.5, weight: .regular),
                               color: .tertiaryLabelColor), to: stack)
         }
 
@@ -336,25 +338,22 @@ private extension PreviewViewController {
         let allValid = !statuses.isEmpty && statuses.allSatisfy { $0 == .valid }
         let anyExpired = statuses.contains(.expired)
         let tint: NSColor = allValid ? .systemGreen : (anyExpired ? .systemRed : .systemOrange)
-        let icon = allValid ? "✅" : (anyExpired ? "⛔️" : "⚠️")
         let text = allValid ? "所有 \(certs.count) 张证书均在有效期内"
                             : (anyExpired ? "存在已过期的证书" : "部分证书即将过期")
 
         let card = NSView()
         card.translatesAutoresizingMaskIntoConstraints = false
         card.wantsLayer = true
-        card.layer?.cornerRadius = 10
+        card.layer?.cornerRadius = 8
         card.layer?.backgroundColor = tint.withAlphaComponent(0.10).cgColor
-        card.layer?.borderWidth = 1
-        card.layer?.borderColor = tint.withAlphaComponent(0.40).cgColor
 
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .leading
         card.addSubview(stack)
-        pin(stack, to: card, inset: 11)
-        addFullWidth(label("\(icon)  \(text)", font: .systemFont(ofSize: 13, weight: .semibold), color: tint), to: stack)
+        pin(stack, to: card, inset: 10)
+        addFullWidth(label(text, font: .systemFont(ofSize: 12.5, weight: .semibold), color: tint), to: stack)
         return card
     }
 
@@ -364,9 +363,10 @@ private extension PreviewViewController {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.distribution = .fill
-        stack.spacing = 12
-        let titleLabel = label(title, font: .systemFont(ofSize: 16, weight: .semibold), color: .labelColor)
+        stack.spacing = 9
+        let titleLabel = label(title, font: .systemFont(ofSize: 13, weight: .semibold), color: .secondaryLabelColor)
         addFullWidth(titleLabel, to: stack)
+        stack.setCustomSpacing(12, after: titleLabel)
         return stack
     }
 
@@ -374,11 +374,12 @@ private extension PreviewViewController {
         let row = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
 
-        let keyLabel = label(key, font: .systemFont(ofSize: 12, weight: .medium), color: .tertiaryLabelColor)
+        let keyLabel = label(key, font: .systemFont(ofSize: 12.5, weight: .regular), color: .secondaryLabelColor)
         keyLabel.maximumNumberOfLines = 1
         keyLabel.translatesAutoresizingMaskIntoConstraints = false
+        keyLabel.lineBreakMode = .byTruncatingTail
 
-        let valueLabel = label(value, font: .systemFont(ofSize: 13, weight: valueColor == nil ? .regular : .medium), color: valueColor ?? .labelColor)
+        let valueLabel = label(value, font: .systemFont(ofSize: 12.5, weight: valueColor == nil ? .regular : .semibold), color: valueColor ?? .labelColor)
         valueLabel.translatesAutoresizingMaskIntoConstraints = false
 
         row.addSubview(keyLabel)
@@ -386,10 +387,10 @@ private extension PreviewViewController {
 
         NSLayoutConstraint.activate([
             keyLabel.leadingAnchor.constraint(equalTo: row.leadingAnchor),
-            keyLabel.topAnchor.constraint(equalTo: row.topAnchor, constant: 1),
-            keyLabel.widthAnchor.constraint(equalToConstant: 112),
+            keyLabel.topAnchor.constraint(equalTo: row.topAnchor),
+            keyLabel.widthAnchor.constraint(equalToConstant: 92),
 
-            valueLabel.leadingAnchor.constraint(equalTo: keyLabel.trailingAnchor, constant: 14),
+            valueLabel.leadingAnchor.constraint(equalTo: keyLabel.trailingAnchor, constant: 16),
             valueLabel.trailingAnchor.constraint(equalTo: row.trailingAnchor),
             valueLabel.topAnchor.constraint(equalTo: row.topAnchor),
 
@@ -428,25 +429,44 @@ private extension PreviewViewController {
     }
 
     func badge(_ text: String, tint: NSColor) -> NSView {
-        let label = label(text.isEmpty ? "-" : text, font: .systemFont(ofSize: 12, weight: .semibold), color: tint)
-        label.maximumNumberOfLines = 1
+        let textLabel = label(text.isEmpty ? "-" : text, font: .systemFont(ofSize: 11.5, weight: .semibold), color: tint)
+        textLabel.maximumNumberOfLines = 1
+        textLabel.lineBreakMode = .byTruncatingTail
+        textLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         let container = NSView()
         container.translatesAutoresizingMaskIntoConstraints = false
         container.wantsLayer = true
-        container.layer?.cornerRadius = 8
-        container.layer?.backgroundColor = tint.withAlphaComponent(0.12).cgColor
-        container.addSubview(label)
-        label.translatesAutoresizingMaskIntoConstraints = false
+        container.layer?.cornerRadius = 6
+        container.layer?.backgroundColor = tint.withAlphaComponent(0.13).cgColor
+        container.layer?.borderWidth = 1
+        container.layer?.borderColor = tint.withAlphaComponent(0.22).cgColor
+        container.addSubview(textLabel)
+        textLabel.translatesAutoresizingMaskIntoConstraints = false
 
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 9),
-            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -9),
-            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 4),
-            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -4)
+            textLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            textLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            textLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: 3),
+            textLabel.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -3)
         ])
-
+        container.setContentHuggingPriority(.required, for: .horizontal)
         return container
+    }
+
+    /// 左对齐放一个不被拉伸的徽章（用横向 stack + 尾部弹性占位，安全无固定尺寸）
+    func leftAligned(_ view: NSView) -> NSView {
+        let row = NSStackView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 0
+        row.addArrangedSubview(view)
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        row.addArrangedSubview(spacer)
+        return row
     }
 
     func separator() -> NSView {
