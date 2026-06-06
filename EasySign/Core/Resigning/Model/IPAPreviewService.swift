@@ -104,6 +104,69 @@ struct IPAPreviewInfo: Identifiable {
     }
 }
 
+/// 证书/描述文件的有效性状态。供 UI 用。
+enum ValidityStatus: Equatable {
+    case notYetValid
+    case valid
+    case expiringSoon   // 30 天内
+    case expired
+
+    var label: String {
+        switch self {
+        case .notYetValid:  return "未生效"
+        case .valid:        return "有效"
+        case .expiringSoon: return "即将过期"
+        case .expired:      return "已过期"
+        }
+    }
+
+    /// macOS HIG 风格调色：绿/橙/红
+    var color: String {
+        switch self {
+        case .notYetValid:  return "systemYellow"
+        case .valid:        return "systemGreen"
+        case .expiringSoon: return "systemOrange"
+        case .expired:      return "systemRed"
+        }
+    }
+}
+
+extension IPAPreviewCertificate {
+    var validityStatus: ValidityStatus {
+        guard let notBefore, let notAfter else { return .valid }  // 无法判断时按"未知"显示
+        let now = Date()
+        if now < notBefore { return .notYetValid }
+        if now > notAfter { return .expired }
+        let days = notAfter.timeIntervalSince(now) / 86400
+        if days <= 30 { return .expiringSoon }
+        return .valid
+    }
+
+    /// 距离过期还有多少天（负数表示已过期多少天）
+    var daysUntilExpiry: Int? {
+        guard let notAfter else { return nil }
+        let now = Date()
+        return Int(notAfter.timeIntervalSince(now) / 86400)
+    }
+}
+
+extension IPAPreviewProvisioningProfile {
+    var validityStatus: ValidityStatus {
+        guard let expirationDate else { return .valid }
+        let now = Date()
+        if let creationDate, now < creationDate { return .notYetValid }
+        if now > expirationDate { return .expired }
+        let days = expirationDate.timeIntervalSince(now) / 86400
+        if days <= 30 { return .expiringSoon }
+        return .valid
+    }
+
+    var daysUntilExpiry: Int? {
+        guard let expirationDate else { return nil }
+        return Int(expirationDate.timeIntervalSince(Date()) / 86400)
+    }
+}
+
 enum IPAPreviewError: LocalizedError {
     case unsupportedInput
     case missingAppBundle
