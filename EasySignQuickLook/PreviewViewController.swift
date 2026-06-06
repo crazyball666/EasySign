@@ -12,13 +12,19 @@ final class PreviewViewController: NSViewController, QLPreviewingController {
     private let contentStack = NSStackView()
 
     override func loadView() {
-        let rootView = NSView()
+        // rootView 故意用 autoresizingMask 而不是 Auto Layout，
+        // 这样 QLPreviewPanel 调整大小时 rootView 会跟着缩放。
+        // 内部 scrollView 仍用 Auto Layout 钉在 rootView 四边。
+        let rootView = NSView(frame: NSRect(x: 0, y: 0, width: 820, height: 880))
+        rootView.autoresizingMask = [.width, .height]
         rootView.wantsLayer = true
         rootView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
 
         contentView.translatesAutoresizingMaskIntoConstraints = false
