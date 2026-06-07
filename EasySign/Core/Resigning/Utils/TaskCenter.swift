@@ -40,11 +40,13 @@ class TaskCenter {
         task.standardError = pipe
         
         task.launch()
-        task.waitUntilExit()
-        
+        // 先把管道读空、再 waitUntilExit:子进程输出超过管道缓冲(~64KB)时,
+        // 若先 wait 会与子进程阻塞的 write 形成死锁(大输出命令如 unzip 大包必现)。
+        // readDataToEndOfFile 会持续排空管道直到子进程退出关闭写端(EOF)。
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        defer { pipe.fileHandleForReading.closeFile() }
-        
+        task.waitUntilExit()
+        pipe.fileHandleForReading.closeFile()
+
         let output = String(data: data, encoding: .utf8) ?? ""
         
         if task.terminationStatus != 0 {

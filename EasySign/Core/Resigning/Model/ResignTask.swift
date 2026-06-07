@@ -172,7 +172,8 @@ extension ResignTask {
     private func getAppBundle() throws -> AppBundle {
         if taskInfo.filePath.pathExtension == "ipa" || taskInfo.filePath.pathExtension == "zip" {
             let outputPath = workspacePath.appendingPathComponent("ipa_content")
-            let command = "unzip \"\(taskInfo.filePath.path)\" -d \"\(outputPath.path)\""
+            // -o 覆盖重复条目(重打包 IPA 常见,否则会弹 replace 提示);-q 安静输出,避免大包海量 inflating 日志
+            let command = "unzip -o -q \"\(taskInfo.filePath.path)\" -d \"\(outputPath.path)\""
             try TaskCenter.executeShell(command: command)
             let payloadPath = outputPath.appendingPathComponent("Payload")
             guard let appPath = try FileManager.default.contentsOfDirectory(at: payloadPath, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles).first(where: { $0.pathExtension == "app" }) else {
