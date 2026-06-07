@@ -9,16 +9,19 @@ final class ServiceHub {
     let settings: SettingsStore
     let artifact: ArtifactStore
     let transfer: TransferService
+    let update: UpdateService
 
     init(device: DeviceService, logger: LoggerService,
          recent: RecentFilesService, settings: SettingsStore,
-         artifact: ArtifactStore, transfer: TransferService) {
+         artifact: ArtifactStore, transfer: TransferService,
+         update: UpdateService) {
         self.device = device
         self.logger = logger
         self.recent = recent
         self.settings = settings
         self.artifact = artifact
         self.transfer = transfer
+        self.update = update
     }
 
     static func live() -> ServiceHub {
@@ -28,8 +31,10 @@ final class ServiceHub {
         let artifact = ArtifactStore(logger: logger)
         let device = DeviceService.shared
         let transfer = TransferService(logger: logger)
+        let update = UpdateService(logger: logger)
         return ServiceHub(device: device, logger: logger, recent: recent,
-                          settings: settings, artifact: artifact, transfer: transfer)
+                          settings: settings, artifact: artifact, transfer: transfer,
+                          update: update)
     }
 
     /// DEBUG 启动时调用，Release 不调用。
@@ -52,6 +57,7 @@ final class ServiceHub {
         case .settings: return settings
         case .artifact: return artifact
         case .transfer: return transfer
+        case .update: return update
         }
     }
 }
