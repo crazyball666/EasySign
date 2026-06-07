@@ -31,8 +31,10 @@ final class TransferService: ObservableObject {
     private var cooldownUntil: [String: Date] = [:]
     // 连接超时与尽力而为重连(仅作用于主动出站连接;入站不重连)。
     private var connectTimeoutWork: DispatchWorkItem?
+    private var inboundTimeoutWork: DispatchWorkItem?
     private var lastReconnect: (() -> Void)?
     private var reconnectAttempts = 0
+    private var reconnectGeneration = 0
     private var userStopped = false
     private var wasConnected = false
 
@@ -158,8 +160,10 @@ final class TransferService: ObservableObject {
 
     func stop() {
         userStopped = true
+        reconnectGeneration += 1      // 取消任何挂起的重连
         wasConnected = false
         connectTimeoutWork?.cancel(); connectTimeoutWork = nil
+        inboundTimeoutWork?.cancel(); inboundTimeoutWork = nil
         monitor.stop()
         discovery.stop()
         discoveredPeers = []
@@ -188,11 +192,16 @@ final class TransferService: ObservableObject {
     // MARK: - 主动连接(手动 IP)
 
     func connect(host: String, port: UInt16, pairingCode: String?) {
-        // 一次用户主动连接 = 取消上次的"已停止"并清零重连计数。
-        userStopped = false
+        // 一次用户主动连接 = 取消上次的"已停止"并清零重连计数、撞代际取消任何挂起重连。
+        reconnectGeneration += 1
         reconnectAttempts = 0
+        userStopped = false
         wasConnected = false
-        lastReconnect = { [weak self] in self?.connect(host: host, port: port, pairingCode: nil) }
+        lastReconnect = { [weak self] in self?.performOutbound(host: host, port: port, pairingCode: nil) }
+        performOutbound(host: host, port: port, pairingCode: pairingCode)
+    }
+
+    private func performOutbound(host: String, port: UInt16, pairingCode: String?) {
         activeConn?.cancel()
         activeConn = nil
         guard let client else { return }
@@ -207,10 +216,15 @@ final class TransferService: ObservableObject {
 
     /// 连接 Bonjour 发现出的对端。复用与手动 IP 完全相同的配对/pinning 流程(`.acceptAny` → 读指纹 → 配对/绑定)。
     func connect(to peer: DiscoveredPeer, pairingCode: String?) {
-        userStopped = false
+        reconnectGeneration += 1
         reconnectAttempts = 0
+        userStopped = false
         wasConnected = false
-        lastReconnect = { [weak self] in self?.connect(to: peer, pairingCode: nil) }
+        lastReconnect = { [weak self] in self?.performOutbound(to: peer, pairingCode: nil) }
+        performOutbound(to: peer, pairingCode: pairingCode)
+    }
+
+    private func performOutbound(to peer: DiscoveredPeer, pairingCode: String?) {
         activeConn?.cancel()
         activeConn = nil
         guard let client else { return }
@@ -278,10 +292,11 @@ final class TransferService: ObservableObject {
         guard !userStopped, reconnectAttempts < 3, let r = lastReconnect else { return }
         wasConnected = false   // 防同一次断开的 .failed+.cancelled 双触发重连
         reconnectAttempts += 1
+        let gen = reconnectGeneration
         let delay = Double(1 << reconnectAttempts) // 2,4,8
         connectionState = .failed("连接断开,重连中(\(reconnectAttempts)/3)…")
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, !self.userStopped else { return }
+            guard let self, !self.userStopped, gen == self.reconnectGeneration else { return }
             r()
         }
     }
@@ -319,6 +334,15 @@ final class TransferService: ObservableObject {
                 break
             }
         }
+        // 30s 配对超时:TLS 握手完成但未完成配对时断开连接,避免资源永久占用。
+        inboundTimeoutWork?.cancel()
+        let work = DispatchWorkItem { [weak self, weak conn] in
+            guard let self, let conn else { return }
+            if case .connected = self.connectionState { return }
+            conn.cancel()
+        }
+        inboundTimeoutWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: work)
     }
 
     private func inboundReady(conn: TransferConnection) {
@@ -374,6 +398,7 @@ final class TransferService: ObservableObject {
 
     private func bindConnected(conn: TransferConnection, peer: PairedPeer) {
         connectTimeoutWork?.cancel()
+        inboundTimeoutWork?.cancel()
         reconnectAttempts = 0
         wasConnected = true
         if let old = activeConn, old !== conn { old.cancel() }

@@ -38,6 +38,8 @@ final class TransferConnection {
 
     private var _binaryHandler: ((Data) -> Void)?
     private var _binaryBuffer: [Data] = []
+    private var _binaryBufferedBytes = 0
+    private static let maxPreHandlerBuffer = 16 * 1024 * 1024   // 16 MB
     /// 二进制(WS .binary 帧)入口,机制与 onMessage 镜像:queue-confined、设置前缓存、设置时回放。
     var onBinary: ((Data) -> Void)? {
         get { queue.sync { _binaryHandler } }
@@ -46,6 +48,7 @@ final class TransferConnection {
                 self._binaryHandler = newValue
                 guard let h = newValue, !self._binaryBuffer.isEmpty else { return }
                 let pending = self._binaryBuffer; self._binaryBuffer.removeAll()
+                self._binaryBufferedBytes = 0
                 for d in pending { h(d) }
             }
         }
@@ -120,7 +123,16 @@ final class TransferConnection {
                 // 故可直接访问 _binaryHandler/_binaryBuffer 与 _handler/_buffer(无需再 hop)。
                 let wsMeta = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata
                 if wsMeta?.opcode == .binary {
-                    if let h = self._binaryHandler { h(data) } else { self._binaryBuffer.append(data) }
+                    if let h = self._binaryHandler {
+                        h(data)
+                    } else {
+                        self._binaryBufferedBytes += data.count
+                        if self._binaryBufferedBytes > Self.maxPreHandlerBuffer {
+                            self.nw.cancel()
+                            return
+                        }
+                        self._binaryBuffer.append(data)
+                    }
                 } else if let msg = try? WireMessage.decode(data) {
                     if let h = self._handler { h(msg) } else { self._buffer.append(msg) }
                 }
