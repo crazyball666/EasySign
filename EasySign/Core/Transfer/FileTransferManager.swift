@@ -16,6 +16,7 @@ final class FileTransferManager {
     var onReceived: ((_ id: String, _ name: String, _ url: URL, _ isImage: Bool) -> Void)?
 
     private let ioQueue = DispatchQueue(label: "transfer.file.io")
+    private let sendQueue = DispatchQueue(label: "transfer.file.send")
 
     // —— 接收状态(单活跃)——
     private var recvId: String?
@@ -23,6 +24,7 @@ final class FileTransferManager {
     private var recvIsImage = false
     private var recvTotal = 0
     private var recvBytes = 0
+    private var recvLastEmit = 0
     private var recvHandle: FileHandle?
     private var recvURL: URL?
 
@@ -38,7 +40,7 @@ final class FileTransferManager {
                 return
             }
             self.recvId = id; self.recvName = name; self.recvIsImage = isImage
-            self.recvTotal = size; self.recvBytes = 0; self.recvURL = url
+            self.recvTotal = size; self.recvBytes = 0; self.recvLastEmit = 0; self.recvURL = url
         }
     }
     func handleBinary(_ data: Data) {
@@ -46,9 +48,14 @@ final class FileTransferManager {
             guard let h = self.recvHandle else { return }
             h.write(data)
             self.recvBytes += data.count
-            if let id = self.recvId, let name = self.recvName {
-                let p = Progress(id: id, name: name, direction: .incoming, bytes: self.recvBytes, total: self.recvTotal)
-                self.onProgress?(p)
+            // 每块都落盘,但进度回调按 ~512KB 或收齐时节流,避免高频刷 UI。
+            let done = self.recvTotal > 0 && self.recvBytes >= self.recvTotal
+            if self.recvBytes - self.recvLastEmit >= 512 * 1024 || done {
+                self.recvLastEmit = self.recvBytes
+                if let id = self.recvId, let name = self.recvName {
+                    let p = Progress(id: id, name: name, direction: .incoming, bytes: self.recvBytes, total: self.recvTotal)
+                    self.onProgress?(p)
+                }
             }
         }
     }
@@ -65,7 +72,18 @@ final class FileTransferManager {
         try? recvHandle?.close()
         recvHandle = nil; recvId = nil; recvURL = nil
         recvName = nil; recvIsImage = false
-        recvBytes = 0; recvTotal = 0
+        recvBytes = 0; recvTotal = 0; recvLastEmit = 0
+    }
+
+    /// 连接断开时调用:关闭半截接收、删除残留分块文件、清空接收状态。
+    func reset() {
+        ioQueue.async {
+            try? self.recvHandle?.close()
+            if let url = self.recvURL { try? FileManager.default.removeItem(at: url) }
+            self.recvHandle = nil; self.recvId = nil; self.recvURL = nil
+            self.recvName = nil; self.recvIsImage = false
+            self.recvBytes = 0; self.recvTotal = 0; self.recvLastEmit = 0
+        }
     }
 
     // —— 发送 ——
@@ -73,21 +91,27 @@ final class FileTransferManager {
     /// `sendBinary` 发二进制块;`complete` 发 .fileComplete。
     func send(id: String, name: String, fileURL: URL, isImage: Bool,
               offer: @escaping (_ id: String, _ name: String, _ size: Int) -> Void,
-              sendBinary: @escaping (Data) -> Void,
+              sendBinary: @escaping (_ data: Data, _ done: @escaping () -> Void) -> Void,
               complete: @escaping (_ id: String) -> Void,
               done: @escaping () -> Void) {
-        ioQueue.async {
+        sendQueue.async {
             let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
             let size = (attrs?[.size] as? Int) ?? 0
             offer(id, name, size)
             guard let handle = try? FileHandle(forReadingFrom: fileURL) else { done(); return }
+            let sem = DispatchSemaphore(value: 0)
             var sent = 0
+            var lastEmit = 0
             while true {
                 let chunk = handle.readData(ofLength: Self.chunkSize)
                 if chunk.isEmpty { break }
-                sendBinary(chunk)
+                sendBinary(chunk) { sem.signal() }
+                sem.wait()                 // 背压:等本块被 socket 接收后再读下一块
                 sent += chunk.count
-                self.onProgress?(Progress(id: id, name: name, direction: .outgoing, bytes: sent, total: size))
+                if sent - lastEmit >= 512 * 1024 || sent >= size {   // 进度节流
+                    lastEmit = sent
+                    self.onProgress?(Progress(id: id, name: name, direction: .outgoing, bytes: sent, total: size))
+                }
             }
             try? handle.close()
             complete(id)

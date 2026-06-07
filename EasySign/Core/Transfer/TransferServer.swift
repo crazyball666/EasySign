@@ -107,10 +107,12 @@ final class TransferConnection {
     }
 
     /// 以 WS .binary 帧发送原始字节(文件/图片分块)。
-    func sendBinary(_ data: Data) {
+    /// `completion` 在本块被 Network.framework 接收处理后回调,供发送侧做背压。
+    func sendBinary(_ data: Data, completion: @escaping () -> Void = {}) {
         let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
         let ctx = NWConnection.ContentContext(identifier: "bin", metadata: [meta])
-        nw.send(content: data, contentContext: ctx, isComplete: true, completion: .contentProcessed { _ in })
+        nw.send(content: data, contentContext: ctx, isComplete: true,
+                completion: .contentProcessed { _ in completion() })
     }
 
     func cancel() { nw.cancel() }
@@ -152,11 +154,8 @@ final class TransferServer {
     var onConnection: ((TransferConnection) -> Void)?
     private(set) var port: UInt16?
 
-    /// Bonjour 广播信息(deviceId/name/fingerprint)。在 `start()` 前设置即随服务一起广播。
+    /// Bonjour 广播信息(deviceId/name/fingerprint)。`setAdvertising(true)` 每次都按当前值重建 TXT。
     var advertiseInfo: (deviceId: String, name: String, fingerprint: String)?
-
-    private var advertisingEnabled = true
-    private var advertisedService: NWListener.Service?
 
     init(identity: @escaping () throws -> SecIdentity) {
         self.identity = identity
@@ -176,24 +175,25 @@ final class TransferServer {
         listener.stateUpdateHandler = { [weak self] st in
             if case .ready = st { self?.port = listener.port?.rawValue }
         }
-        // 广播 _easysign-transfer._tcp + TXT(deviceId/name/fp),供对端 Bonjour 浏览发现。
-        if let info = advertiseInfo {
+        listener.start(queue: queue)
+        self.listener = listener
+        // 广播由调用方在 start() 之后用 setAdvertising(!stealth) 触发,从 advertiseInfo 现取现建,
+        // 这样 setDeviceName 改名后再调用即可反映新的 TXT name。
+    }
+
+    /// 开关 Bonjour 广播。每次开启都从当前 `advertiseInfo` 重建 service/TXT,
+    /// 故改名(setDeviceName 更新 advertiseInfo)后再调用即可更新广播的 name。
+    func setAdvertising(_ on: Bool) {
+        guard let listener else { return }
+        if on, let info = advertiseInfo {
             var txt = NWTXTRecord()
             txt["deviceId"] = info.deviceId
             txt["name"] = info.name
             txt["fp"] = info.fingerprint
-            let service = NWListener.Service(name: info.deviceId, type: PeerDiscovery.serviceType, txtRecord: txt)
-            advertisedService = service
-            if advertisingEnabled { listener.service = service }
+            listener.service = NWListener.Service(name: info.deviceId, type: PeerDiscovery.serviceType, txtRecord: txt)
+        } else {
+            listener.service = nil
         }
-        listener.start(queue: queue)
-        self.listener = listener
-    }
-
-    /// 开关 Bonjour 广播。需在 `start()` 之后调用(此时 advertisedService 已构建)。
-    func setAdvertising(_ on: Bool) {
-        advertisingEnabled = on
-        listener?.service = on ? advertisedService : nil
     }
 
     func stop() { listener?.cancel(); listener = nil }
