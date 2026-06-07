@@ -5,7 +5,19 @@ import Security
 /// 一条连接(server 或 client 侧通用)。
 final class TransferConnection {
     let nw: NWConnection
-    var onStateChange: ((NWConnection.State) -> Void)?
+
+    private var _stateHandler: ((NWConnection.State) -> Void)?
+    private var _lastState: NWConnection.State?
+    /// 赋值即生效;若连接已处于某状态(如 .ready),立即回放最后一次状态。setter 线程安全。
+    var onStateChange: ((NWConnection.State) -> Void)? {
+        get { queue.sync { _stateHandler } }
+        set {
+            queue.async {
+                self._stateHandler = newValue
+                if let h = newValue, let s = self._lastState { h(s) }
+            }
+        }
+    }
 
     private var _handler: ((WireMessage) -> Void)?
     private var _buffer: [WireMessage] = []
@@ -45,10 +57,9 @@ final class TransferConnection {
             guard let self else { return }
             // 握手完成后,从本连接自己协商出的 TLS metadata 取对端指纹——
             // 无共享槽位、无跨连接错配、无竞态。必须在回调上层 onStateChange 之前写好。
-            if case .ready = st {
-                self.peerFingerprint = self.readPeerFingerprint()
-            }
-            self.onStateChange?(st)
+            if case .ready = st { self.peerFingerprint = self.readPeerFingerprint() }
+            self._lastState = st
+            self._stateHandler?(st)
         }
         nw.start(queue: queue)
         receiveLoop()

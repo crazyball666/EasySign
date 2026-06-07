@@ -112,11 +112,16 @@ final class TransferService: ObservableObject {
             if let paired = peerStore.peer(forFingerprint: fp) {
                 bindConnected(conn: conn, peer: paired)
             } else {
+                activeConn?.cancel(); activeConn = nil
                 connectionState = .failed("该设备未配对,请输入对端显示的配对码")
             }
             return
         }
-        if isCoolingDown(fp) { connectionState = .failed("配对失败过多,请稍后再试"); return }
+        if isCoolingDown(fp) {
+            activeConn?.cancel(); activeConn = nil
+            connectionState = .failed("配对失败过多,请稍后再试")
+            return
+        }
         startPairing(conn: conn, code: pairingCode!, peerFingerprint: fp)
     }
 
@@ -177,6 +182,8 @@ final class TransferService: ObservableObject {
             bindConnected(conn: conn, peer: peer)
             logger.log(.info, tool: "transfer", "已与 \(peer.name) 配对")
         case let .failed(reason):
+            conn.cancel()
+            if activeConn === conn { activeConn = nil }
             failureCounts[fp, default: 0] += 1
             if failureCounts[fp]! >= 3 { cooldownUntil[fp] = Date().addingTimeInterval(60) }
             pendingPairingCode = PairingCrypto.makeCode()
@@ -186,6 +193,7 @@ final class TransferService: ObservableObject {
     }
 
     private func bindConnected(conn: TransferConnection, peer: PairedPeer) {
+        if let old = activeConn, old !== conn { old.cancel() }
         connectionState = .connected(peerName: peer.name)
         activeConn = conn
         conn.onMessage = { [weak self] msg in
@@ -197,7 +205,7 @@ final class TransferService: ObservableObject {
     // MARK: - 剪贴板
 
     private func handleLocalClipboard(text: String, hash: String) {
-        guard clipboardSyncEnabled, let conn = activeConn else { return }
+        guard clipboardSyncEnabled, case .connected = connectionState, let conn = activeConn else { return }
         conn.send(.clipboardText(text: text, contentHash: hash))
         appendHistory(TransferItem(kind: .text, direction: .outgoing, preview: text, peerName: currentPeerName()))
     }
