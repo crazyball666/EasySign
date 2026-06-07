@@ -2,11 +2,15 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
+    @ObservedObject var transfer: TransferService
+
+    @State private var launchAtLogin = LaunchAtLogin.isEnabled
 
     var body: some View {
         TabView {
             generalTab.tabItem { Label("常规", systemImage: "gear") }
             filesTab.tabItem { Label("文件", systemImage: "doc") }
+            transferTab.tabItem { Label("互传", systemImage: "arrow.left.arrow.right") }
             aboutTab.tabItem { Label("关于", systemImage: "info.circle") }
         }
         .frame(width: 480, height: 320)
@@ -34,6 +38,18 @@ struct SettingsView: View {
                 Text("\(workspaceRetentionBinding.wrappedValue)")
                     .foregroundStyle(.secondary)
             }
+        }
+        .padding(16)
+    }
+
+    private var transferTab: some View {
+        Form {
+            TextField("设备名", text: deviceNameBinding)
+            Toggle("开机自启", isOn: $launchAtLogin)
+                .onChange(of: launchAtLogin) { newValue in
+                    LaunchAtLogin.setEnabled(newValue)
+                }
+            Toggle("隐身模式(不广播 Bonjour)", isOn: stealthBinding)
         }
         .padding(16)
     }
@@ -84,6 +100,23 @@ struct SettingsView: View {
         Binding(
             get: { settings.int(.workspaceRetentionDays) == 0 ? 7 : settings.int(.workspaceRetentionDays) },
             set: { settings.set($0, for: .workspaceRetentionDays) }
+        )
+    }
+
+    private var deviceNameBinding: Binding<String> {
+        Binding(
+            get: { transfer.deviceName },
+            set: { transfer.setDeviceName($0) }
+        )
+    }
+
+    private var stealthBinding: Binding<Bool> {
+        Binding(
+            get: { settings.bool(.transferStealthMode) },
+            set: {
+                settings.set($0, for: .transferStealthMode)
+                transfer.setStealthMode($0)
+            }
         )
     }
 }

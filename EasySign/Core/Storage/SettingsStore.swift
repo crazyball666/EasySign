@@ -12,6 +12,7 @@ public enum SettingsKey: String {
     case windowSize
     case sidebarWidth
     case enableExperimental
+    case transferStealthMode
 }
 
 public final class SettingsStore: ObservableObject {
@@ -59,7 +60,8 @@ public final class SettingsStore: ObservableObject {
     public func resetAll() {
         for key in [SettingsKey.defaultOutputDir, .autoCleanWorkspace, .workspaceRetentionDays,
                     .logRetentionDays, .recentFilesCap, .launchRestoresLastTool,
-                    .lastActiveTool, .windowSize, .sidebarWidth, .enableExperimental] {
+                    .lastActiveTool, .windowSize, .sidebarWidth, .enableExperimental,
+                    .transferStealthMode] {
             defaults.removeObject(forKey: key.rawValue)
         }
     }

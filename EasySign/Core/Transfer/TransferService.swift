@@ -37,9 +37,30 @@ final class TransferService: ObservableObject {
 
     var deviceName: String { identityStore.deviceName }
 
+    /// 隐身模式:不对外广播 Bonjour(仍可被手动 IP 连接)。
+    /// 注:start() 初值直接读 UserDefaults 同一裸键(见下),避免把 SettingsStore 注入本类。
+    private var stealthMode = false
+
+    /// 修改设备名并(若已在广播)用新名字重建 TXT 重新广播。
+    func setDeviceName(_ name: String) {
+        identityStore.deviceName = name
+        // 重新广播以更新 TXT 中的 name(若已在广播)
+        server?.advertiseInfo = (deviceId: identityStore.deviceId, name: name, fingerprint: loadedIdentity?.fingerprint ?? "")
+        server?.setAdvertising(!stealthMode)
+    }
+
+    /// 开关隐身模式。由设置页调用,立即作用于现有 listener 的广播。
+    func setStealthMode(_ on: Bool) {
+        stealthMode = on
+        server?.setAdvertising(!on)
+    }
+
     // MARK: - 生命周期
 
     func start() {
+        // 与 SettingsStore(.transferStealthMode) 共用同一 UserDefaults 裸键;
+        // 此处直接读以免把 SettingsStore 注入 TransferService(默认 false = 广播开)。
+        stealthMode = UserDefaults.standard.bool(forKey: "transferStealthMode")
         do {
             let id = try identity()
             let server = TransferServer(identity: { try self.identity().identity })
@@ -49,6 +70,7 @@ final class TransferService: ObservableObject {
             // 在 start() 前装好广播信息(deviceId/name/指纹),随监听一起对外广播。
             server.advertiseInfo = (deviceId: identityStore.deviceId, name: deviceName, fingerprint: id.fingerprint)
             try server.start()
+            server.setAdvertising(!stealthMode)
             self.server = server
             self.client = TransferClient(identity: { try self.identity().identity })
             // 启动 Bonjour 浏览,发现局域网内其它 EasySign 设备。
