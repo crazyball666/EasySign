@@ -13,10 +13,12 @@ final class TransferService: ObservableObject {
     @Published var pendingPairingCode: String?      // 本机被连时显示给对方输入
     @Published var pairedPeers: [PairedPeer] = []
     @Published var listenPort: UInt16?
+    @Published var discoveredPeers: [DiscoveredPeer] = []
 
     private let identityStore = DeviceIdentityStore()
     private let peerStore = PairedPeerStore()
     private let monitor = ClipboardMonitor()
+    private lazy var discovery = PeerDiscovery(selfDeviceId: { [weak self] in self?.identityStore.deviceId ?? "" })
     private var server: TransferServer?
     private var client: TransferClient?
     private var loadedIdentity: DeviceIdentity.Loaded?
@@ -44,9 +46,16 @@ final class TransferService: ObservableObject {
             server.onConnection = { [weak self] conn in
                 DispatchQueue.main.async { self?.acceptInbound(conn) }
             }
+            // 在 start() 前装好广播信息(deviceId/name/指纹),随监听一起对外广播。
+            server.advertiseInfo = (deviceId: identityStore.deviceId, name: deviceName, fingerprint: id.fingerprint)
             try server.start()
             self.server = server
             self.client = TransferClient(identity: { try self.identity().identity })
+            // 启动 Bonjour 浏览,发现局域网内其它 EasySign 设备。
+            discovery.onPeersChanged = { [weak self] peers in
+                DispatchQueue.main.async { self?.discoveredPeers = peers }
+            }
+            discovery.start()
             monitor.start()
             pollPort(attempts: 25)
             logger.log(.info, tool: "transfer", "互传服务已启动,本机指纹 \(id.fingerprint.prefix(8))…")
@@ -58,6 +67,8 @@ final class TransferService: ObservableObject {
 
     func stop() {
         monitor.stop()
+        discovery.stop()
+        discoveredPeers = []
         server?.stop(); server = nil
         activeConn?.cancel(); activeConn = nil
         activePairing = nil
@@ -89,20 +100,39 @@ final class TransferService: ObservableObject {
         connectionState = pairingCode == nil ? .connecting : .pairing
         do {
             let conn = try client.connect(host: host, port: port, pin: .acceptAny)
-            self.activeConn = conn
-            conn.onStateChange = { [weak self, weak conn] st in
-                guard let self, let conn else { return }
-                switch st {
-                case .ready:
-                    DispatchQueue.main.async { self.outboundReady(conn: conn, pairingCode: pairingCode) }
-                case .failed(let e):
-                    DispatchQueue.main.async { self.connectionState = .failed("连接失败: \(e)") }
-                default:
-                    break
-                }
-            }
+            beginOutbound(conn, pairingCode: pairingCode)
         } catch {
             connectionState = .failed("连接失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// 连接 Bonjour 发现出的对端。复用与手动 IP 完全相同的配对/pinning 流程(`.acceptAny` → 读指纹 → 配对/绑定)。
+    func connect(to peer: DiscoveredPeer, pairingCode: String?) {
+        activeConn?.cancel()
+        activeConn = nil
+        guard let client else { return }
+        connectionState = pairingCode == nil ? .connecting : .pairing
+        do {
+            let conn = try client.connect(endpoint: peer.endpoint, pin: .acceptAny)
+            beginOutbound(conn, pairingCode: pairingCode)
+        } catch {
+            connectionState = .failed("连接失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// 主动连接(host/port 与 endpoint)共用的 post-`.ready` 装配:安装状态回调并记录 activeConn。
+    private func beginOutbound(_ conn: TransferConnection, pairingCode: String?) {
+        self.activeConn = conn
+        conn.onStateChange = { [weak self, weak conn] st in
+            guard let self, let conn else { return }
+            switch st {
+            case .ready:
+                DispatchQueue.main.async { self.outboundReady(conn: conn, pairingCode: pairingCode) }
+            case .failed(let e):
+                DispatchQueue.main.async { self.connectionState = .failed("连接失败: \(e)") }
+            default:
+                break
+            }
         }
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import Network
 
 // Renamed PeerTransferKind to avoid collision with the device-sync TransferKind
 // in EasySign/Features/Devices/TransferProgressBar.swift.
@@ -34,4 +35,16 @@ enum ConnectionState: Equatable {
     case pairing
     case connected(peerName: String)
     case failed(String)
+}
+
+/// Bonjour 浏览发现的一台对端设备。fingerprint 来自 TXT 记录,用于标注是否已配对。
+struct DiscoveredPeer: Identifiable, Equatable {
+    var id: String { deviceId }
+    let deviceId: String
+    let name: String
+    let fingerprint: String     // 对端证书指纹(来自 TXT),用于标注已配对
+    let endpoint: NWEndpoint
+    static func == (l: DiscoveredPeer, r: DiscoveredPeer) -> Bool {
+        l.deviceId == r.deviceId && l.fingerprint == r.fingerprint
+    }
 }

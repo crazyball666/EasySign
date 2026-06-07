@@ -111,6 +111,12 @@ final class TransferServer {
     var onConnection: ((TransferConnection) -> Void)?
     private(set) var port: UInt16?
 
+    /// Bonjour 广播信息(deviceId/name/fingerprint)。在 `start()` 前设置即随服务一起广播。
+    var advertiseInfo: (deviceId: String, name: String, fingerprint: String)?
+
+    private var advertisingEnabled = true
+    private var advertisedService: NWListener.Service?
+
     init(identity: @escaping () throws -> SecIdentity) {
         self.identity = identity
     }
@@ -129,8 +135,24 @@ final class TransferServer {
         listener.stateUpdateHandler = { [weak self] st in
             if case .ready = st { self?.port = listener.port?.rawValue }
         }
+        // 广播 _easysign-transfer._tcp + TXT(deviceId/name/fp),供对端 Bonjour 浏览发现。
+        if let info = advertiseInfo {
+            var txt = NWTXTRecord()
+            txt["deviceId"] = info.deviceId
+            txt["name"] = info.name
+            txt["fp"] = info.fingerprint
+            let service = NWListener.Service(name: info.deviceId, type: PeerDiscovery.serviceType, txtRecord: txt)
+            advertisedService = service
+            if advertisingEnabled { listener.service = service }
+        }
         listener.start(queue: queue)
         self.listener = listener
+    }
+
+    /// 开关 Bonjour 广播。需在 `start()` 之后调用(此时 advertisedService 已构建)。
+    func setAdvertising(_ on: Bool) {
+        advertisingEnabled = on
+        listener?.service = on ? advertisedService : nil
     }
 
     func stop() { listener?.cancel(); listener = nil }
