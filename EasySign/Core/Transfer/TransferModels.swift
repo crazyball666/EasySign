@@ -14,11 +14,14 @@ struct TransferItem: Identifiable, Equatable {
     let timestamp: Date
     let preview: String
     var peerName: String
+    /// 收到的文件/图片落盘后的本地路径,供后续打开。文本类为 nil。
+    var localURL: URL?
 
     init(id: UUID = UUID(), kind: PeerTransferKind, direction: TransferDirection,
-         timestamp: Date = Date(), preview: String, peerName: String) {
+         timestamp: Date = Date(), preview: String, peerName: String, localURL: URL? = nil) {
         self.id = id; self.kind = kind; self.direction = direction
         self.timestamp = timestamp; self.preview = preview; self.peerName = peerName
+        self.localURL = localURL
     }
 }
 

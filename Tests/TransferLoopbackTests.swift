@@ -144,9 +144,56 @@ struct TransferLoopbackTests {
                "pinned-wrong connection blocked (failed/waiting/cancelled), state=\(describe(finalState))")
         expect(badConn.peerFingerprint == nil, "blocked connection captured no peer fingerprint")
         log("stage5 ok: TLS pinning blocked the wrong-fingerprint client (state=\(describe(finalState)))")
+        badConn.cancel()
+
+        // ---- Stage 6: chunked binary file round-trip over the paired channel ----------
+        // connA = clientConn (sender), connB = serverConn (receiver). Deterministic bytes
+        // (index-based, NOT random) so the comparison is reproducible without Date/rand.
+        let payloadSize = 200_000
+        var srcBytes = Data(count: payloadSize)
+        for i in 0..<payloadSize { srcBytes[i] = UInt8(i % 251) }
+        let srcURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("p3a-src-\(getpid()).bin")
+        try srcBytes.write(to: srcURL)
+
+        let recvMgr = FileTransferManager()
+        let sendMgr = FileTransferManager()
+        let recvURLBox = Latest<URL?>(nil)
+        let recvSem = DispatchSemaphore(value: 0)
+        recvMgr.onReceived = { _, _, url, _ in recvURLBox.set(url); recvSem.signal() }
+
+        // Receiver wiring: binary chunks -> recvMgr; route file control frames from onMessage.
+        serverConn.onBinary = { recvMgr.handleBinary($0) }
+        serverConn.onMessage = { msg in
+            switch msg {
+            case let .fileOffer(id, name, size):
+                recvMgr.handleOffer(id: id, name: name, size: size, isImage: false)
+            case let .fileComplete(id):
+                recvMgr.handleComplete(id: id)
+            default:
+                break
+            }
+        }
+
+        // Sender wiring: offer/complete as text WS frames, chunks as binary WS frames.
+        let fileId = UUID().uuidString
+        sendMgr.send(id: fileId, name: "p3a-payload.bin", fileURL: srcURL, isImage: false,
+            offer: { id, name, size in clientConn.send(.fileOffer(id: id, name: name, size: size)) },
+            sendBinary: { data in clientConn.sendBinary(data) },
+            complete: { id in clientConn.send(.fileComplete(id: id)) },
+            done: {})
+
+        expect(recvSem.wait(timeout: .now() + 15) == .success, "receiver completed the file within 15s")
+        guard let outURL = recvURLBox.value else { return fail("no received file URL") }
+        let outBytes = try Data(contentsOf: outURL)
+        expect(outBytes.count == payloadSize,
+               "received byte count == source (\(outBytes.count) vs \(payloadSize))")
+        expect(outBytes == srcBytes, "received bytes are byte-for-byte identical to source")
+        log("stage6 ok: file \(outBytes.count) bytes round-trip intact")
+        try? FileManager.default.removeItem(at: srcURL)
+        try? FileManager.default.removeItem(at: outURL)
 
         // ---- Cleanup -----------------------------------------------------------------
-        badConn.cancel()
         clientConn.cancel()
         serverConn.cancel()
         server.stop()

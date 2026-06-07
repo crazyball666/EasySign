@@ -36,6 +36,21 @@ final class TransferConnection {
         }
     }
 
+    private var _binaryHandler: ((Data) -> Void)?
+    private var _binaryBuffer: [Data] = []
+    /// 二进制(WS .binary 帧)入口,机制与 onMessage 镜像:queue-confined、设置前缓存、设置时回放。
+    var onBinary: ((Data) -> Void)? {
+        get { queue.sync { _binaryHandler } }
+        set {
+            queue.async {
+                self._binaryHandler = newValue
+                guard let h = newValue, !self._binaryBuffer.isEmpty else { return }
+                let pending = self._binaryBuffer; self._binaryBuffer.removeAll()
+                for d in pending { h(d) }
+            }
+        }
+    }
+
     private let fpLock = NSLock()
     private var _peerFingerprint: String?
     /// 由本连接在 `.ready` 时从自身 TLS metadata 读出对端叶证书指纹后写入(在连接队列上)。
@@ -88,13 +103,27 @@ final class TransferConnection {
         nw.send(content: data, contentContext: ctx, isComplete: true, completion: .contentProcessed { _ in })
     }
 
+    /// 以 WS .binary 帧发送原始字节(文件/图片分块)。
+    func sendBinary(_ data: Data) {
+        let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
+        let ctx = NWConnection.ContentContext(identifier: "bin", metadata: [meta])
+        nw.send(content: data, contentContext: ctx, isComplete: true, completion: .contentProcessed { _ in })
+    }
+
     func cancel() { nw.cancel() }
 
     private func receiveLoop() {
-        nw.receiveMessage { [weak self] data, _, _, error in
+        nw.receiveMessage { [weak self] data, context, _, error in
             guard let self else { return }
-            if let data, !data.isEmpty, let msg = try? WireMessage.decode(data) {
-                if let h = self._handler { h(msg) } else { self._buffer.append(msg) }
+            if let data, !data.isEmpty {
+                // 读 WS opcode 区分 .binary 与 text/控制帧;completion 已在本连接 queue 上,
+                // 故可直接访问 _binaryHandler/_binaryBuffer 与 _handler/_buffer(无需再 hop)。
+                let wsMeta = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata
+                if wsMeta?.opcode == .binary {
+                    if let h = self._binaryHandler { h(data) } else { self._binaryBuffer.append(data) }
+                } else if let msg = try? WireMessage.decode(data) {
+                    if let h = self._handler { h(msg) } else { self._buffer.append(msg) }
+                }
             }
             if error == nil { self.receiveLoop() }
         }

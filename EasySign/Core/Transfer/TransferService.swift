@@ -14,10 +14,12 @@ final class TransferService: ObservableObject {
     @Published var pairedPeers: [PairedPeer] = []
     @Published var listenPort: UInt16?
     @Published var discoveredPeers: [DiscoveredPeer] = []
+    @Published var activeTransfers: [FileTransferManager.Progress] = []
 
     private let identityStore = DeviceIdentityStore()
     private let peerStore = PairedPeerStore()
     private let monitor = ClipboardMonitor()
+    private let fileManager = FileTransferManager()
     private lazy var discovery = PeerDiscovery(selfDeviceId: { [weak self] in self?.identityStore.deviceId ?? "" })
     private var server: TransferServer?
     private var client: TransferClient?
@@ -32,6 +34,32 @@ final class TransferService: ObservableObject {
         self.pairedPeers = peerStore.all()
         monitor.onLocalText = { [weak self] text, hash in
             DispatchQueue.main.async { self?.handleLocalClipboard(text: text, hash: hash) }
+        }
+        fileManager.onProgress = { [weak self] p in
+            DispatchQueue.main.async { self?.updateProgress(p) }
+        }
+        fileManager.onReceived = { [weak self] _, name, url, _ in
+            // P3-B 将区分图片处理;Phase 1 一律按文件入历史。
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.appendHistory(TransferItem(kind: .file, direction: .incoming,
+                                                preview: name, peerName: self.currentPeerName(),
+                                                localURL: url))
+            }
+        }
+    }
+
+    /// 进度上移(主线程):按 id upsert;收/发齐(bytes>=total)后短暂保留再移除。
+    private func updateProgress(_ p: FileTransferManager.Progress) {
+        if let idx = activeTransfers.firstIndex(where: { $0.id == p.id }) {
+            activeTransfers[idx] = p
+        } else {
+            activeTransfers.append(p)
+        }
+        if p.total > 0 && p.bytes >= p.total {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.activeTransfers.removeAll { $0.id == p.id }
+            }
         }
     }
 
@@ -248,10 +276,39 @@ final class TransferService: ObservableObject {
         if let old = activeConn, old !== conn { old.cancel() }
         connectionState = .connected(peerName: peer.name)
         activeConn = conn
+        conn.onBinary = { [weak self] data in self?.fileManager.handleBinary(data) }
         conn.onMessage = { [weak self] msg in
-            guard case let .clipboardText(text, hash) = msg else { return }
-            DispatchQueue.main.async { self?.receiveClipboard(text: text, hash: hash, peerName: peer.name) }
+            guard let self else { return }
+            DispatchQueue.main.async {
+                switch msg {
+                case let .clipboardText(text, hash):
+                    self.receiveClipboard(text: text, hash: hash, peerName: peer.name)
+                case let .fileOffer(id, name, size):
+                    self.fileManager.handleOffer(id: id, name: name, size: size, isImage: false)
+                case let .clipboardImageOffer(id, size, _):
+                    self.fileManager.handleOffer(id: id, name: "image-\(id).png", size: size, isImage: true)
+                case let .fileComplete(id):
+                    self.fileManager.handleComplete(id: id)
+                default:
+                    break
+                }
+            }
         }
+    }
+
+    /// 发送一个本地文件给当前已连接对端(分块二进制帧,流式读盘)。
+    func sendFile(_ url: URL) {
+        guard case .connected = connectionState, let conn = activeConn else { return }
+        let id = UUID().uuidString
+        let name = url.lastPathComponent
+        fileManager.send(id: id, name: name, fileURL: url, isImage: false,
+            offer: { [weak conn] id, name, size in conn?.send(.fileOffer(id: id, name: name, size: size)) },
+            sendBinary: { [weak conn] data in conn?.sendBinary(data) },
+            complete: { [weak conn] id in conn?.send(.fileComplete(id: id)) },
+            done: { [weak self] in DispatchQueue.main.async {
+                self?.appendHistory(TransferItem(kind: .file, direction: .outgoing,
+                                                 preview: name, peerName: self?.currentPeerName() ?? "对方设备"))
+            } })
     }
 
     // MARK: - 剪贴板
