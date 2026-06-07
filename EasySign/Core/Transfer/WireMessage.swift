@@ -8,6 +8,9 @@ enum WireMessage: Equatable {
     case pairResult(ok: Bool)
     case clipboardText(text: String, contentHash: String)
     case ack(id: String)
+    case fileOffer(id: String, name: String, size: Int)
+    case fileComplete(id: String)
+    case clipboardImageOffer(id: String, size: Int, hash: String)
 
     enum WireError: Error { case unknownType(String); case malformed }
 
@@ -22,6 +25,7 @@ enum WireMessage: Equatable {
         var text: String?
         var contentHash: String?
         var id: String?
+        var size: Int?
     }
 
     func encoded() throws -> Data {
@@ -39,6 +43,12 @@ enum WireMessage: Equatable {
             e.type = "clipboardText"; e.text = text; e.contentHash = contentHash
         case let .ack(id):
             e.type = "ack"; e.id = id
+        case let .fileOffer(id, name, size):
+            e.type = "fileOffer"; e.id = id; e.name = name; e.size = size
+        case let .fileComplete(id):
+            e.type = "fileComplete"; e.id = id
+        case let .clipboardImageOffer(id, size, hash):
+            e.type = "clipboardImageOffer"; e.id = id; e.size = size; e.contentHash = hash
         }
         return try JSONEncoder().encode(e)
     }
@@ -64,6 +74,15 @@ enum WireMessage: Equatable {
         case "ack":
             guard let id = e.id else { throw WireError.malformed }
             return .ack(id: id)
+        case "fileOffer":
+            guard let id = e.id, let n = e.name, let s = e.size else { throw WireError.malformed }
+            return .fileOffer(id: id, name: n, size: s)
+        case "fileComplete":
+            guard let id = e.id else { throw WireError.malformed }
+            return .fileComplete(id: id)
+        case "clipboardImageOffer":
+            guard let id = e.id, let s = e.size, let h = e.contentHash else { throw WireError.malformed }
+            return .clipboardImageOffer(id: id, size: s, hash: h)
         default:
             throw WireError.unknownType(e.type)
         }

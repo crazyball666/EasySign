@@ -29,4 +29,16 @@ final class TransferClient {
         c.start()
         return c
     }
+
+    /// 直连 Bonjour 发现出的 endpoint。pin 语义同上(配对用 `.acceptAny`,已配对用 `.requirePinned`)。
+    /// 走 endpoint 时由 Network.framework 自行解析 Bonjour service 的 host/port,
+    /// WebSocket Upgrade 所需的 Host/path 由 ws options 默认补全。
+    func connect(endpoint: NWEndpoint, pin: TransferTLS.PinMode) throws -> TransferConnection {
+        let id = try identity()
+        let params = TransferTLS.parameters(identity: id, pin: pin)
+        let nw = NWConnection(to: endpoint, using: params)
+        let c = TransferConnection(nw, queue: queue)
+        c.start()
+        return c
+    }
 }

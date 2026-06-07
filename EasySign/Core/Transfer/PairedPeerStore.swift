@@ -22,6 +22,9 @@ final class PairedPeerStore {
     func remove(deviceId: String) {
         save(all().filter { $0.deviceId != deviceId })
     }
+    func removeAll() {
+        defaults.removeObject(forKey: key)
+    }
     private func save(_ list: [PairedPeer]) {
         if let data = try? JSONEncoder().encode(list) { defaults.set(data, forKey: key) }
     }

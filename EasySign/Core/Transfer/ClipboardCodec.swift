@@ -11,6 +11,9 @@ enum ClipboardCodec {
     static func hash(text: String) -> String {
         SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
+    static func hash(data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
     static func shouldSkip(typeIdentifiers: [String]) -> Bool {
         !skipTypes.isDisjoint(with: Set(typeIdentifiers))
     }
