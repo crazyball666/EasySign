@@ -26,6 +26,11 @@ enum TransferTLS {
         }
         sec_protocol_options_set_min_tls_protocol_version(sec, .TLSv12)
 
+        // 双向 TLS:协议依赖每端都拿到对端叶证书指纹(配对/pinning 基础)。
+        // 服务端默认不请求客户端证书(peer auth 默认值:client=true,server=false),
+        // 必须显式开启,否则服务端永远取不到对端证书 → serverConn.peerFingerprint 恒为 nil。
+        sec_protocol_options_set_peer_authentication_required(sec, true)
+
         // 自签互信:不走系统信任链,改为对端叶证书指纹比对。
         sec_protocol_options_set_verify_block(sec, { _, secTrust, complete in
             switch pin {
