@@ -19,7 +19,7 @@ extension SecIdentity {
         SecItemCopyMatching(query, &result)
         return result as? [SecIdentity] ?? []
     }
-    
+
     var certificate: SecCertificate? {
         var cert: SecCertificate?
         SecIdentityCopyCertificate(self, &cert)

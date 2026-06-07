@@ -6,10 +6,6 @@
 //
 
 import SwiftUI
-
-enum KeychainKey {
-    static let p12Password = "resign.p12Password"
-}
 import UniformTypeIdentifiers
 
 extension Binding where Value == Bool {
@@ -611,12 +607,7 @@ struct ResignContentView: View {
         .onAppear(perform: {
             viewModel.inputFile = UserDefaults.standard.string(forKey: CacheKey.selectedInput.rawValue) ?? ""
             viewModel.p12Path = UserDefaults.standard.string(forKey: CacheKey.selectedP12.rawValue) ?? ""
-            // P12 密码从 Keychain 读取（兼容旧 UserDefaults 数据）
-            viewModel.p12Password = KeychainService.shared.get(KeychainKey.p12Password)
-                ?? UserDefaults.standard.string(forKey: CacheKey.selectedP12Password.rawValue)
-                ?? ""
-            // 清理明文 UserDefaults（一次性迁移）
-            UserDefaults.standard.removeObject(forKey: CacheKey.selectedP12Password.rawValue)
+            viewModel.p12Password = UserDefaults.standard.string(forKey: CacheKey.selectedP12Password.rawValue) ?? ""
             viewModel.mobileprovisionPath = UserDefaults.standard.string(forKey: CacheKey.selectedMobileProvision.rawValue) ?? ""
             let cachedInjectedDylibs = UserDefaults.standard.stringArray(forKey: CacheKey.selectedInjectedDylibs.rawValue) ?? []
             viewModel.injectedDylibPaths = cachedInjectedDylibs
@@ -799,12 +790,10 @@ struct ResignContentView: View {
             return
         }
 
-        // 同步密码到 Keychain（如果用户希望"记住"）
-        KeychainService.shared.set(viewModel.p12Password, for: KeychainKey.p12Password)
-
         UserDefaults.standard.set(viewModel.inputFile, forKey: CacheKey.selectedInput.rawValue)
         UserDefaults.standard.set(viewModel.p12Path, forKey: CacheKey.selectedP12.rawValue)
-        // P12 密码改存 Keychain（不再明文 UserDefaults）
+        // P12 密码存 UserDefaults(个人本地工具,没必要进钥匙串 —— 进钥匙串会让 ad-hoc 本地构建每次启动弹密码授权)。
+        UserDefaults.standard.set(viewModel.p12Password, forKey: CacheKey.selectedP12Password.rawValue)
         UserDefaults.standard.set(viewModel.mobileprovisionPath, forKey: CacheKey.selectedMobileProvision.rawValue)
         UserDefaults.standard.set(viewModel.isDylibInjectionEnabled, forKey: CacheKey.selectedDylibInjectionEnabled.rawValue)
         UserDefaults.standard.set(viewModel.injectedDylibPaths, forKey: CacheKey.selectedInjectedDylibs.rawValue)
