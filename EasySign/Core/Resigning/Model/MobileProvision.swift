@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import AppKit
 
 /// 描述文件
 struct MobileProvision {
@@ -43,7 +44,8 @@ struct MobileProvision {
     
     init?(file: URL) throws {
         self.file = file
-        let output = try TaskCenter.executeShell(command: "security cms -D -i \"\(file.path(percentEncoded: false))\"")
+        let output = try TaskCenter.execute(lanuchPath: "/usr/bin/security",
+                                            arguments: ["cms", "-D", "-i", file.path(percentEncoded: false)])
         guard let data = output.data(using: .utf8), let plist = try PropertyListSerialization.propertyList(from: data, options: .mutableContainers, format: nil) as? [String: Any] else {
             return nil
         }
@@ -60,7 +62,8 @@ struct MobileProvision {
     }
     
     func install() throws {
-        let command = "open \"\(self.file)\""
-        try TaskCenter.executeShell(command: command)
+        // 用 NSWorkspace 打开(交系统/Xcode 处理 mobileprovision 安装);
+        // 旧实现拼 "open \"\(self.file)\"" 既会被 shell 注入,又把 URL 误插值成 file:// 串。
+        NSWorkspace.shared.open(file)
     }
 }

@@ -18,6 +18,8 @@ struct EasySignApp: App {
         h.validate()
         h.transfer.start()
         h.update.maybeAutoCheckOnLaunch()
+        // 清理崩溃/强退遗留的重签工作区(defer 在强退时不执行,会积累数 GB)。
+        DispatchQueue.global(qos: .utility).async { PathManager.cleanupStaleResignWorkspaces() }
         _hub = State(initialValue: h)
     }
 

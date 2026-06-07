@@ -746,6 +746,12 @@ struct ResignContentView: View {
             return "P12 文件不存在：\(viewModel.p12Path)"
         }
         if viewModel.p12Password.isEmpty { return "请输入 P12 密码" }
+        // 提前在内存里验一次 p12 密码:错的话立即提示,而不是等整包解压后才在 zsign 里报。
+        do {
+            _ = try PKCS12(file: URL(fileURLWithPath: viewModel.p12Path), password: viewModel.p12Password)
+        } catch {
+            return "P12 密码错误或证书文件无效,请检查密码"
+        }
         if viewModel.mobileprovisionPath.isEmpty { return "请选择 mobileprovision" }
         if !FileManager.default.fileExists(atPath: viewModel.mobileprovisionPath) {
             return "mobileprovision 不存在：\(viewModel.mobileprovisionPath)"

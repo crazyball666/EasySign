@@ -55,7 +55,12 @@ struct ResignTask {
         """)
         
         logger?.log(.INFO, "删除包体内无用文件...")
-        try TaskCenter.executeShell(command: "find -d \"\(appBundle.path.path)\" -name \".DS_Store\" -o -name \"__MACOSX\" | xargs rm -rf")
+        // argv 形式 + 括号保证 -exec 同时作用于两个 -name(否则 -o 优先级会让 .DS_Store 漏删);
+        // 旧的 find|xargs rm -rf 经 shell 拼路径,路径含特殊字符会破损/注入,且 xargs 无 -0 遇空格会断词。
+        try TaskCenter.execute(lanuchPath: "/usr/bin/find",
+                               arguments: ["-d", appBundle.path.path,
+                                           "(", "-name", ".DS_Store", "-o", "-name", "__MACOSX", ")",
+                                           "-exec", "rm", "-rf", "{}", "+"])
         
         logger?.log(.INFO, "安装 App p12 文件...")
         let pkcs12 = try PKCS12(file: taskInfo.p12Path, password: taskInfo.p12Password)
@@ -120,7 +125,12 @@ struct ResignTask {
         }
 
         logger?.log(.INFO, "删除包体内无用文件...")
-        try TaskCenter.executeShell(command: "find -d \"\(appBundle.path.path)\" -name \".DS_Store\" -o -name \"__MACOSX\" | xargs rm -rf")
+        // argv 形式 + 括号保证 -exec 同时作用于两个 -name(否则 -o 优先级会让 .DS_Store 漏删);
+        // 旧的 find|xargs rm -rf 经 shell 拼路径,路径含特殊字符会破损/注入,且 xargs 无 -0 遇空格会断词。
+        try TaskCenter.execute(lanuchPath: "/usr/bin/find",
+                               arguments: ["-d", appBundle.path.path,
+                                           "(", "-name", ".DS_Store", "-o", "-name", "__MACOSX", ")",
+                                           "-exec", "rm", "-rf", "{}", "+"])
 
         let injectedDylibs = try validatedInjectedDylibs()
         if !injectedDylibs.isEmpty {
@@ -174,9 +184,10 @@ extension ResignTask {
     private func getAppBundle() throws -> AppBundle {
         if taskInfo.filePath.pathExtension == "ipa" || taskInfo.filePath.pathExtension == "zip" {
             let outputPath = workspacePath.appendingPathComponent("ipa_content")
-            // -o 覆盖重复条目(重打包 IPA 常见,否则会弹 replace 提示);-q 安静输出,避免大包海量 inflating 日志
-            let command = "unzip -o -q \"\(taskInfo.filePath.path)\" -d \"\(outputPath.path)\""
-            try TaskCenter.executeShell(command: command)
+            // -o 覆盖重复条目(重打包 IPA 常见,否则会弹 replace 提示);-q 安静输出,避免大包海量 inflating 日志。
+            // argv 形式(不经 shell),路径含 " $ ` 等字符也安全。
+            try TaskCenter.execute(lanuchPath: "/usr/bin/unzip",
+                                   arguments: ["-o", "-q", taskInfo.filePath.path, "-d", outputPath.path])
             let payloadPath = outputPath.appendingPathComponent("Payload")
             guard let appPath = try FileManager.default.contentsOfDirectory(at: payloadPath, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles).first(where: { $0.pathExtension == "app" }) else {
                 throw NSError(message: "非法文件，找不到 app")
@@ -191,14 +202,6 @@ extension ResignTask {
         } else {
             throw NSError(message: "非法文件")
         }
-    }
-    
-    /// 查找.app路径
-    /// - Parameter directory: 文件夹
-    /// - Returns: app路径
-    private func findAppPath(directory: URL) throws -> URL {
-        let output = try TaskCenter.executeShell(command: "find -d \"\(directory.path)\" -maxdepth 3 -name  \"*.app\" | head -n 1")
-        return URL(fileURLWithPath: output.trimmingCharacters(in: .newlines))
     }
     
     /// 重签 Appex
@@ -217,8 +220,10 @@ extension ResignTask {
         try appBundle.appexList.forEach { appex in
             let name = appex.path.lastPathComponent
             logger?.log(.INFO, "使用主 App 证书重签 \(name)...")
-            let cmd = "/usr/bin/codesign -vvv --continue -f -s \"\(pkcs12.certificate.sha1.hexString)\"  --generate-entitlement-der --preserve-metadata=identifier,flags,runtime \"\(appex.path.path)\""
-            try TaskCenter.executeShell(command: cmd)
+            try TaskCenter.execute(lanuchPath: "/usr/bin/codesign",
+                                   arguments: ["-vvv", "--continue", "-f", "-s", pkcs12.certificate.sha1.hexString,
+                                               "--generate-entitlement-der",
+                                               "--preserve-metadata=identifier,flags,runtime", appex.path.path])
             
             appexResignReuslt.append((bundleId: appex.bundleId, mobileProvision: mobileProvision))
         }
@@ -231,12 +236,15 @@ extension ResignTask {
     ///   - appPath: app路径
     ///   - identity: 证书
     private func codesignDynamicLibrary(appBundle: AppBundle, pkcs12: PKCS12) throws {
-        let cmd = "find -d \"\(appBundle.path.path)\" -name \"*.dylib\" -o -name \"*.framework\""
-        let result = try TaskCenter.executeShell(command: cmd)
-        try result.components(separatedBy: "\n").forEach { item  in
+        let result = try TaskCenter.execute(lanuchPath: "/usr/bin/find",
+                                            arguments: ["-d", appBundle.path.path,
+                                                        "-name", "*.dylib", "-o", "-name", "*.framework"])
+        try result.components(separatedBy: "\n").forEach { item in
             if !item.isEmpty {
-                let cmd = "/usr/bin/codesign -vvv --continue -f -s \"\(pkcs12.certificate.sha1.hexString)\"  --generate-entitlement-der --preserve-metadata=identifier,flags,runtime \"\(item)\""
-                try TaskCenter.executeShell(command: cmd)
+                try TaskCenter.execute(lanuchPath: "/usr/bin/codesign",
+                                       arguments: ["-vvv", "--continue", "-f", "-s", pkcs12.certificate.sha1.hexString,
+                                                   "--generate-entitlement-der",
+                                                   "--preserve-metadata=identifier,flags,runtime", item])
             }
         }
     }
@@ -299,7 +307,10 @@ extension ResignTask {
     private func codesignApp(appBundle: AppBundle, pkcs12: PKCS12, entitlements: String) throws {
         let entitlementsPath = workspacePath.appendingPathComponent("temp.entitlements")
         FileManager.default.createFile(atPath: entitlementsPath.path, contents: entitlements.data(using: .utf8))
-        try TaskCenter.executeShell(command: "/usr/bin/codesign -vvv -f -s \"\(pkcs12.certificate.sha1.hexString)\" --entitlements \"\(entitlementsPath.path)\" --generate-entitlement-der \"\(appBundle.path.path)\"")
+        try TaskCenter.execute(lanuchPath: "/usr/bin/codesign",
+                               arguments: ["-vvv", "-f", "-s", pkcs12.certificate.sha1.hexString,
+                                           "--entitlements", entitlementsPath.path,
+                                           "--generate-entitlement-der", appBundle.path.path])
     }
     
     
@@ -370,8 +381,11 @@ extension ResignTask {
     /// - Returns: ipa 路径
     private func xcodebuildExportArchive(xcarchivePath: URL, exportOptionsPlistPath: URL) throws -> URL {
         let exportDirPath = workspacePath.appendingPathComponent("export")
-        let cmd = "xcodebuild -exportArchive -archivePath \"\(xcarchivePath.path)\" -exportPath \"\(exportDirPath.path)\"  -exportOptionsPlist \"\(exportOptionsPlistPath.path)\""
-        try TaskCenter.executeShell(command: cmd)
+        try TaskCenter.execute(lanuchPath: "/usr/bin/xcodebuild",
+                               arguments: ["-exportArchive",
+                                           "-archivePath", xcarchivePath.path,
+                                           "-exportPath", exportDirPath.path,
+                                           "-exportOptionsPlist", exportOptionsPlistPath.path])
         guard let ipaPath = try FileManager.default.contentsOfDirectory(at: exportDirPath, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles).first(where: { $0.pathExtension == "ipa" }) else {
             throw NSError(message: "导出 ipa 失败")
         }
