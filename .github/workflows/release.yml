@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Derive version from tag
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (unsigned, Release)
+        run: |
+          xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Release \
+            -derivedDataPath build \
+            MARKETING_VERSION=${{ steps.ver.outputs.version }} \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package .dmg
+        run: |
+          brew install create-dmg
+          APP="build/Build/Products/Release/EasySign.app"
+          DMG="EasySign-${{ steps.ver.outputs.version }}.dmg"
+          create-dmg \
+            --volname "EasySign ${{ steps.ver.outputs.version }}" \
+            --app-drop-link 450 180 \
+            --window-size 660 400 \
+            "$DMG" "$APP" \
+          || hdiutil create -volname "EasySign ${{ steps.ver.outputs.version }}" \
+               -srcfolder "$APP" -ov -format UDZO "$DMG"
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: EasySign-*.dmg
