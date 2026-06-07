@@ -44,12 +44,14 @@ struct TransferToolView: View {
 
     private var pairingCard: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("配对码", systemImage: "key.fill").font(.headline)
+            Label("本机配对码", systemImage: "key.fill").font(.headline)
             if let code = service.pendingPairingCode {
-                Text(code).font(.system(size: 28, weight: .bold, design: .monospaced))
-                Text("在另一台输入此码以配对").font(.caption).foregroundStyle(.secondary)
+                Text(code)
+                    .font(.system(size: 28, weight: .bold, design: .monospaced))
+                    .textSelection(.enabled)
+                Text("想连接本机的设备,在它那边输入这个码").font(.caption).foregroundStyle(.secondary)
             } else {
-                Text("等待对端连接时显示").foregroundStyle(.secondary)
+                Text("准备中…").foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -78,32 +80,34 @@ struct TransferToolView: View {
 
     private func discoveredPeerRow(_ peer: DiscoveredPeer) -> some View {
         let isPaired = service.pairedPeers.map(\.fingerprint).contains(peer.fingerprint)
-        return HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
                 Text(peer.name).fontWeight(.medium)
-                if !isPaired {
-                    Text("未配对设备需填对方配对码")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            Text(isPaired ? "已配对" : "未配对")
-                .font(.caption)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(isPaired ? Color.green.opacity(0.2) : Color.orange.opacity(0.2))
-                .foregroundStyle(isPaired ? .green : .orange)
-                .cornerRadius(4)
-            Button("连接") {
+                Spacer()
+                Text(isPaired ? "已配对" : "未配对")
+                    .font(.caption)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(isPaired ? Color.green.opacity(0.2) : Color.orange.opacity(0.2))
+                    .foregroundStyle(isPaired ? .green : .orange)
+                    .cornerRadius(4)
                 if isPaired {
-                    service.connect(to: peer, pairingCode: nil)
-                } else {
-                    service.connect(to: peer, pairingCode: codeInput.isEmpty ? nil : codeInput)
+                    Button("连接") { service.connect(to: peer, pairingCode: nil) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                 }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
+            // 未配对:就地填入「对方屏幕上显示的本机配对码」,带码连接(不再用无码探测去触发,杜绝竞态)。
+            if !isPaired {
+                HStack(spacing: 8) {
+                    TextField("输入「\(peer.name)」屏幕上的配对码", text: $codeInput)
+                        .textFieldStyle(.roundedBorder)
+                    Button("配对并连接") { service.connect(to: peer, pairingCode: codeInput) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(codeInput.count < 6)
+                }
+            }
         }
         .padding(.vertical, 2)
     }

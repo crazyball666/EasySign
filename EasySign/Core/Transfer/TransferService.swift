@@ -138,6 +138,12 @@ final class TransferService: ObservableObject {
         stealthMode = UserDefaults.standard.bool(forKey: "transferStealthMode")
         do {
             let id = try identity()
+            // 常驻配对码:服务一启动就生成并持续显示,供想连本机的设备输入。
+            // (旧设计"被连时才生成"依赖一次必然失败的无码探测连接去触发,既竞态又反直觉。)
+            if pendingPairingCode == nil {
+                pendingPairingCode = PairingCrypto.makeCode()
+                pairingCodeIssuedAt = Date()
+            }
             let server = TransferServer(identity: { try self.identity().identity })
             server.onConnection = { [weak self] conn in
                 DispatchQueue.main.async { self?.acceptInbound(conn) }
@@ -398,10 +404,8 @@ final class TransferService: ObservableObject {
                 conn.cancel(); return
             }
             if isCoolingDown(fp) { conn.cancel(); return }   // 静默取消,与全局冷却一致
-            // 复用 pendingPairingCode;超过 180s 视为过期,重新生成。
-            if let issued = pairingCodeIssuedAt, Date().timeIntervalSince(issued) > 180 {
-                pendingPairingCode = PairingCrypto.makeCode(); pairingCodeIssuedAt = Date()
-            }
+            // 常驻配对码:启动时已生成并持续显示给对端读取,此处不轮换,
+            // 否则对端正照着屏幕输入时码却变了,必然配对失败。仅作 nil 兜底。
             if pendingPairingCode == nil { pendingPairingCode = PairingCrypto.makeCode(); pairingCodeIssuedAt = Date() }
             startPairing(conn: conn, code: pendingPairingCode!, peerFingerprint: fp)
         }
@@ -441,8 +445,9 @@ final class TransferService: ObservableObject {
             failureCounts[fp] = 0
             peerStore.upsert(peer)
             pairedPeers = peerStore.all()
-            pendingPairingCode = nil
-            pairingCodeIssuedAt = nil
+            // 配对成功后轮换出新码:旧码即时失效(防重放),同时常驻显示不留空。
+            pendingPairingCode = PairingCrypto.makeCode()
+            pairingCodeIssuedAt = Date()
             bindConnected(conn: conn, peer: peer)
             logger.log(.info, tool: "transfer", "已与 \(peer.name) 配对")
         case let .failed(reason):
