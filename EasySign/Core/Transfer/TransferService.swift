@@ -279,19 +279,17 @@ final class TransferService: ObservableObject {
         conn.onBinary = { [weak self] data in self?.fileManager.handleBinary(data) }
         conn.onMessage = { [weak self] msg in
             guard let self else { return }
-            DispatchQueue.main.async {
-                switch msg {
-                case let .clipboardText(text, hash):
-                    self.receiveClipboard(text: text, hash: hash, peerName: peer.name)
-                case let .fileOffer(id, name, size):
-                    self.fileManager.handleOffer(id: id, name: name, size: size, isImage: false)
-                case let .clipboardImageOffer(id, size, _):
-                    self.fileManager.handleOffer(id: id, name: "image-\(id).png", size: size, isImage: true)
-                case let .fileComplete(id):
-                    self.fileManager.handleComplete(id: id)
-                default:
-                    break
-                }
+            switch msg {
+            case let .clipboardText(text, hash):
+                DispatchQueue.main.async { self.receiveClipboard(text: text, hash: hash, peerName: peer.name) }
+            case let .fileOffer(id, name, size):
+                self.fileManager.handleOffer(id: id, name: name, size: size, isImage: false)
+            case let .clipboardImageOffer(id, size, _):
+                self.fileManager.handleOffer(id: id, name: "image-\(id).png", size: size, isImage: true)
+            case let .fileComplete(id):
+                self.fileManager.handleComplete(id: id)
+            default:
+                break
             }
         }
     }

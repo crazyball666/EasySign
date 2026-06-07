@@ -33,6 +33,10 @@ final class FileTransferManager {
             let url = TransferPaths.uniqueInboxURL(for: name.isEmpty ? "\(isImage ? "image.png" : "file")" : name)
             FileManager.default.createFile(atPath: url.path, contents: nil)
             self.recvHandle = try? FileHandle(forWritingTo: url)
+            if self.recvHandle == nil {
+                self.finishRecvCleanup()
+                return
+            }
             self.recvId = id; self.recvName = name; self.recvIsImage = isImage
             self.recvTotal = size; self.recvBytes = 0; self.recvURL = url
         }
@@ -58,7 +62,10 @@ final class FileTransferManager {
         }
     }
     private func finishRecvCleanup() {
-        try? recvHandle?.close(); recvHandle = nil; recvId = nil; recvURL = nil; recvBytes = 0; recvTotal = 0
+        try? recvHandle?.close()
+        recvHandle = nil; recvId = nil; recvURL = nil
+        recvName = nil; recvIsImage = false
+        recvBytes = 0; recvTotal = 0
     }
 
     // —— 发送 ——
