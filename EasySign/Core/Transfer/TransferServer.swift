@@ -5,8 +5,24 @@ import Security
 /// 一条连接(server 或 client 侧通用)。
 final class TransferConnection {
     let nw: NWConnection
-    var onMessage: ((WireMessage) -> Void)?
     var onStateChange: ((NWConnection.State) -> Void)?
+
+    private var _handler: ((WireMessage) -> Void)?
+    private var _buffer: [WireMessage] = []
+    /// 赋值即开始接收。在 handler 设置前到达的消息会被缓存,设置时按序回放。
+    /// setter 线程安全(任意线程可调)。
+    var onMessage: ((WireMessage) -> Void)? {
+        get { queue.sync { _handler } }
+        set {
+            queue.async {
+                self._handler = newValue
+                guard let h = newValue, !self._buffer.isEmpty else { return }
+                let pending = self._buffer
+                self._buffer.removeAll()
+                for m in pending { h(m) }
+            }
+        }
+    }
 
     private let fpLock = NSLock()
     private var _peerFingerprint: String?
@@ -67,7 +83,7 @@ final class TransferConnection {
         nw.receiveMessage { [weak self] data, _, _, error in
             guard let self else { return }
             if let data, !data.isEmpty, let msg = try? WireMessage.decode(data) {
-                self.onMessage?(msg)
+                if let h = self._handler { h(msg) } else { self._buffer.append(msg) }
             }
             if error == nil { self.receiveLoop() }
         }

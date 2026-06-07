@@ -61,6 +61,7 @@ final class TransferService: ObservableObject {
         server?.stop(); server = nil
         activeConn?.cancel(); activeConn = nil
         activePairing = nil
+        pendingPairingCode = nil
         connectionState = .idle
     }
 
@@ -82,6 +83,8 @@ final class TransferService: ObservableObject {
     // MARK: - 主动连接(手动 IP)
 
     func connect(host: String, port: UInt16, pairingCode: String?) {
+        activeConn?.cancel()
+        activeConn = nil
         guard let client else { return }
         connectionState = pairingCode == nil ? .connecting : .pairing
         do {
@@ -122,8 +125,13 @@ final class TransferService: ObservableObject {
     private func acceptInbound(_ conn: TransferConnection) {
         conn.onStateChange = { [weak self, weak conn] st in
             guard let self, let conn else { return }
-            if case .ready = st {
+            switch st {
+            case .ready:
                 DispatchQueue.main.async { self.inboundReady(conn: conn) }
+            case .failed(let e):
+                DispatchQueue.main.async { self.connectionState = .failed("连接失败: \(e)") }
+            default:
+                break
             }
         }
     }
@@ -133,6 +141,7 @@ final class TransferService: ObservableObject {
         if let paired = peerStore.peer(forFingerprint: fp) {
             bindConnected(conn: conn, peer: paired)
         } else {
+            if isCoolingDown(fp) { connectionState = .failed("配对失败过多,请稍后再试"); return }
             if pendingPairingCode == nil { pendingPairingCode = PairingCrypto.makeCode() }
             startPairing(conn: conn, code: pendingPairingCode!, peerFingerprint: fp)
         }
