@@ -148,7 +148,9 @@ struct ResignTask {
         options.temporaryDirectory = workspacePath.path
         options.injectedDylibPaths = injectedDylibs.map { $0.path }
         options.weakInject = false
-        options.zipLevel = 0
+        // zip 压缩级别 0-9:0=仅存储(产物≈解压体积,大一倍),6=zlib 默认平衡。
+        // 曾设 0 导致 400M 的 IPA 重签后变 800M;改 6 后体积正常,大包打包多花几秒。
+        options.zipLevel = 6
         options.logHandler = { [logger] level, message in
             let text = message.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
