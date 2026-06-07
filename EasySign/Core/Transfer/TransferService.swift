@@ -26,9 +26,14 @@ final class TransferService: ObservableObject {
     private var client: TransferClient?
     private var loadedIdentity: DeviceIdentity.Loaded?
     private var activeConn: TransferConnection?
+    private var activeIsOutbound = false             // 当前已绑定连接的方向:仅出站允许重连
     private var activePairing: PairingManager?
+    private var activePairingConn: TransferConnection?   // 强持有配对中的连接(连同其 pm),避免被并发入站顶掉
     private var failureCounts: [String: Int] = [:]
     private var cooldownUntil: [String: Date] = [:]
+    private var pairFailureTimes: [Date] = []        // 全局配对失败时间戳(滑动窗口)
+    private var globalPairCooldownUntil: Date?
+    private var pairingCodeIssuedAt: Date?           // 当前 pendingPairingCode 的签发时间(用于 180s 过期)
     // 连接超时与尽力而为重连(仅作用于主动出站连接;入站不重连)。
     private var connectTimeoutWork: DispatchWorkItem?
     private var inboundTimeoutWork: DispatchWorkItem?
@@ -170,7 +175,9 @@ final class TransferService: ObservableObject {
         server?.stop(); server = nil
         activeConn?.cancel(); activeConn = nil
         activePairing = nil
+        activePairingConn?.cancel(); activePairingConn = nil
         pendingPairingCode = nil
+        pairingCodeIssuedAt = nil
         connectionState = .idle
     }
 
@@ -288,6 +295,21 @@ final class TransferService: ObservableObject {
         if let failure { connectionState = .failed(failure) }
     }
 
+    /// 已建立连接断开的统一收尾。清理 activeConn/状态;仅出站且非用户停止时尝试重连。
+    private func handleConnectedDrop(_ conn: TransferConnection, failure: String?) {
+        guard conn === activeConn else { return }   // 已被新连接取代
+        connectTimeoutWork?.cancel()
+        if activeIsOutbound && wasConnected && !userStopped && lastReconnect != nil {
+            scheduleReconnect()
+            return
+        }
+        // 入站(或不可重连):清理并回到空闲,避免假"已连接"+幽灵历史
+        activeConn?.cancel()
+        activeConn = nil
+        wasConnected = false
+        connectionState = failure.map { .failed($0) } ?? .idle
+    }
+
     private func scheduleReconnect() {
         guard !userStopped, reconnectAttempts < 3, let r = lastReconnect else { return }
         wasConnected = false   // 防同一次断开的 .failed+.cancelled 双触发重连
@@ -302,6 +324,7 @@ final class TransferService: ObservableObject {
     }
 
     private func outboundReady(conn: TransferConnection, pairingCode: String?) {
+        activeIsOutbound = true   // 此连接为主动出站:断开后允许重连
         guard let fp = conn.peerFingerprint else { connectionState = .failed("未取到对端证书"); return }
         if pairingCode == nil {
             if let paired = peerStore.peer(forFingerprint: fp) {
@@ -310,6 +333,11 @@ final class TransferService: ObservableObject {
                 activeConn?.cancel(); activeConn = nil
                 connectionState = .failed("该设备未配对,请输入对端显示的配对码")
             }
+            return
+        }
+        if isGloballyCoolingDown() {
+            activeConn?.cancel(); activeConn = nil
+            connectionState = .failed("配对尝试过多,请稍后再试")
             return
         }
         if isCoolingDown(fp) {
@@ -346,12 +374,22 @@ final class TransferService: ObservableObject {
     }
 
     private func inboundReady(conn: TransferConnection) {
+        activeIsOutbound = false   // 此连接为被动入站:断开后不重连
         guard let fp = conn.peerFingerprint else { return }
         if let paired = peerStore.peer(forFingerprint: fp) {
             bindConnected(conn: conn, peer: paired)
         } else {
+            // 全局限速:静默取消,不向攻击者暴露(避免每换证书绕过 per-fp 冷却)。
+            if isGloballyCoolingDown() {
+                logger.log(.warn, tool: "transfer", "配对尝试过多,已临时拒绝入站配对请求")
+                conn.cancel(); return
+            }
             if isCoolingDown(fp) { connectionState = .failed("配对失败过多,请稍后再试"); return }
-            if pendingPairingCode == nil { pendingPairingCode = PairingCrypto.makeCode() }
+            // 复用 pendingPairingCode;超过 180s 视为过期,重新生成。
+            if let issued = pairingCodeIssuedAt, Date().timeIntervalSince(issued) > 180 {
+                pendingPairingCode = PairingCrypto.makeCode(); pairingCodeIssuedAt = Date()
+            }
+            if pendingPairingCode == nil { pendingPairingCode = PairingCrypto.makeCode(); pairingCodeIssuedAt = Date() }
             startPairing(conn: conn, code: pendingPairingCode!, peerFingerprint: fp)
         }
     }
@@ -359,6 +397,11 @@ final class TransferService: ObservableObject {
     // MARK: - 配对
 
     private func startPairing(conn: TransferConnection, code: String, peerFingerprint fp: String) {
+        // 并发入站:若已有另一条连接正在配对,顶替(supersede)旧的,避免旧连接被孤立永不收尾。
+        if let oldConn = activePairingConn, oldConn !== conn {
+            oldConn.cancel()
+        }
+        activePairing = nil
         connectionState = .pairing
         let selfId: DeviceIdentity.Loaded
         do { selfId = try identity() } catch { connectionState = .failed("身份加载失败"); return }
@@ -370,19 +413,23 @@ final class TransferService: ObservableObject {
             DispatchQueue.main.async { self?.finishPairing(conn: conn, fp: fp, outcome: outcome) }
         }
         activePairing = pm
-        // 先装 onMessage 再 begin() —— 镜像 loopback 已验证的顺序,避免漏掉对端首条消息
-        conn.onMessage = { [weak pm] msg in pm?.handle(msg) }
+        activePairingConn = conn   // 强持有,保证配对期间 pm/conn 不被并发入站释放
+        // 先装 onMessage 再 begin() —— 镜像 loopback 已验证的顺序,避免漏掉对端首条消息。
+        // 强捕获 pm:连接持有该闭包即维持 pm 存活;pm.send 为 [weak conn]、onOutcome 为 [weak self],无循环引用。
+        conn.onMessage = { msg in pm.handle(msg) }
         pm.begin()
     }
 
     private func finishPairing(conn: TransferConnection, fp: String, outcome: PairingManager.Outcome) {
         activePairing = nil
+        activePairingConn = nil    // 释放配对期的强持有;成功时由 bindConnected 接管 activeConn
         switch outcome {
         case let .success(peer):
             failureCounts[fp] = 0
             peerStore.upsert(peer)
             pairedPeers = peerStore.all()
             pendingPairingCode = nil
+            pairingCodeIssuedAt = nil
             bindConnected(conn: conn, peer: peer)
             logger.log(.info, tool: "transfer", "已与 \(peer.name) 配对")
         case let .failed(reason):
@@ -390,7 +437,9 @@ final class TransferService: ObservableObject {
             if activeConn === conn { activeConn = nil }
             failureCounts[fp, default: 0] += 1
             if failureCounts[fp]! >= 3 { cooldownUntil[fp] = Date().addingTimeInterval(60) }
+            recordPairFailure()    // 全局(与指纹无关)滑动窗口限速
             pendingPairingCode = PairingCrypto.makeCode()
+            pairingCodeIssuedAt = Date()
             connectionState = .failed(reason)
             logger.log(.warn, tool: "transfer", "配对失败: \(reason)")
         }
@@ -404,6 +453,19 @@ final class TransferService: ObservableObject {
         if let old = activeConn, old !== conn { old.cancel() }
         connectionState = .connected(peerName: peer.name)
         activeConn = conn
+        // 绑定后统一接管断开收尾(覆盖 acceptInbound/beginOutbound 的 pre-bind 回调),
+        // 入站/出站均处理:出站 .cancelled 也曾被忽略,入站 .cancelled 之前完全没有收尾。
+        conn.onStateChange = { [weak self, weak conn] st in
+            guard let self, let conn else { return }
+            switch st {
+            case .failed(let e):
+                DispatchQueue.main.async { self.handleConnectedDrop(conn, failure: "连接断开: \(e)") }
+            case .cancelled:
+                DispatchQueue.main.async { self.handleConnectedDrop(conn, failure: nil) }
+            default:
+                break
+            }
+        }
         conn.onBinary = { [weak self] data in self?.fileManager.handleBinary(data) }
         conn.onMessage = { [weak self] msg in
             guard let self else { return }
@@ -508,5 +570,22 @@ final class TransferService: ObservableObject {
     private func isCoolingDown(_ fp: String) -> Bool {
         guard let until = cooldownUntil[fp] else { return false }
         return until > Date()
+    }
+
+    /// 全局(与对端指纹无关)配对冷却:防止攻击者每次换自签证书绕过 per-fp 限速。
+    private func isGloballyCoolingDown() -> Bool {
+        if let until = globalPairCooldownUntil, until > Date() { return true }
+        return false
+    }
+
+    /// 记录一次配对失败(全局滑动窗口);60s 内累计 5 次触发 60s 全局冷却。
+    private func recordPairFailure() {
+        let now = Date()
+        pairFailureTimes.append(now)
+        pairFailureTimes = pairFailureTimes.filter { now.timeIntervalSince($0) < 60 }   // 60s 窗口
+        if pairFailureTimes.count >= 5 {
+            globalPairCooldownUntil = now.addingTimeInterval(60)  // 触发 60s 全局冷却
+            pairFailureTimes.removeAll()
+        }
     }
 }
