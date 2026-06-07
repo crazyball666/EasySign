@@ -6,8 +6,11 @@ struct TransferToolView: View {
     @ObservedObject var service: TransferService
     @State private var host = ""
     @State private var portText = ""
-    @State private var codeInput = ""
+    @State private var codeInput = ""          // 「连接到另一台」手动卡片用
+    @State private var peerCodeInput = ""       // 发现设备行就地输码用(与上面解耦)
+    @State private var localIP: String?         // 本机局域网 IP(展示用)
     @State private var isDropTargeted = false
+    @State private var showClearHistoryConfirm = false
 
     var body: some View {
         ScrollView {
@@ -22,9 +25,26 @@ struct TransferToolView: View {
                     activeTransfersCard
                 }
                 historyCard
+                logCard
             }
             .padding(20)
         }
+    }
+
+    // MARK: - Log Card(排查用)
+
+    private var logCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("互传日志(排查用)", systemImage: "doc.plaintext").font(.headline)
+            Text("配对失败后,点面板右上「复制全文」把日志发给开发者").font(.caption).foregroundStyle(.secondary)
+            LogPanelView(logger: service.logger, toolId: "transfer")
+                .frame(height: 240)
+                .background(Color(nsColor: .textBackgroundColor))
+                .cornerRadius(8)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
     }
 
     // MARK: - Status Card
@@ -33,11 +53,23 @@ struct TransferToolView: View {
         VStack(alignment: .leading, spacing: 6) {
             Label("本机", systemImage: "desktopcomputer").font(.headline)
             Text("设备名:\(service.deviceName)")
+            if let ip = localIP {
+                Text("本机 IP:\(ip)").textSelection(.enabled)
+            }
             if let port = service.listenPort { Text("监听端口:\(String(port))") }
-            Text(stateText).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text(stateText).foregroundStyle(.secondary)
+                Spacer()
+                if case .connected = service.connectionState {
+                    Button("断开") { service.disconnect() }
+                        .controlSize(.small)
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
+        .onAppear { localIP = LocalNetwork.lanIPv4() }
+        .onChange(of: service.listenPort) { _ in localIP = LocalNetwork.lanIPv4() }
     }
 
     // MARK: - Pairing Card
@@ -100,12 +132,12 @@ struct TransferToolView: View {
             // 未配对:就地填入「对方屏幕上显示的本机配对码」,带码连接(不再用无码探测去触发,杜绝竞态)。
             if !isPaired {
                 HStack(spacing: 8) {
-                    TextField("输入「\(peer.name)」屏幕上的配对码", text: $codeInput)
+                    TextField("输入「\(peer.name)」屏幕上的配对码", text: $peerCodeInput)
                         .textFieldStyle(.roundedBorder)
-                    Button("配对并连接") { service.connect(to: peer, pairingCode: codeInput) }
+                    Button("配对并连接") { service.connect(to: peer, pairingCode: peerCodeInput) }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
-                        .disabled(codeInput.count < 6)
+                        .disabled(peerCodeInput.count < 6)
                 }
             }
         }
@@ -243,18 +275,40 @@ struct TransferToolView: View {
 
     private var historyCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("传输历史", systemImage: "clock.arrow.circlepath").font(.headline)
+            HStack {
+                Label("传输历史", systemImage: "clock.arrow.circlepath").font(.headline)
+                Spacer()
+                if !service.history.isEmpty {
+                    Button("清理") { showClearHistoryConfirm = true }
+                        .controlSize(.small)
+                }
+            }
             if service.history.isEmpty {
                 Text("暂无记录").foregroundStyle(.secondary)
+            } else if service.history.count > 6 {
+                // 记录多时锁定高度,卡片内独立滚动,避免整页被撑得过长。
+                ScrollView { historyList }.frame(height: 360)
             } else {
-                ForEach(service.history) { item in
-                    historyRow(item)
-                    Divider()
-                }
+                historyList
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
+        .confirmationDialog("清理传输历史?", isPresented: $showClearHistoryConfirm, titleVisibility: .visible) {
+            Button("清理历史和收到的文件", role: .destructive) { service.clearHistory() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("会删除全部历史记录,以及保存在本机 inbox 里收到的文件。不可撤销。")
+        }
+    }
+
+    private var historyList: some View {
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(service.history) { item in
+                historyRow(item)
+                Divider()
+            }
+        }
     }
 
     private func historyRow(_ item: TransferItem) -> some View {

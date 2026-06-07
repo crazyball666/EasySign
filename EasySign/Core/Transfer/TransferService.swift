@@ -188,6 +188,23 @@ final class TransferService: ObservableObject {
         connectionState = .idle
     }
 
+    /// 断开当前连接但不停服务、不解除配对:回到"未连接",对端仍在已配对列表,可一键重连。
+    /// 与 stop() 不同——监听/发现/剪贴板继续运行,本机仍可被发现、可主动或被动重新连接。
+    func disconnect() {
+        userStopped = true            // 阻止本次断开触发自动重连
+        reconnectGeneration += 1      // 撤销任何挂起的重连
+        connectTimeoutWork?.cancel(); connectTimeoutWork = nil
+        wasConnected = false
+        let c = activeConn; activeConn = nil   // 先置空,使断开回调的 guard 失效,避免重复收尾
+        activePeerFingerprint = nil
+        activePairing = nil
+        let pc = activePairingConn; activePairingConn = nil
+        c?.cancel(); pc?.cancel()
+        fileManager.reset()
+        connectionState = .idle
+        logger.log(.info, tool: "transfer", "已手动断开当前连接(配对关系保留)")
+    }
+
     private func pollPort(attempts: Int) {
         guard attempts > 0 else { return }
         if let p = server?.port { listenPort = p; return }
@@ -299,6 +316,14 @@ final class TransferService: ObservableObject {
             scheduleReconnect()
             return
         }
+        // 配对中被对端断开:对端码不匹配/正忙/触发限速静默拒绝时,这条连接会被对端 cancel。
+        // 不再干等 12s 超时,直接给可行动的失败原因。
+        if case .pairing = connectionState {
+            activeConn = nil
+            connectionState = .failed(failure ?? "配对未完成:对端未响应(检查对端配对码是否一致,或稍候重试)")
+            logger.log(.warn, tool: "transfer", "出站配对中连接被断开: \(failure ?? "对端无响应")")
+            return
+        }
         if let failure { connectionState = .failed(failure) }
     }
 
@@ -354,18 +379,22 @@ final class TransferService: ObservableObject {
             connectionState = .failed("配对失败过多,请稍后再试")
             return
         }
+        logger.log(.info, tool: "transfer", "发起配对,对端 \(fp.prefix(8))…,输入码 \(pairingCode!)")
         startPairing(conn: conn, code: pairingCode!, peerFingerprint: fp)
     }
 
     // MARK: - 被动接受
 
     private func acceptInbound(_ conn: TransferConnection) {
+        logger.log(.info, tool: "transfer", "① 收到入站连接,等待握手 .ready…")
         conn.onStateChange = { [weak self, weak conn] st in
             guard let self, let conn else { return }
             switch st {
             case .ready:
+                self.logger.log(.info, tool: "transfer", "② 入站连接已 .ready,转入 inboundReady")
                 DispatchQueue.main.async { self.inboundReady(conn: conn) }
             case .failed(let e):
+                self.logger.log(.warn, tool: "transfer", "✗ 入站连接 .failed: \(e)")
                 DispatchQueue.main.async {
                     // 仅当本连接是(或可能成为)活动会话时才改全局状态,
                     // 避免陌生入站/探测的 .failed 污染与对端 A 的现有连接。
@@ -377,17 +406,23 @@ final class TransferService: ObservableObject {
                 break
             }
         }
-        // 每条入站连接独立 30s 配对超时:未成为活动连接(未绑定)即断开。
-        let connRef = conn
-        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self, weak connRef] in
-            guard let self, let connRef else { return }
-            if connRef === self.activeConn { return }   // 已绑定,放过
-            connRef.cancel()
+        // 关键修复:强持有这条入站连接到 30s(覆盖握手 + 配对窗口)。否则 acceptInbound 一返回
+        // 就无人强引用 conn —— 跨机网络延迟下,握手还没完成 conn 就被释放,.ready 落到已死的
+        // wrapper(stateUpdateHandler 的 [weak self] 为 nil)→ inboundReady 永远不触发(本机环回
+        // 握手极快才侥幸不复现)。绑定后由 activeConn 接管;到点仍未绑定则取消、随闭包一起释放。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self else { return }
+            if conn === self.activeConn { return }   // 已绑定,放过
+            conn.cancel()
         }
     }
 
     private func inboundReady(conn: TransferConnection) {
-        guard let fp = conn.peerFingerprint else { return }
+        guard let fp = conn.peerFingerprint else {
+            logger.log(.warn, tool: "transfer", "③✗ 入站 .ready 但读不到对端证书指纹(就卡这里,静默返回)")
+            return
+        }
+        logger.log(.info, tool: "transfer", "③✓ 入站读到对端指纹 \(fp.prefix(8))…")
         if case .connected = connectionState, let ac = activeConn, ac !== conn {
             if fp != activePeerFingerprint {   // 已与他人连接,拒绝陌生入站,避免污染当前会话
                 conn.cancel(); return
@@ -403,10 +438,14 @@ final class TransferService: ObservableObject {
                 logger.log(.warn, tool: "transfer", "配对尝试过多,已临时拒绝入站配对请求")
                 conn.cancel(); return
             }
-            if isCoolingDown(fp) { conn.cancel(); return }   // 静默取消,与全局冷却一致
+            if isCoolingDown(fp) {
+                logger.log(.warn, tool: "transfer", "该对端配对失败过多,冷却中,拒绝入站 \(fp.prefix(8))…")
+                conn.cancel(); return
+            }
             // 常驻配对码:启动时已生成并持续显示给对端读取,此处不轮换,
             // 否则对端正照着屏幕输入时码却变了,必然配对失败。仅作 nil 兜底。
             if pendingPairingCode == nil { pendingPairingCode = PairingCrypto.makeCode(); pairingCodeIssuedAt = Date() }
+            logger.log(.info, tool: "transfer", "④ 入站配对开始,本机码 \(pendingPairingCode!),发 hello/pairOffer 给对端")
             startPairing(conn: conn, code: pendingPairingCode!, peerFingerprint: fp)
         }
     }
@@ -456,8 +495,7 @@ final class TransferService: ObservableObject {
             failureCounts[fp, default: 0] += 1
             if failureCounts[fp]! >= 3 { cooldownUntil[fp] = Date().addingTimeInterval(60) }
             recordPairFailure()    // 全局(与指纹无关)滑动窗口限速
-            pendingPairingCode = PairingCrypto.makeCode()
-            pairingCodeIssuedAt = Date()
+            // 常驻码:失败不轮换,保持显示同一码,方便对端照着重试(防爆破已有冷却兜底)。
             connectionState = .failed(reason)
             logger.log(.warn, tool: "transfer", "配对失败: \(reason)")
         }
@@ -618,5 +656,30 @@ final class TransferService: ObservableObject {
             globalPairCooldownUntil = now.addingTimeInterval(60)  // 触发 60s 全局冷却
             pairFailureTimes.removeAll()
         }
+    }
+}
+
+/// 本机局域网地址工具:供「本机」卡片展示,方便对端手动填 IP + 端口连接。
+enum LocalNetwork {
+    /// 活跃的局域网 IPv4(优先 Wi-Fi en0,其次有线 en1…)。取不到返回 nil。
+    static func lanIPv4() -> String? {
+        var candidates: [(iface: String, ip: String)] = []
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            guard let sa = ptr.pointee.ifa_addr else { continue }
+            let flags = Int32(ptr.pointee.ifa_flags)
+            // 仅 up + running 且非回环
+            guard (flags & (IFF_UP | IFF_RUNNING | IFF_LOOPBACK)) == (IFF_UP | IFF_RUNNING) else { continue }
+            guard sa.pointee.sa_family == UInt8(AF_INET) else { continue }   // 仅 IPv4
+            let name = String(cString: ptr.pointee.ifa_name)
+            guard name.hasPrefix("en") else { continue }                     // 物理网卡(Wi-Fi/有线)
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(sa, socklen_t(sa.pointee.sa_len),
+                              &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            candidates.append((name, String(cString: host)))
+        }
+        return candidates.sorted { $0.iface < $1.iface }.first?.ip   // en0 在前
     }
 }

@@ -8,6 +8,10 @@ public struct LogPanelView: View {
     let toolId: String
     @State private var minLevel: LogLevel = .debug
     @State private var filter: String = ""
+    // LoggerService 的 buffer 不是 @Published,光观察 logger 不会在新日志到达时重绘;
+    // 用定时器周期性 bump 强制重新读取 recentEntries,保证日志实时显示。
+    @State private var refreshTick = 0
+    private let refreshTimer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
     public init(logger: LoggerService, toolId: String) {
         self.logger = logger
@@ -27,13 +31,16 @@ public struct LogPanelView: View {
                     }
                 }
                 .padding(.vertical, 4)
+                .id(refreshTick)   // tick 变化即强制重读 filteredEntries
             }
             .background(Color(nsColor: .textBackgroundColor))
         }
+        .onReceive(refreshTimer) { _ in refreshTick &+= 1 }
     }
 
     private var filteredEntries: [LogEntry] {
-        let byLevel = logger.recentEntries.filter { $0.level >= minLevel }
+        let byTool = logger.recentEntries.filter { toolId.isEmpty || $0.tool == toolId }
+        let byLevel = byTool.filter { $0.level >= minLevel }
         guard !filter.isEmpty else { return byLevel }
         let q = filter.lowercased()
         return byLevel.filter {
