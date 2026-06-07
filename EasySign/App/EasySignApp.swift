@@ -17,22 +17,50 @@ struct EasySignApp: App {
         let h = ServiceHub.live()
         h.validate()
         h.transfer.start()
+        h.update.maybeAutoCheckOnLaunch()
         _hub = State(initialValue: h)
     }
 
     var body: some Scene {
         Window("EasySign", id: "main") {
             RootView(hub: hub)
+                .modifier(UpdateSheet(service: hub.update))
         }
         .windowResizability(.contentSize)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("检查更新…") {
+                    NSApp.activate(ignoringOtherApps: true)
+                    hub.update.checkForUpdates(silent: false)
+                }
+            }
+        }
 
         Settings {
-            SettingsView(settings: hub.settings, transfer: hub.transfer)
+            SettingsView(settings: hub.settings, transfer: hub.transfer, update: hub.update)
         }
 
         MenuBarExtra("互传", systemImage: "arrow.left.arrow.right") {
             TransferMenuBar(service: hub.transfer)
         }
+    }
+}
+
+/// 把更新 sheet 与"已是最新/错误"提示挂到主窗口。
+struct UpdateSheet: ViewModifier {
+    @ObservedObject var service: UpdateService
+    func body(content: Content) -> some View {
+        content
+            .sheet(item: $service.availableUpdate) { info in
+                UpdateView(service: service, update: info)
+            }
+            .alert("已是最新版本", isPresented: $service.upToDateNotice) {
+                Button("好") { }
+            }
+            .alert("检查更新", isPresented: Binding(
+                get: { service.lastCheckError != nil },
+                set: { if !$0 { service.lastCheckError = nil } }
+            )) { Button("好") { } } message: { Text(service.lastCheckError ?? "") }
     }
 }
 
