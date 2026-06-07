@@ -3,13 +3,14 @@ import Network
 import Security
 
 /// 构建 WS-over-TLS 的 `NWParameters`:加载本机 `SecIdentity`,并在 TLS 验证回调里
-/// 取出对端叶证书 DER 的 SHA-256 指纹,按 `PinMode` 要么强校验(已配对),要么放行并回报(配对)。
+/// 按 `PinMode` 决定是否强校验对端叶证书指纹(已配对),或一律放行(配对中)。
+/// 指纹不再经由验证回调回报——每条连接在 `.ready` 后从自己的 TLS metadata 自取。
 enum TransferTLS {
     enum PinMode {
         /// 已配对:对端指纹必须等于此值,否则握手失败。
         case requirePinned(fingerprint: String)
-        /// 配对中:放行任意对端,并把捕获到的指纹回报给上层。
-        case capture(_ onPeerFingerprint: (String) -> Void)
+        /// 配对中:放行任意对端(应用层 HMAC 负责鉴权)。
+        case acceptAny
     }
 
     static let wsPath = "/ws"
@@ -25,20 +26,19 @@ enum TransferTLS {
         }
         sec_protocol_options_set_min_tls_protocol_version(sec, .TLSv12)
 
-        // 自签互信:不走系统信任链,改为对端叶证书指纹比对/捕获。
+        // 自签互信:不走系统信任链,改为对端叶证书指纹比对。
         sec_protocol_options_set_verify_block(sec, { _, secTrust, complete in
-            let trust = sec_trust_copy_ref(secTrust).takeRetainedValue()
-            guard let leaf = TransferTLS.leafCertificate(of: trust) else {
-                complete(false)
-                return
-            }
-            let der = SecCertificateCopyData(leaf) as Data
-            let fp = CertFingerprint.sha256Hex(of: der)
             switch pin {
             case let .requirePinned(expected):
+                let trust = sec_trust_copy_ref(secTrust).takeRetainedValue()
+                guard let leaf = TransferTLS.leafCertificate(of: trust) else {
+                    complete(false)   // 取不到叶证书 → 拒绝(不弱化校验)
+                    return
+                }
+                let der = SecCertificateCopyData(leaf) as Data
+                let fp = CertFingerprint.sha256Hex(of: der)
                 complete(fp == expected)
-            case let .capture(onPeerFingerprint):
-                onPeerFingerprint(fp)
+            case .acceptAny:
                 complete(true)
             }
         }, DispatchQueue(label: "transfer.tls.verify"))

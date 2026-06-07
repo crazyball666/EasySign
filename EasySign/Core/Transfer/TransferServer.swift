@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Security
 
 /// 一条连接(server 或 client 侧通用)。
 final class TransferConnection {
@@ -9,8 +10,8 @@ final class TransferConnection {
 
     private let fpLock = NSLock()
     private var _peerFingerprint: String?
-    /// 由 TLS 验证回调(capture 模式)在握手期写入;读取应发生在 `.ready` 之后。
-    /// 用锁保证跨线程(verify 队列写、业务队列读)可见且不撕裂。
+    /// 由本连接在 `.ready` 时从自身 TLS metadata 读出对端叶证书指纹后写入(在连接队列上)。
+    /// 读取应发生在 `.ready` 之后。用锁保证跨线程可见且不撕裂。
     var peerFingerprint: String? {
         get { fpLock.lock(); defer { fpLock.unlock() }; return _peerFingerprint }
         set { fpLock.lock(); _peerFingerprint = newValue; fpLock.unlock() }
@@ -24,9 +25,33 @@ final class TransferConnection {
     }
 
     func start() {
-        nw.stateUpdateHandler = { [weak self] st in self?.onStateChange?(st) }
+        nw.stateUpdateHandler = { [weak self] st in
+            guard let self else { return }
+            // 握手完成后,从本连接自己协商出的 TLS metadata 取对端指纹——
+            // 无共享槽位、无跨连接错配、无竞态。必须在回调上层 onStateChange 之前写好。
+            if case .ready = st {
+                self.peerFingerprint = self.readPeerFingerprint()
+            }
+            self.onStateChange?(st)
+        }
         nw.start(queue: queue)
         receiveLoop()
+    }
+
+    /// 从本连接已协商的 TLS metadata 取对端证书链的叶证书(index 0)DER 的 SHA-256 hex。
+    private func readPeerFingerprint() -> String? {
+        guard let meta = nw.metadata(definition: NWProtocolTLS.definition) as? NWProtocolTLS.Metadata
+        else { return nil }
+        let secMeta = meta.securityProtocolMetadata
+        var leafDER: Data?
+        sec_protocol_metadata_access_peer_certificate_chain(secMeta) { secCert in
+            if leafDER == nil {  // 证书链中第一张即叶证书
+                let certRef = sec_certificate_copy_ref(secCert).takeRetainedValue()
+                leafDER = SecCertificateCopyData(certRef) as Data
+            }
+        }
+        guard let der = leafDER else { return nil }
+        return CertFingerprint.sha256Hex(of: der)
     }
 
     func send(_ msg: WireMessage) {
@@ -49,8 +74,8 @@ final class TransferConnection {
     }
 }
 
-/// 监听入站连接。Phase 1:server 以 `.capture` 模式起(放行任意对端 + 捕获指纹),
-/// 由上层依据是否已配对/配对结果决定后续处理。
+/// 监听入站连接。Phase 1:server 以 `.acceptAny` 起(放行任意对端,应用层 HMAC 鉴权),
+/// 每条连接在 `.ready` 后从自身 TLS metadata 自取对端指纹,由上层依据配对状态决定后续处理。
 final class TransferServer {
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "transfer.server")
@@ -59,34 +84,18 @@ final class TransferServer {
     var onConnection: ((TransferConnection) -> Void)?
     private(set) var port: UInt16?
 
-    // 把 TLS 验证回调捕获到的指纹写回"当前正在握手"的那条连接。
-    // NWListener 的 params(含 verify block)是所有入站连接共享的,无法做到 per-connection
-    // 的 verify block,因此只能用一个共享槽位转交指纹。newConnectionHandler 在串行
-    // 队列上交付连接,我们在交付时把 pendingConn 指向该连接;verify block 随后(在另一条
-    // verify 队列上)读取并写回。Phase 1 假设"两台已知机器 + 同一时刻仅一次配对",该窗口
-    // 可接受。用锁保证 pendingConn 的跨线程可见性。
-    private let pendingLock = NSLock()
-    private weak var pendingConn: TransferConnection?
-
     init(identity: @escaping () throws -> SecIdentity) {
         self.identity = identity
     }
 
     func start() throws {
         let id = try identity()
-        let params = TransferTLS.parameters(identity: id, pin: .capture { [weak self] fp in
-            guard let self else { return }
-            self.pendingLock.lock()
-            self.pendingConn?.peerFingerprint = fp
-            self.pendingLock.unlock()
-        })
+        // verify block 对所有入站连接共享,只做"放行";指纹由每条连接自己从 metadata 读取。
+        let params = TransferTLS.parameters(identity: id, pin: .acceptAny)
         let listener = try NWListener(using: params)
         listener.newConnectionHandler = { [weak self] nw in
             guard let self else { return }
             let conn = TransferConnection(nw, queue: self.queue)
-            self.pendingLock.lock()
-            self.pendingConn = conn   // capture 回调会写到这条连接
-            self.pendingLock.unlock()
             conn.start()
             self.onConnection?(conn)
         }
