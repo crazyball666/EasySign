@@ -14,6 +14,7 @@ struct EasySignApp: App {
     init() {
         let h = ServiceHub.live()
         h.validate()
+        h.transfer.start()
         _hub = State(initialValue: h)
     }
 

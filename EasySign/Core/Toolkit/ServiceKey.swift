@@ -6,4 +6,5 @@ public enum ServiceKey: Hashable {
     case recent
     case settings
     case artifact
+    case transfer
 }

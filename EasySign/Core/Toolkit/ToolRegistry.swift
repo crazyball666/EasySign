@@ -5,6 +5,7 @@ enum ToolRegistry {
         ResignTool(),
         QRCodeTool(),
         DevicesTool(),
+        TransferTool(),
     ]
 
     static func tool(forId id: String) -> (any Tool)? {
