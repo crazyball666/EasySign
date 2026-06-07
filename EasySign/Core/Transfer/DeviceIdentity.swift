@@ -65,31 +65,6 @@ enum DeviceIdentity {
         return Loaded(identity: identity, fingerprint: CertFingerprint.sha256Hex(of: certDER))
     }
 
-    /// 迁移旧版 p12 持久化格式 → 新材料(保留证书/指纹,已配对关系不变)。
-    /// 仅在首次升级时走一次;失败则调用方重新生成身份(需重新配对一次)。
-    static func migrateLegacyP12(p12Data: Data, passphrase: String) -> Material? {
-        var opts: [String: Any] = [kSecImportExportPassphrase as String: passphrase]
-        if #available(macOS 15.0, *) {
-            opts[kSecImportToMemoryOnly as String] = true   // 迁移这一次也尽量别碰钥匙串
-        }
-        var items: CFArray?
-        guard SecPKCS12Import(p12Data as CFData, opts as CFDictionary, &items) == errSecSuccess,
-              let arr = items as? [[String: Any]], let first = arr.first,
-              let idAny = first[kSecImportItemIdentity as String]
-        else { return nil }
-        let identity = idAny as! SecIdentity
-
-        var certRef: SecCertificate?
-        var keyRef: SecKey?
-        guard SecIdentityCopyCertificate(identity, &certRef) == errSecSuccess, let cert = certRef,
-              SecIdentityCopyPrivateKey(identity, &keyRef) == errSecSuccess, let key = keyRef,
-              let keyData = SecKeyCopyExternalRepresentation(key, nil) as Data?
-        else { return nil }
-        let certDER = SecCertificateCopyData(cert) as Data
-        return Material(certDER: certDER, keyX963: keyData,
-                        fingerprint: CertFingerprint.sha256Hex(of: certDER))
-    }
-
     private static func runOpenSSL(_ args: [String]) throws {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/openssl")

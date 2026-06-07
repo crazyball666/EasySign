@@ -1,17 +1,28 @@
 import Foundation
-import Security
 
-/// 持久化设备身份(证书 DER + 私钥 x963,各自 base64 → Keychain 密码条目)与稳定 deviceId(UserDefaults)。
-/// 首次惰性生成;旧版 p12 格式自动迁移(保留指纹,已配对关系不变)。
+/// 持久化设备身份(证书 DER + 私钥 x963)到 Application Support 文件(权限 0600)与稳定 deviceId(UserDefaults)。
+///
+/// 为什么用文件而非钥匙串:互传一启动就要读设备身份;本地开发每次编译都是 ad-hoc 签名、
+/// 代码签名指纹每次都变,登录钥匙串的 ACL 每次都不认这个"新 app",于是每次启动都弹密码授权。
+/// 该身份只是局域网自签 TLS 用的"够用即可"身份(非高价值机密,且互传另有配对码),
+/// 故改存普通文件,启动读文件不碰钥匙串 = 不再弹密码。
 final class DeviceIdentityStore {
-    private let keychain = KeychainService.shared
     private let defaults = UserDefaults.standard
-    private let certKey = "transfer.identity.cert"     // 证书 DER base64
-    private let privKeyKey = "transfer.identity.key"   // 私钥 x963 base64
-    private let legacyP12Key = "transfer.identity.p12" // 旧格式(迁移后删除)
-    private let legacyPassKey = "transfer.identity.pass"
     private let deviceIdKey = "transfer.deviceId"
     private let deviceNameKey = "transfer.deviceName"
+
+    private struct Stored: Codable {
+        let certDER: Data      // JSON 里自动 base64
+        let keyX963: Data
+    }
+
+    private var identityURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("EasySign/Transfer", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        return base.appendingPathComponent("identity.json")
+    }
 
     var deviceId: String {
         if let v = defaults.string(forKey: deviceIdKey) { return v }
@@ -26,34 +37,26 @@ final class DeviceIdentityStore {
     }
 
     func loadOrCreate() throws -> DeviceIdentity.Loaded {
-        // 1) 新格式
-        if let certB64 = keychain.get(certKey), let keyB64 = keychain.get(privKeyKey),
-           let certDER = Data(base64Encoded: certB64), let keyX963 = Data(base64Encoded: keyB64) {
-            return try DeviceIdentity.importIdentity(certDER: certDER, keyX963: keyX963)
+        // 文件已存在:直接读(启动不碰钥匙串)
+        if let stored = readStored() {
+            return try DeviceIdentity.importIdentity(certDER: stored.certDER, keyX963: stored.keyX963)
         }
-        // 2) 旧 p12 格式 → 迁移(保留指纹);失败则当作无身份,走重新生成(需重新配对一次)
-        if let p12b64 = keychain.get(legacyP12Key), let pass = keychain.get(legacyPassKey),
-           let p12 = Data(base64Encoded: p12b64) {
-            if let mat = DeviceIdentity.migrateLegacyP12(p12Data: p12, passphrase: pass) {
-                save(mat)
-                removeLegacy()
-                return try DeviceIdentity.importIdentity(certDER: mat.certDER, keyX963: mat.keyX963)
-            }
-            removeLegacy()
-        }
-        // 3) 首次生成
+        // 否则首次生成并落盘
         let mat = try DeviceIdentity.generateSelfSigned(commonName: "EasySign-\(deviceId)")
-        save(mat)
+        writeStored(Stored(certDER: mat.certDER, keyX963: mat.keyX963))
         return try DeviceIdentity.importIdentity(certDER: mat.certDER, keyX963: mat.keyX963)
     }
 
-    private func save(_ mat: DeviceIdentity.Material) {
-        keychain.set(mat.certDER.base64EncodedString(), for: certKey)
-        keychain.set(mat.keyX963.base64EncodedString(), for: privKeyKey)
+    // MARK: - 文件存储
+
+    private func readStored() -> Stored? {
+        guard let data = try? Data(contentsOf: identityURL) else { return nil }
+        return try? JSONDecoder().decode(Stored.self, from: data)
     }
 
-    private func removeLegacy() {
-        keychain.delete(legacyP12Key)
-        keychain.delete(legacyPassKey)
+    private func writeStored(_ s: Stored) {
+        guard let data = try? JSONEncoder().encode(s) else { return }
+        try? data.write(to: identityURL, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: identityURL.path)
     }
 }
