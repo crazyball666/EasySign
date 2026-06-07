@@ -10,14 +10,15 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-15
+    # macOS 26 + Xcode 26,与本地开发环境完全一致(macos-latest 目前仍指向 macOS 15)。
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          # 用 Xcode 26(与本地一致)。其 SDK 才把 SecIdentityCreate 暴露给 Swift;
+          # Xcode 26 的 SDK 才把 SecIdentityCreate 暴露给 Swift;
           # 旧 SDK(Xcode 16.x)会报 "cannot find 'SecIdentityCreate' in scope"。
           xcode-version: '26'
 
