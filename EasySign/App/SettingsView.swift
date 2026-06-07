@@ -50,6 +50,15 @@ struct SettingsView: View {
                     LaunchAtLogin.setEnabled(newValue)
                 }
             Toggle("隐身模式(不广播 Bonjour)", isOn: stealthBinding)
+            Stepper(value: retentionBinding, in: 0...365) {
+                Text(retentionBinding.wrappedValue == 0
+                     ? "历史保留天数：永久"
+                     : "历史保留天数：\(retentionBinding.wrappedValue)")
+            }
+            HStack {
+                Button("清空传输历史") { transfer.clearHistory() }
+                Button("清空已配对设备") { transfer.clearPairedDevices() }
+            }
         }
         .padding(16)
     }
@@ -107,6 +116,13 @@ struct SettingsView: View {
         Binding(
             get: { transfer.deviceName },
             set: { transfer.setDeviceName($0) }
+        )
+    }
+
+    private var retentionBinding: Binding<Int> {
+        Binding(
+            get: { settings.int(.transferRetentionDays) },   // 0 = 永久
+            set: { settings.set($0, for: .transferRetentionDays) }
         )
     }
 

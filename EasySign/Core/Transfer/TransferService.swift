@@ -29,6 +29,12 @@ final class TransferService: ObservableObject {
     private var activePairing: PairingManager?
     private var failureCounts: [String: Int] = [:]
     private var cooldownUntil: [String: Date] = [:]
+    // 连接超时与尽力而为重连(仅作用于主动出站连接;入站不重连)。
+    private var connectTimeoutWork: DispatchWorkItem?
+    private var lastReconnect: (() -> Void)?
+    private var reconnectAttempts = 0
+    private var userStopped = false
+    private var wasConnected = false
 
     init(logger: LoggerService) {
         self.logger = logger
@@ -100,6 +106,26 @@ final class TransferService: ObservableObject {
     // MARK: - 生命周期
 
     func start() {
+        userStopped = false
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try self.identity()   // 首次会生成证书(慢),放后台避免卡启动
+            } catch {
+                DispatchQueue.main.async {
+                    self.logger.log(.error, tool: "transfer", "身份加载失败: \(error)")
+                    self.connectionState = .failed("身份加载失败")
+                }
+                return
+            }
+            DispatchQueue.main.async { self.startServices() }
+        }
+    }
+
+    /// 在主线程启动监听/发现/剪贴板(identity 已就绪)。
+    /// 单写者假设:`loadedIdentity` 由上面的后台线程在调用 startServices 之前写入一次,
+    /// 此后所有访问 `identity()` 都在主线程且只读缓存,故无需加锁。
+    private func startServices() {
         // 与 SettingsStore(.transferStealthMode) 共用同一 UserDefaults 裸键;
         // 此处直接读以免把 SettingsStore 注入 TransferService(默认 false = 广播开)。
         stealthMode = UserDefaults.standard.bool(forKey: "transferStealthMode")
@@ -127,9 +153,13 @@ final class TransferService: ObservableObject {
             logger.log(.error, tool: "transfer", "启动失败: \(error)")
             connectionState = .failed("启动失败: \(error.localizedDescription)")
         }
+        cleanupOldHistory()
     }
 
     func stop() {
+        userStopped = true
+        wasConnected = false
+        connectTimeoutWork?.cancel(); connectTimeoutWork = nil
         monitor.stop()
         discovery.stop()
         discoveredPeers = []
@@ -158,6 +188,11 @@ final class TransferService: ObservableObject {
     // MARK: - 主动连接(手动 IP)
 
     func connect(host: String, port: UInt16, pairingCode: String?) {
+        // 一次用户主动连接 = 取消上次的"已停止"并清零重连计数。
+        userStopped = false
+        reconnectAttempts = 0
+        wasConnected = false
+        lastReconnect = { [weak self] in self?.connect(host: host, port: port, pairingCode: nil) }
         activeConn?.cancel()
         activeConn = nil
         guard let client else { return }
@@ -172,6 +207,10 @@ final class TransferService: ObservableObject {
 
     /// 连接 Bonjour 发现出的对端。复用与手动 IP 完全相同的配对/pinning 流程(`.acceptAny` → 读指纹 → 配对/绑定)。
     func connect(to peer: DiscoveredPeer, pairingCode: String?) {
+        userStopped = false
+        reconnectAttempts = 0
+        wasConnected = false
+        lastReconnect = { [weak self] in self?.connect(to: peer, pairingCode: nil) }
         activeConn?.cancel()
         activeConn = nil
         guard let client else { return }
@@ -192,11 +231,58 @@ final class TransferService: ObservableObject {
             switch st {
             case .ready:
                 DispatchQueue.main.async { self.outboundReady(conn: conn, pairingCode: pairingCode) }
+            case .waiting(let e):
+                // 网络暂时不可达(对端未就绪等)。不改状态,交给 12s 超时裁决。
+                self.logger.log(.warn, tool: "transfer", "连接等待中: \(e)")
             case .failed(let e):
-                DispatchQueue.main.async { self.connectionState = .failed("连接失败: \(e)") }
+                DispatchQueue.main.async { self.handleOutboundDrop(conn, failure: "连接失败: \(e)") }
+            case .cancelled:
+                DispatchQueue.main.async { self.handleOutboundDrop(conn, failure: nil) }
             default:
                 break
             }
+        }
+        armConnectTimeout(conn)
+    }
+
+    /// 出站连接 12s 未达 `.connected`/`.pairing`(仍 `.connecting`)则判超时取消。
+    private func armConnectTimeout(_ conn: TransferConnection) {
+        connectTimeoutWork?.cancel()
+        let work = DispatchWorkItem { [weak self, weak conn] in
+            guard let self else { return }
+            if case .connecting = self.connectionState {
+                conn?.cancel()
+                self.connectionState = .failed("连接超时")
+            } else if case .pairing = self.connectionState {
+                // 配对中也设个上限
+                conn?.cancel()
+                self.connectionState = .failed("配对超时")
+            }
+        }
+        connectTimeoutWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: work)
+    }
+
+    /// 出站连接断开统一处理。仅处理当前活动连接;曾建立连接(`wasConnected`)且非用户主动停止时尝试重连。
+    private func handleOutboundDrop(_ conn: TransferConnection, failure: String?) {
+        guard conn === activeConn else { return }   // 已被新连接取代的旧连接,忽略
+        connectTimeoutWork?.cancel()
+        if wasConnected && !userStopped && lastReconnect != nil {
+            scheduleReconnect()
+            return
+        }
+        if let failure { connectionState = .failed(failure) }
+    }
+
+    private func scheduleReconnect() {
+        guard !userStopped, reconnectAttempts < 3, let r = lastReconnect else { return }
+        wasConnected = false   // 防同一次断开的 .failed+.cancelled 双触发重连
+        reconnectAttempts += 1
+        let delay = Double(1 << reconnectAttempts) // 2,4,8
+        connectionState = .failed("连接断开,重连中(\(reconnectAttempts)/3)…")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, !self.userStopped else { return }
+            r()
         }
     }
 
@@ -287,6 +373,9 @@ final class TransferService: ObservableObject {
     }
 
     private func bindConnected(conn: TransferConnection, peer: PairedPeer) {
+        connectTimeoutWork?.cancel()
+        reconnectAttempts = 0
+        wasConnected = true
         if let old = activeConn, old !== conn { old.cancel() }
         connectionState = .connected(peerName: peer.name)
         activeConn = conn
@@ -363,6 +452,33 @@ final class TransferService: ObservableObject {
         if case let .connected(name) = connectionState { return name }
         return "对方设备"
     }
+
+    // MARK: - 清理 / 清空
+
+    /// 启动时按保留天数清理历史与 inbox 文件(0 = 永久保留,不清理)。
+    private func cleanupOldHistory() {
+        let days = UserDefaults.standard.integer(forKey: "transferRetentionDays")
+        guard days > 0 else { return }
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
+        // prune history
+        let kept = historyStore.pruning(history, olderThan: cutoff)
+        if kept.count != history.count {
+            history = kept; historyStore.save(history)
+        }
+        // delete inbox files older than cutoff
+        let fm = FileManager.default
+        if let files = try? fm.contentsOfDirectory(at: TransferPaths.inbox, includingPropertiesForKeys: [.contentModificationDateKey]) {
+            for f in files {
+                if let d = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate, d < cutoff {
+                    try? fm.removeItem(at: f)
+                }
+            }
+        }
+    }
+
+    func clearHistory() { history = []; historyStore.clear() }
+
+    func clearPairedDevices() { peerStore.removeAll(); pairedPeers = [] }
 
     private func isCoolingDown(_ fp: String) -> Bool {
         guard let until = cooldownUntil[fp] else { return false }
