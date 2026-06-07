@@ -31,8 +31,8 @@ struct TransferLoopbackTests {
         // ---- Stage 1: two identities -------------------------------------------------
         let matA = try DeviceIdentity.generateSelfSigned(commonName: "EasySign-A")
         let matB = try DeviceIdentity.generateSelfSigned(commonName: "EasySign-B")
-        let idA = try DeviceIdentity.importIdentity(p12Data: matA.p12Data, passphrase: matA.passphrase)
-        let idB = try DeviceIdentity.importIdentity(p12Data: matB.p12Data, passphrase: matB.passphrase)
+        let idA = try DeviceIdentity.importIdentity(certDER: matA.certDER, keyX963: matA.keyX963)
+        let idB = try DeviceIdentity.importIdentity(certDER: matB.certDER, keyX963: matB.keyX963)
         expect(idA.fingerprint.count == 64 && idB.fingerprint.count == 64,
                "fingerprints are 64 hex chars")
         expect(idA.fingerprint != idB.fingerprint, "two identities have distinct fingerprints")
