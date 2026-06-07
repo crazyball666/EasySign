@@ -45,6 +45,8 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>EasySign 互传需要在局域网内与你的另一台设备直接通信。</string>
 	<key>UTImportedTypeDeclarations</key>
 	<array>
 		<dict>
