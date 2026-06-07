@@ -9,6 +9,7 @@ final class ClipboardMonitor {
     private var lastHandledHash: String?
 
     var onLocalText: ((_ text: String, _ hash: String) -> Void)?
+    var onLocalImage: ((_ pngData: Data, _ hash: String) -> Void)?
 
     init() {
         lastChangeCount = pasteboard.changeCount
@@ -31,16 +32,43 @@ final class ClipboardMonitor {
         lastChangeCount = pasteboard.changeCount
     }
 
+    /// 应用入站图片(PNG)到本地剪贴板;不触发回环。
+    func applyIncomingImage(pngData: Data, hash: String) {
+        lastHandledHash = hash
+        pasteboard.clearContents()
+        pasteboard.setData(pngData, forType: .png)
+        lastChangeCount = pasteboard.changeCount
+    }
+
     private func poll() {
         let cc = pasteboard.changeCount
         guard cc != lastChangeCount else { return }
         lastChangeCount = cc
         let types = pasteboard.types?.map { $0.rawValue } ?? []
         if ClipboardCodec.shouldSkip(typeIdentifiers: types) { return }
-        guard let text = pasteboard.string(forType: .string), !text.isEmpty else { return }
-        let hash = ClipboardCodec.hash(text: text)
-        if hash == lastHandledHash { return }
-        lastHandledHash = hash
-        onLocalText?(text, hash)
+        // 文本优先:存在非空字符串时按文本处理。
+        if let text = pasteboard.string(forType: .string), !text.isEmpty {
+            let hash = ClipboardCodec.hash(text: text)
+            if hash == lastHandledHash { return }
+            lastHandledHash = hash
+            onLocalText?(text, hash)
+            return
+        }
+        // 否则尝试图片(PNG / TIFF→PNG)。
+        if let png = currentPasteboardPNG() {
+            let hash = ClipboardCodec.hash(data: png)
+            if hash == lastHandledHash { return }
+            lastHandledHash = hash
+            onLocalImage?(png, hash)
+        }
+    }
+
+    private func currentPasteboardPNG() -> Data? {
+        // 优先 PNG;否则 TIFF→PNG
+        if let png = pasteboard.data(forType: .png) { return png }
+        guard let tiff = pasteboard.data(forType: .tiff),
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        return png
     }
 }

@@ -7,7 +7,7 @@ enum PeerTransferKind: String, Codable { case text, image, file }
 
 enum TransferDirection: String, Codable { case incoming, outgoing }
 
-struct TransferItem: Identifiable, Equatable {
+struct TransferItem: Identifiable, Equatable, Codable {
     let id: UUID
     let kind: PeerTransferKind
     let direction: TransferDirection

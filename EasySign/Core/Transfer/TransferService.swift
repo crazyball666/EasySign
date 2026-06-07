@@ -20,6 +20,7 @@ final class TransferService: ObservableObject {
     private let peerStore = PairedPeerStore()
     private let monitor = ClipboardMonitor()
     private let fileManager = FileTransferManager()
+    private let historyStore = TransferHistoryStore()
     private lazy var discovery = PeerDiscovery(selfDeviceId: { [weak self] in self?.identityStore.deviceId ?? "" })
     private var server: TransferServer?
     private var client: TransferClient?
@@ -32,19 +33,32 @@ final class TransferService: ObservableObject {
     init(logger: LoggerService) {
         self.logger = logger
         self.pairedPeers = peerStore.all()
+        self.history = historyStore.load()
         monitor.onLocalText = { [weak self] text, hash in
             DispatchQueue.main.async { self?.handleLocalClipboard(text: text, hash: hash) }
+        }
+        monitor.onLocalImage = { [weak self] data, hash in
+            DispatchQueue.main.async { self?.handleLocalImage(data: data, hash: hash) }
         }
         fileManager.onProgress = { [weak self] p in
             DispatchQueue.main.async { self?.updateProgress(p) }
         }
-        fileManager.onReceived = { [weak self] _, name, url, _ in
-            // P3-B 将区分图片处理;Phase 1 一律按文件入历史。
+        fileManager.onReceived = { [weak self] _, name, url, isImage in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.appendHistory(TransferItem(kind: .file, direction: .incoming,
-                                                preview: name, peerName: self.currentPeerName(),
-                                                localURL: url))
+                if isImage {
+                    // 图片:仅在剪贴板同步开启时写入剪贴板(与文本一致);文件保留在 inbox 供历史打开。
+                    if self.clipboardSyncEnabled, let png = try? Data(contentsOf: url) {
+                        self.monitor.applyIncomingImage(pngData: png, hash: ClipboardCodec.hash(data: png))
+                    }
+                    self.appendHistory(TransferItem(kind: .image, direction: .incoming,
+                                                    preview: "图片", peerName: self.currentPeerName(),
+                                                    localURL: url))
+                } else {
+                    self.appendHistory(TransferItem(kind: .file, direction: .incoming,
+                                                    preview: name, peerName: self.currentPeerName(),
+                                                    localURL: url))
+                }
             }
         }
     }
@@ -317,6 +331,23 @@ final class TransferService: ObservableObject {
         appendHistory(TransferItem(kind: .text, direction: .outgoing, preview: text, peerName: currentPeerName()))
     }
 
+    private func handleLocalImage(data: Data, hash: String) {
+        guard clipboardSyncEnabled, case .connected = connectionState, let conn = activeConn else { return }
+        let id = UUID().uuidString
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("eztx-\(id).png")
+        guard (try? data.write(to: tmp)) != nil else { return }
+        fileManager.send(id: id, name: "image.png", fileURL: tmp, isImage: true,
+            offer: { [weak conn] id, _, size in conn?.send(.clipboardImageOffer(id: id, size: size, hash: hash)) },
+            sendBinary: { [weak conn] d in conn?.sendBinary(d) },
+            complete: { [weak conn] id in conn?.send(.fileComplete(id: id)) },
+            done: { [weak self] in
+                try? FileManager.default.removeItem(at: tmp)
+                DispatchQueue.main.async {
+                    self?.appendHistory(TransferItem(kind: .image, direction: .outgoing, preview: "图片", peerName: self?.currentPeerName() ?? "对方设备"))
+                }
+            })
+    }
+
     private func receiveClipboard(text: String, hash: String, peerName: String) {
         appendHistory(TransferItem(kind: .text, direction: .incoming, preview: text, peerName: peerName))
         if clipboardSyncEnabled { monitor.applyIncoming(text: text, hash: hash) }
@@ -325,6 +356,7 @@ final class TransferService: ObservableObject {
     private func appendHistory(_ item: TransferItem) {
         history.insert(item, at: 0)
         if history.count > 200 { history.removeLast() }
+        historyStore.save(history)
     }
 
     private func currentPeerName() -> String {
