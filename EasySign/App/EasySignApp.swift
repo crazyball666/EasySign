@@ -21,7 +21,7 @@ struct EasySignApp: App {
     }
 
     var body: some Scene {
-        WindowGroup(id: "main") {
+        Window("EasySign", id: "main") {
             RootView(hub: hub)
         }
         .windowResizability(.contentSize)

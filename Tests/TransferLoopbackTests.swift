@@ -179,7 +179,7 @@ struct TransferLoopbackTests {
         let fileId = UUID().uuidString
         sendMgr.send(id: fileId, name: "p3a-payload.bin", fileURL: srcURL, isImage: false,
             offer: { id, name, size in clientConn.send(.fileOffer(id: id, name: name, size: size)) },
-            sendBinary: { data in clientConn.sendBinary(data) },
+            sendBinary: { data, done in clientConn.sendBinary(data, completion: done) },
             complete: { id in clientConn.send(.fileComplete(id: id)) },
             done: {})
 

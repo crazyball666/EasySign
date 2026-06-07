@@ -27,6 +27,7 @@ final class TransferService: ObservableObject {
     private var loadedIdentity: DeviceIdentity.Loaded?
     private var activeConn: TransferConnection?
     private var activeIsOutbound = false             // 当前已绑定连接的方向:仅出站允许重连
+    private var activePeerFingerprint: String?       // 当前已绑定对端指纹:用于拒绝陌生入站、放行同端重连
     private var activePairing: PairingManager?
     private var activePairingConn: TransferConnection?   // 强持有配对中的连接(连同其 pm),避免被并发入站顶掉
     private var failureCounts: [String: Int] = [:]
@@ -36,7 +37,6 @@ final class TransferService: ObservableObject {
     private var pairingCodeIssuedAt: Date?           // 当前 pendingPairingCode 的签发时间(用于 180s 过期)
     // 连接超时与尽力而为重连(仅作用于主动出站连接;入站不重连)。
     private var connectTimeoutWork: DispatchWorkItem?
-    private var inboundTimeoutWork: DispatchWorkItem?
     private var lastReconnect: (() -> Void)?
     private var reconnectAttempts = 0
     private var reconnectGeneration = 0
@@ -168,12 +168,13 @@ final class TransferService: ObservableObject {
         reconnectGeneration += 1      // 取消任何挂起的重连
         wasConnected = false
         connectTimeoutWork?.cancel(); connectTimeoutWork = nil
-        inboundTimeoutWork?.cancel(); inboundTimeoutWork = nil
         monitor.stop()
         discovery.stop()
         discoveredPeers = []
         server?.stop(); server = nil
         activeConn?.cancel(); activeConn = nil
+        activePeerFingerprint = nil
+        fileManager.reset()
         activePairing = nil
         activePairingConn?.cancel(); activePairingConn = nil
         pendingPairingCode = nil
@@ -306,6 +307,8 @@ final class TransferService: ObservableObject {
         // 入站(或不可重连):清理并回到空闲,避免假"已连接"+幽灵历史
         activeConn?.cancel()
         activeConn = nil
+        activePeerFingerprint = nil
+        fileManager.reset()
         wasConnected = false
         connectionState = failure.map { .failed($0) } ?? .idle
     }
@@ -357,25 +360,35 @@ final class TransferService: ObservableObject {
             case .ready:
                 DispatchQueue.main.async { self.inboundReady(conn: conn) }
             case .failed(let e):
-                DispatchQueue.main.async { self.connectionState = .failed("连接失败: \(e)") }
+                DispatchQueue.main.async {
+                    // 仅当本连接是(或可能成为)活动会话时才改全局状态,
+                    // 避免陌生入站/探测的 .failed 污染与对端 A 的现有连接。
+                    if self.activeConn == nil || self.activeConn === conn {
+                        self.connectionState = .failed("连接失败: \(e)")
+                    }
+                }
             default:
                 break
             }
         }
-        // 30s 配对超时:TLS 握手完成但未完成配对时断开连接,避免资源永久占用。
-        inboundTimeoutWork?.cancel()
-        let work = DispatchWorkItem { [weak self, weak conn] in
-            guard let self, let conn else { return }
-            if case .connected = self.connectionState { return }
-            conn.cancel()
+        // 每条入站连接独立 30s 配对超时:未成为活动连接(未绑定)即断开。
+        let connRef = conn
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self, weak connRef] in
+            guard let self, let connRef else { return }
+            if connRef === self.activeConn { return }   // 已绑定,放过
+            connRef.cancel()
         }
-        inboundTimeoutWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: work)
     }
 
     private func inboundReady(conn: TransferConnection) {
-        activeIsOutbound = false   // 此连接为被动入站:断开后不重连
         guard let fp = conn.peerFingerprint else { return }
+        if case .connected = connectionState, let ac = activeConn, ac !== conn {
+            if fp != activePeerFingerprint {   // 已与他人连接,拒绝陌生入站,避免污染当前会话
+                conn.cancel(); return
+            }
+            // 同一对端重连:继续往下走(会在 bindConnected 里替换旧连接)
+        }
+        activeIsOutbound = false   // 此连接为被动入站:断开后不重连
         if let paired = peerStore.peer(forFingerprint: fp) {
             bindConnected(conn: conn, peer: paired)
         } else {
@@ -384,7 +397,7 @@ final class TransferService: ObservableObject {
                 logger.log(.warn, tool: "transfer", "配对尝试过多,已临时拒绝入站配对请求")
                 conn.cancel(); return
             }
-            if isCoolingDown(fp) { connectionState = .failed("配对失败过多,请稍后再试"); return }
+            if isCoolingDown(fp) { conn.cancel(); return }   // 静默取消,与全局冷却一致
             // 复用 pendingPairingCode;超过 180s 视为过期,重新生成。
             if let issued = pairingCodeIssuedAt, Date().timeIntervalSince(issued) > 180 {
                 pendingPairingCode = PairingCrypto.makeCode(); pairingCodeIssuedAt = Date()
@@ -447,12 +460,12 @@ final class TransferService: ObservableObject {
 
     private func bindConnected(conn: TransferConnection, peer: PairedPeer) {
         connectTimeoutWork?.cancel()
-        inboundTimeoutWork?.cancel()
         reconnectAttempts = 0
         wasConnected = true
         if let old = activeConn, old !== conn { old.cancel() }
         connectionState = .connected(peerName: peer.name)
         activeConn = conn
+        activePeerFingerprint = peer.fingerprint
         // 绑定后统一接管断开收尾(覆盖 acceptInbound/beginOutbound 的 pre-bind 回调),
         // 入站/出站均处理:出站 .cancelled 也曾被忽略,入站 .cancelled 之前完全没有收尾。
         conn.onStateChange = { [weak self, weak conn] st in
@@ -491,7 +504,9 @@ final class TransferService: ObservableObject {
         let name = url.lastPathComponent
         fileManager.send(id: id, name: name, fileURL: url, isImage: false,
             offer: { [weak conn] id, name, size in conn?.send(.fileOffer(id: id, name: name, size: size)) },
-            sendBinary: { [weak conn] data in conn?.sendBinary(data) },
+            sendBinary: { [weak conn] data, done in
+                if let c = conn { c.sendBinary(data, completion: done) } else { done() }
+            },
             complete: { [weak conn] id in conn?.send(.fileComplete(id: id)) },
             done: { [weak self] in DispatchQueue.main.async {
                 self?.appendHistory(TransferItem(kind: .file, direction: .outgoing,
@@ -514,7 +529,9 @@ final class TransferService: ObservableObject {
         guard (try? data.write(to: tmp)) != nil else { return }
         fileManager.send(id: id, name: "image.png", fileURL: tmp, isImage: true,
             offer: { [weak conn] id, _, size in conn?.send(.clipboardImageOffer(id: id, size: size, hash: hash)) },
-            sendBinary: { [weak conn] d in conn?.sendBinary(d) },
+            sendBinary: { [weak conn] data, done in
+                if let c = conn { c.sendBinary(data, completion: done) } else { done() }
+            },
             complete: { [weak conn] id in conn?.send(.fileComplete(id: id)) },
             done: { [weak self] in
                 try? FileManager.default.removeItem(at: tmp)
@@ -531,7 +548,10 @@ final class TransferService: ObservableObject {
 
     private func appendHistory(_ item: TransferItem) {
         history.insert(item, at: 0)
-        if history.count > 200 { history.removeLast() }
+        if history.count > 200 {
+            let dropped = history.removeLast()
+            if let url = dropped.localURL { try? FileManager.default.removeItem(at: url) }
+        }
         historyStore.save(history)
     }
 
@@ -563,7 +583,13 @@ final class TransferService: ObservableObject {
         }
     }
 
-    func clearHistory() { history = []; historyStore.clear() }
+    func clearHistory() {
+        history = []; historyStore.clear()
+        let fm = FileManager.default
+        if let files = try? fm.contentsOfDirectory(at: TransferPaths.inbox, includingPropertiesForKeys: nil) {
+            for f in files { try? fm.removeItem(at: f) }
+        }
+    }
 
     func clearPairedDevices() { peerStore.removeAll(); pairedPeers = [] }
 
