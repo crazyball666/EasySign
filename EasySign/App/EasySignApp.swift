@@ -27,14 +27,7 @@ struct EasySignApp: App {
                 .modifier(UpdateSheet(service: hub.update))
         }
         .windowResizability(.contentSize)
-        .commands {
-            CommandGroup(after: .appInfo) {
-                Button("检查更新…") {
-                    NSApp.activate(ignoringOtherApps: true)
-                    hub.update.checkForUpdates(silent: false)
-                }
-            }
-        }
+        .commands { UpdateCommands(update: hub.update) }
 
         Settings {
             SettingsView(settings: hub.settings, transfer: hub.transfer, update: hub.update)
@@ -42,6 +35,20 @@ struct EasySignApp: App {
 
         MenuBarExtra("互传", systemImage: "arrow.left.arrow.right") {
             TransferMenuBar(service: hub.transfer)
+        }
+    }
+}
+
+struct UpdateCommands: Commands {
+    let update: UpdateService
+    @Environment(\.openWindow) private var openWindow
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("检查更新…") {
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+                update.checkForUpdates(silent: false)
+            }
         }
     }
 }

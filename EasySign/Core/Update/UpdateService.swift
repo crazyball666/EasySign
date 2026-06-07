@@ -10,12 +10,14 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
     @Published var isChecking = false
     @Published var lastCheckError: String?
     @Published var upToDateNotice = false         // 手动检查且已是最新 → true(UI 弹一下)
+    @Published var installerOpened = false        // dmg 已挂载打开 → true
 
     private let defaults = UserDefaults.standard
     private let lastCheckKey = "update.lastCheckAt"
     private let autoCheckKey = "update.autoCheckEnabled"
     private var session: URLSession!
     private var downloadTask: URLSessionDownloadTask?
+    private var pendingVersion: String?           // captured on main before download starts
 
     let logger: LoggerService
 
@@ -48,6 +50,7 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
         isChecking = true
         lastCheckError = nil
         upToDateNotice = false
+        installerOpened = false
         defaults.set(Date(), forKey: lastCheckKey)
 
         let url = URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")!
@@ -90,6 +93,8 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
     /// 下载当前 availableUpdate 的 .dmg。
     func startDownload() {
         guard let update = availableUpdate, downloadTask == nil else { return }
+        installerOpened = false
+        pendingVersion = update.version
         downloadProgress = 0
         let task = session.downloadTask(with: update.dmgURL)
         downloadTask = task
@@ -102,7 +107,7 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
         downloadProgress = nil
     }
 
-    func dismissUpdate() { availableUpdate = nil }
+    func dismissUpdate() { availableUpdate = nil; installerOpened = false }
 
     // MARK: URLSessionDownloadDelegate
 
@@ -116,7 +121,7 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didFinishDownloadingTo location: URL) {
-        let version = availableUpdate?.version ?? "latest"
+        let version = pendingVersion ?? "latest"
         let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
         let dest = downloads.appendingPathComponent("EasySign-\(version).dmg")
         try? FileManager.default.removeItem(at: dest)
@@ -134,6 +139,7 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
             self.downloadProgress = nil
             self.downloadTask = nil
             NSWorkspace.shared.open(dest)        // 挂载 dmg,弹出拖拽窗口
+            self.installerOpened = true
         }
     }
 

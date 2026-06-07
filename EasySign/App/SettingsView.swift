@@ -1,10 +1,12 @@
 import SwiftUI
+import AppKit
 
 struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var transfer: TransferService
     @ObservedObject var update: UpdateService
 
+    @Environment(\.openWindow) private var openWindow
     @State private var launchAtLogin = LaunchAtLogin.isEnabled
 
     var body: some View {
@@ -25,7 +27,11 @@ struct SettingsView: View {
                 get: { update.autoCheckEnabled },
                 set: { update.autoCheckEnabled = $0 }
             ))
-            Button("检查更新…") { update.checkForUpdates(silent: false) }
+            Button("检查更新…") {
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+                update.checkForUpdates(silent: false)
+            }
         }
         .padding(16)
     }
