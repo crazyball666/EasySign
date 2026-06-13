@@ -9,6 +9,7 @@ protocol DeviceServiceProtocol {
     func disconnect()
     func afcClient(for device: PairedDevice) -> AFCClient?
     func installIPA(_ ipa: URL, on device: PairedDevice) -> AsyncThrowingStream<InstallEvent, Error>
+    func uninstallApp(bundleID: String, on device: PairedDevice) -> AsyncThrowingStream<InstallEvent, Error>
 }
 
 /// DeviceService 是 Core 层对 DeviceManager 的轻量包装，提供 PairedDevice 抽象和
@@ -46,12 +47,67 @@ final class DeviceService: DeviceServiceProtocol {
         return nil
     }
 
+    /// 安装 IPA:AFC 上传到 PublicStaging(占进度前 50%)→ installation_proxy 安装(后 50%)。
+    /// 设备需已连接;后台队列执行,事件经 AsyncThrowingStream 上报 UI。
     func installIPA(_ ipa: URL, on device: PairedDevice) -> AsyncThrowingStream<InstallEvent, Error> {
-        // 阶段 4 占位：完整 installIPA 实现需要 installation_proxy 服务，
-        // 现有 Devices tab 没有这个能力。返回单事件流表示"未实现"。
         AsyncThrowingStream { continuation in
-            continuation.yield(InstallEvent(stage: "未实现", progress: 0, message: "installIPA 将在阶段 6 实现"))
-            continuation.finish()
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    guard let internalDevice = self.manager.devices.first(where: { $0.id == device.id }) else {
+                        throw DeviceError.notConnected
+                    }
+                    guard let deviceRef = self.manager.getConnectedDeviceRef(for: device.id) else {
+                        throw DeviceError.notConnected
+                    }
+                    // 1. AFC 上传到媒体分区 PublicStaging(已存在则忽略建目录错误)。
+                    continuation.yield(InstallEvent(stage: "上传", progress: 0, message: "准备上传…"))
+                    let afc = try AFCClient(device: internalDevice)
+                    let remotePath = "PublicStaging/\(ipa.lastPathComponent)"
+                    try? afc.createDirectory(at: "PublicStaging")
+                    try afc.uploadFile(localURL: ipa, to: remotePath) { written, total in
+                        let frac = (total.map { $0 > 0 ? Double(written) / Double($0) : 0 }) ?? 0
+                        continuation.yield(InstallEvent(stage: "上传", progress: frac * 0.5,
+                                                        message: "上传中 \(Int(frac * 100))%"))
+                    }
+                    // 2. installation_proxy 安装。
+                    continuation.yield(InstallEvent(stage: "安装", progress: 0.5, message: "开始安装…"))
+                    try InstallationProxyClient.install(deviceRef: deviceRef, devicePackagePath: remotePath) { reply in
+                        if case let .progress(pct, status) = reply {
+                            let frac = pct.map { Double($0) / 100.0 } ?? 0
+                            continuation.yield(InstallEvent(stage: "安装", progress: 0.5 + frac * 0.5,
+                                                            message: status ?? "安装中…"))
+                        }
+                    }
+                    continuation.yield(InstallEvent(stage: "完成", progress: 1.0, message: "安装完成"))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// 卸载指定 bundleID(用户 App)。后台执行,事件经流上报。
+    func uninstallApp(bundleID: String, on device: PairedDevice) -> AsyncThrowingStream<InstallEvent, Error> {
+        AsyncThrowingStream { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    guard let deviceRef = self.manager.getConnectedDeviceRef(for: device.id) else {
+                        throw DeviceError.notConnected
+                    }
+                    continuation.yield(InstallEvent(stage: "卸载", progress: 0, message: "开始卸载…"))
+                    try InstallationProxyClient.uninstall(deviceRef: deviceRef, bundleID: bundleID) { reply in
+                        if case let .progress(pct, status) = reply {
+                            let frac = pct.map { Double($0) / 100.0 } ?? 0
+                            continuation.yield(InstallEvent(stage: "卸载", progress: frac, message: status ?? "卸载中…"))
+                        }
+                    }
+                    continuation.yield(InstallEvent(stage: "完成", progress: 1.0, message: "卸载完成"))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
         }
     }
 }

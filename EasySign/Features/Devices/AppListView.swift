@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 struct AppListView: View {
     let device: Device?
@@ -10,10 +12,21 @@ struct AppListView: View {
     @State private var isLoading: Bool = false
     @State private var errorMessage: String?
 
+    // 安装 / 卸载操作状态(opTitle 非 nil = 操作进行中,显示覆盖层)
+    @State private var opTitle: String?
+    @State private var opProgress: Double = 0
+    @State private var opMessage: String?
+    @State private var opError: String?
+    @State private var pendingUninstall: InstalledApp?
+
     enum AppFilter: String, CaseIterable {
         case all = "All"
         case user = "User"
         case system = "System"
+    }
+
+    private var pairedDevice: PairedDevice? {
+        device.map { PairedDevice(id: $0.id, name: $0.name, model: $0.model, osVersion: $0.systemVersion) }
     }
 
     var filteredApps: [InstalledApp] {
@@ -48,12 +61,46 @@ struct AppListView: View {
             Divider()
             content
         }
+        .overlay { if opTitle != nil { operationOverlay } }
+        .alert("操作失败", isPresented: Binding(
+            get: { opError != nil },
+            set: { if !$0 { opError = nil } }
+        )) {
+            Button("好") { opError = nil }
+        } message: {
+            Text(opError ?? "")
+        }
+        .confirmationDialog(
+            "卸载「\(pendingUninstall?.name ?? "")」?",
+            isPresented: Binding(get: { pendingUninstall != nil },
+                                 set: { if !$0 { pendingUninstall = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("卸载", role: .destructive) {
+                if let app = pendingUninstall { uninstall(app) }
+                pendingUninstall = nil
+            }
+            Button("取消", role: .cancel) { pendingUninstall = nil }
+        } message: {
+            Text("将从设备删除该 App 及其数据,不可撤销。")
+        }
         .onAppear { loadApps() }
         .onChange(of: device) { _ in loadApps() }
     }
 
     private var searchBar: some View {
         VStack(spacing: 6) {
+            HStack {
+                Spacer()
+                Button {
+                    pickAndInstall()
+                } label: {
+                    Label("安装 IPA…", systemImage: "square.and.arrow.down.on.square")
+                }
+                .controlSize(.small)
+                .disabled(device == nil || opTitle != nil || isLoading)
+            }
+
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
@@ -100,11 +147,72 @@ struct AppListView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List(filteredApps) { app in
-                AppRow(app: app)
+                AppRow(app: app, onUninstall: { pendingUninstall = $0 })
                     .contentShape(Rectangle())
                     .onTapGesture { onAppSelected(app) }
             }
             .listStyle(.plain)
+        }
+    }
+
+    private var operationOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.15).ignoresSafeArea()
+            VStack(spacing: 10) {
+                Text("\(opTitle ?? "")中…").font(.headline)
+                ProgressView(value: opProgress).frame(width: 220)
+                if let m = opMessage {
+                    Text(m).font(.caption).foregroundColor(.secondary).lineLimit(1)
+                }
+            }
+            .padding(22)
+            .background(.regularMaterial)
+            .cornerRadius(12)
+            .shadow(radius: 8)
+        }
+    }
+
+    // MARK: - 安装 / 卸载
+
+    private func pickAndInstall() {
+        guard let paired = pairedDevice else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [UTType(filenameExtension: "ipa") ?? .data]
+        panel.begin { resp in
+            guard resp == .OK, let url = panel.url else { return }
+            runOperation(title: "安装", stream: DeviceService.shared.installIPA(url, on: paired))
+        }
+    }
+
+    private func uninstall(_ app: InstalledApp) {
+        guard let paired = pairedDevice else { return }
+        runOperation(title: "卸载", stream: DeviceService.shared.uninstallApp(bundleID: app.bundleID, on: paired))
+    }
+
+    /// 消费 InstallEvent 流:更新覆盖层进度,完成后刷新列表,失败弹错误。
+    private func runOperation(title: String, stream: AsyncThrowingStream<InstallEvent, Error>) {
+        opTitle = title; opProgress = 0; opMessage = nil; opError = nil
+        Task {
+            do {
+                for try await ev in stream {
+                    await MainActor.run {
+                        opProgress = ev.progress
+                        opMessage = ev.message
+                    }
+                }
+                await MainActor.run {
+                    opTitle = nil
+                    loadApps()
+                }
+            } catch {
+                await MainActor.run {
+                    opTitle = nil
+                    opError = error.localizedDescription
+                }
+            }
         }
     }
 
@@ -145,6 +253,7 @@ struct AppListView: View {
 
 struct AppRow: View {
     let app: InstalledApp
+    var onUninstall: ((InstalledApp) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 10) {
@@ -168,6 +277,18 @@ struct AppRow: View {
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                 signingBadge
+            }
+
+            // 卸载入口仅对用户 App 开放(系统 App installation_proxy 也会拒)。
+            if let onUninstall, !app.isSystemApp {
+                Button {
+                    onUninstall(app)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .foregroundColor(.red)
+                .help("卸载")
             }
         }
         .padding(.vertical, 3)
