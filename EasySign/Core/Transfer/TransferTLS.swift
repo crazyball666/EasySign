@@ -51,7 +51,26 @@ enum TransferTLS {
         let ws = NWProtocolWebSocket.Options()
         ws.autoReplyPing = true
 
-        let params = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+        // 传输层心跳:对端「静默掉线」(睡眠 / 掉 Wi-Fi / 拔网线 / 崩溃,不发 FIN)时,
+        // 应用层与 receiveLoop 都收不到任何信号 → 本端会一直卡在「已连接」。开启 TCP keepalive
+        // 让内核定期探测:空闲 10s 起探,每 5s 一次,连 3 次无应答即判定断开 →
+        // NWConnection 转 .failed → onStateChange → handleConnectedDrop(复用既有断开/重连逻辑)。
+        // (优雅断开由 receiveLoop 的 EOF/close 检测即时感知;keepalive 专补静默半开这一类。)
+        let tcp = NWProtocolTCP.Options()
+        tcp.enableKeepalive = true
+        tcp.keepaliveIdle = 10
+        tcp.keepaliveInterval = 5
+        tcp.keepaliveCount = 3
+
+        // 兼容 VPN / 隧道 / 受限网络的 MTU:这类路径 MTU 常被压到 1400/1280,而 TLS 握手里
+        // 证书那一段是大包。若大包超过路径 MTU 且中间设备丢掉 ICMP「需要分片」提示 → 大包被
+        // 静默丢弃 → 出现「TCP 能连上、对端已 .ready,本端 TLS 握手却一直卡到超时」的现象。
+        // 把 MSS(每个 TCP 段的上限)压到 1240(≈ 1280 MTU 的安全值),握手大包会被切小,
+        // 从而能穿过隧道。A/B 用同一套参数,收发两个方向都会被保护。
+        // 代价:满 MTU 局域网下分段略小、吞吐略降,对剪贴板/小文件同步几乎无感——以此换取跨机可靠性。
+        tcp.maximumSegmentSize = 1240
+
+        let params = NWParameters(tls: tls, tcp: tcp)
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
         return params
     }

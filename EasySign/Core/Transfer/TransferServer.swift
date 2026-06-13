@@ -118,12 +118,14 @@ final class TransferConnection {
     func cancel() { nw.cancel() }
 
     private func receiveLoop() {
-        nw.receiveMessage { [weak self] data, context, _, error in
+        nw.receiveMessage { [weak self] data, context, isComplete, error in
             guard let self else { return }
+            // 读 WS opcode 区分 .binary / text / 控制帧;completion 已在本连接 queue 上,
+            // 故可直接访问 _binaryHandler/_binaryBuffer 与 _handler/_buffer(无需再 hop)。
+            let wsMeta = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata
+            // 对端发来 WebSocket close 帧:优雅关闭。主动 cancel → 触发 .cancelled,让上层收尾。
+            if wsMeta?.opcode == .close { self.nw.cancel(); return }
             if let data, !data.isEmpty {
-                // 读 WS opcode 区分 .binary 与 text/控制帧;completion 已在本连接 queue 上,
-                // 故可直接访问 _binaryHandler/_binaryBuffer 与 _handler/_buffer(无需再 hop)。
-                let wsMeta = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata
                 if wsMeta?.opcode == .binary {
                     if let h = self._binaryHandler {
                         h(data)
@@ -139,7 +141,16 @@ final class TransferConnection {
                     if let h = self._handler { h(msg) } else { self._buffer.append(msg) }
                 }
             }
-            if error == nil { self.receiveLoop() }
+            // 终态:硬错误,或读端 EOF(对端发 FIN / 进程退出 / 对端 nw.cancel())。
+            // EOF 判据 = 无数据 + 无 context + isComplete + 无 error;控制帧(ping/pong)带 context,
+            // 不会被误判为 EOF。主动 cancel() 把"对端已走"统一收敛成 .cancelled,
+            // 复用既有 onStateChange → handleConnectedDrop 的断开收尾/重连逻辑。
+            // (旧实现只看 error==nil 就重新 arm,优雅关闭的 EOF 被当成"继续收" → 永不感知断开。)
+            if error != nil || (isComplete && data == nil && context == nil) {
+                self.nw.cancel()
+                return
+            }
+            self.receiveLoop()
         }
     }
 }
