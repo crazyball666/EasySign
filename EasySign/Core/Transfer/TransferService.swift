@@ -37,7 +37,9 @@ final class TransferService: ObservableObject {
     private var pairingCodeIssuedAt: Date?           // 当前 pendingPairingCode 的签发时间(用于 180s 过期)
     // 连接超时与尽力而为重连(仅作用于主动出站连接;入站不重连)。
     private var connectTimeoutWork: DispatchWorkItem?
+    private var cleanupTimer: DispatchSourceTimer?   // 定时按保留天数回收历史/inbox 文件
     private var lastReconnect: (() -> Void)?
+    private var lastManualConnect: (() -> Void)?     // UI「重试」:原样重放上次用户发起的连接(含当时的配对码)
     private var reconnectAttempts = 0
     private var reconnectGeneration = 0
     private var userStopped = false
@@ -167,6 +169,7 @@ final class TransferService: ObservableObject {
             connectionState = .failed("启动失败: \(error.localizedDescription)")
         }
         cleanupOldHistory()
+        startCleanupTimer()
     }
 
     func stop() {
@@ -174,6 +177,7 @@ final class TransferService: ObservableObject {
         reconnectGeneration += 1      // 取消任何挂起的重连
         wasConnected = false
         connectTimeoutWork?.cancel(); connectTimeoutWork = nil
+        cleanupTimer?.cancel(); cleanupTimer = nil
         monitor.stop()
         discovery.stop()
         discoveredPeers = []
@@ -229,18 +233,25 @@ final class TransferService: ObservableObject {
         userStopped = false
         wasConnected = false
         lastReconnect = { [weak self] in self?.performOutbound(host: host, port: port, pairingCode: nil) }
+        lastManualConnect = { [weak self] in self?.connect(host: host, port: port, pairingCode: pairingCode) }
         performOutbound(host: host, port: port, pairingCode: pairingCode)
     }
+
+    /// UI「重试」:原样重放上次用户发起的连接(含当时输入的配对码)。失败态下由状态条上的按钮调用。
+    func retry() { lastManualConnect?() }
+    var canRetry: Bool { lastManualConnect != nil }
 
     private func performOutbound(host: String, port: UInt16, pairingCode: String?) {
         activeConn?.cancel()
         activeConn = nil
         guard let client else { return }
         connectionState = pairingCode == nil ? .connecting : .pairing
+        logger.log(.info, tool: "transfer", "发起出站连接 → \(host):\(port)(\(pairingCode == nil ? "无码/重连" : "配对码"))")
         do {
             let conn = try client.connect(host: host, port: port, pin: .acceptAny)
             beginOutbound(conn, pairingCode: pairingCode)
         } catch {
+            logger.log(.error, tool: "transfer", "出站连接创建失败: \(error.localizedDescription)")
             connectionState = .failed("连接失败: \(error.localizedDescription)")
         }
     }
@@ -252,6 +263,7 @@ final class TransferService: ObservableObject {
         userStopped = false
         wasConnected = false
         lastReconnect = { [weak self] in self?.performOutbound(to: peer, pairingCode: nil) }
+        lastManualConnect = { [weak self] in self?.connect(to: peer, pairingCode: pairingCode) }
         performOutbound(to: peer, pairingCode: pairingCode)
     }
 
@@ -260,10 +272,12 @@ final class TransferService: ObservableObject {
         activeConn = nil
         guard let client else { return }
         connectionState = pairingCode == nil ? .connecting : .pairing
+        logger.log(.info, tool: "transfer", "发起出站连接(Bonjour)→ \(String(describing: peer.endpoint))(\(pairingCode == nil ? "无码/重连" : "配对码"))")
         do {
             let conn = try client.connect(endpoint: peer.endpoint, pin: .acceptAny)
             beginOutbound(conn, pairingCode: pairingCode)
         } catch {
+            logger.log(.error, tool: "transfer", "出站连接创建失败: \(error.localizedDescription)")
             connectionState = .failed("连接失败: \(error.localizedDescription)")
         }
     }
@@ -275,19 +289,36 @@ final class TransferService: ObservableObject {
             guard let self, let conn else { return }
             switch st {
             case .ready:
+                self.logger.log(.info, tool: "transfer", "出站:握手完成 .ready,读取对端指纹…")
                 DispatchQueue.main.async { self.outboundReady(conn: conn, pairingCode: pairingCode) }
             case .waiting(let e):
-                // 网络暂时不可达(对端未就绪等)。不改状态,交给 12s 超时裁决。
-                self.logger.log(.warn, tool: "transfer", "连接等待中: \(e)")
+                // 网络暂时不可达(对端未就绪 / 握手受阻等)。不改状态,交给 12s 超时裁决。
+                self.logger.log(.warn, tool: "transfer", "出站:连接等待中(可能网络不可达或握手受阻): \(e)")
             case .failed(let e):
+                self.logger.log(.warn, tool: "transfer", "出站:连接失败 \(e)")
                 DispatchQueue.main.async { self.handleOutboundDrop(conn, failure: "连接失败: \(e)") }
             case .cancelled:
                 DispatchQueue.main.async { self.handleOutboundDrop(conn, failure: nil) }
             default:
-                break
+                // .setup / .preparing(TLS + WebSocket 握手中)。若一直停在 preparing 直到超时,
+                // 说明对端回发的握手数据没到本端 —— 多半是网络只通单向(VPN/MTU/AP 隔离)。
+                self.logger.log(.info, tool: "transfer", "出站连接状态: \(Self.describe(st))")
             }
         }
         armConnectTimeout(conn)
+    }
+
+    /// 把 NWConnection.State 转成可读字符串,供出站连接逐阶段日志使用。
+    private static func describe(_ s: NWConnection.State) -> String {
+        switch s {
+        case .setup:            return "setup"
+        case .waiting(let e):   return "waiting(\(e))"
+        case .preparing:        return "preparing(TLS/WebSocket 握手中)"
+        case .ready:            return "ready"
+        case .failed(let e):    return "failed(\(e))"
+        case .cancelled:        return "cancelled"
+        @unknown default:       return "unknown"
+        }
     }
 
     /// 出站连接 12s 未达 `.connected`/`.pairing`(仍 `.connecting`)则判超时取消。
@@ -297,10 +328,12 @@ final class TransferService: ObservableObject {
             guard let self else { return }
             if case .connecting = self.connectionState {
                 conn?.cancel()
-                self.connectionState = .failed("连接超时")
+                self.logger.log(.warn, tool: "transfer", "出站:12s 内未完成握手(仍 .connecting)→ 判定连接超时。若对端已显示连接/配对成功,通常是网络只通单向(VPN / MTU / AP 隔离),导致对端回发的握手数据到不了本端。")
+                self.connectionState = .failed("连接超时(握手未完成,可能是网络/VPN/MTU 问题)")
             } else if case .pairing = self.connectionState {
                 // 配对中也设个上限
                 conn?.cancel()
+                self.logger.log(.warn, tool: "transfer", "出站:12s 内配对未完成(仍 .pairing)→ 判定配对超时。")
                 self.connectionState = .failed("配对超时")
             }
         }
@@ -359,7 +392,11 @@ final class TransferService: ObservableObject {
 
     private func outboundReady(conn: TransferConnection, pairingCode: String?) {
         activeIsOutbound = true   // 此连接为主动出站:断开后允许重连
-        guard let fp = conn.peerFingerprint else { connectionState = .failed("未取到对端证书"); return }
+        guard let fp = conn.peerFingerprint else {
+            logger.log(.warn, tool: "transfer", "出站:.ready 但读不到对端证书指纹")
+            connectionState = .failed("未取到对端证书"); return
+        }
+        logger.log(.info, tool: "transfer", "出站:已读到对端指纹 \(fp.prefix(8))…(\(pairingCode == nil ? "查已配对" : "开始配对"))")
         if pairingCode == nil {
             if let paired = peerStore.peer(forFingerprint: fp) {
                 bindConnected(conn: conn, peer: paired)
@@ -605,25 +642,26 @@ final class TransferService: ObservableObject {
 
     // MARK: - 清理 / 清空
 
-    /// 启动时按保留天数清理历史与 inbox 文件(0 = 永久保留,不清理)。
+    /// 按保留天数清理历史与 inbox 文件(0 = 永久,不清理)。启动时跑一次,之后由定时器每 6 小时跑。
     private func cleanupOldHistory() {
         let days = UserDefaults.standard.integer(forKey: "transferRetentionDays")
-        guard days > 0 else { return }
+        guard days > 0 else { return }   // 0 = 永久保留(用户显式选择)
         let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
-        // prune history
         let kept = historyStore.pruning(history, olderThan: cutoff)
         if kept.count != history.count {
             history = kept; historyStore.save(history)
         }
-        // delete inbox files older than cutoff
-        let fm = FileManager.default
-        if let files = try? fm.contentsOfDirectory(at: TransferPaths.inbox, includingPropertiesForKeys: [.contentModificationDateKey]) {
-            for f in files {
-                if let d = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate, d < cutoff {
-                    try? fm.removeItem(at: f)
-                }
-            }
-        }
+        TransferPaths.pruneFiles(in: TransferPaths.inbox, olderThan: cutoff)
+    }
+
+    /// 每 6 小时定时跑一次按天清理(配合启动时的一次),常驻后台也能持续回收旧文件。
+    private func startCleanupTimer() {
+        cleanupTimer?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(deadline: .now() + 6 * 3600, repeating: 6 * 3600)
+        t.setEventHandler { [weak self] in self?.cleanupOldHistory() }
+        t.resume()
+        cleanupTimer = t
     }
 
     func clearHistory() {

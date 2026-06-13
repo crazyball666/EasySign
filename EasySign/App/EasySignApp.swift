@@ -14,6 +14,9 @@ struct EasySignApp: App {
     @State private var hub: ServiceHub
 
     init() {
+        // 互传历史/收到文件的默认保留期 = 7 天。注册为默认值:未显式设置时即生效;
+        // 用户仍可在设置里改成其它天数,或设 0 = 永久(显式关闭清理)。
+        UserDefaults.standard.register(defaults: [SettingsKey.transferRetentionDays.rawValue: 7])
         let h = ServiceHub.live()
         h.validate()
         h.transfer.start()
