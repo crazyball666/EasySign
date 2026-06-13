@@ -16,63 +16,67 @@ struct SettingsView: View {
             transferTab.tabItem { Label("互传", systemImage: "arrow.left.arrow.right") }
             aboutTab.tabItem { Label("关于", systemImage: "info.circle") }
         }
-        .frame(width: 480, height: 320)
+        .frame(width: 500, height: 380)
     }
 
     private var generalTab: some View {
         Form {
-            Toggle("启动时恢复上次工具", isOn: launchRestoresBinding)
-            Toggle("启用实验性功能", isOn: experimentalBinding)
-            Toggle("启动时自动检查更新", isOn: Binding(
-                get: { update.autoCheckEnabled },
-                set: { update.autoCheckEnabled = $0 }
-            ))
-            Button("检查更新…") {
-                openWindow(id: "main")
-                NSApp.activate(ignoringOtherApps: true)
-                update.checkForUpdates(silent: false)
+            Section {
+                Toggle("启动时恢复上次工具", isOn: launchRestoresBinding)
+                Toggle("启用实验性功能", isOn: experimentalBinding)
+            }
+            Section("更新") {
+                Toggle("启动时自动检查更新", isOn: Binding(
+                    get: { update.autoCheckEnabled },
+                    set: { update.autoCheckEnabled = $0 }
+                ))
+                Button("检查更新…") {
+                    openWindow(id: "main")
+                    NSApp.activate(ignoringOtherApps: true)
+                    update.checkForUpdates(silent: false)
+                }
             }
         }
-        .padding(16)
+        .formStyle(.grouped)
     }
 
     private var filesTab: some View {
         Form {
-            Stepper(value: recentFilesCapBinding, in: 1...50) {
-                Text("最近文件保留数量：\(recentFilesCapBinding.wrappedValue)")
-            }
-            Stepper(value: logRetentionBinding, in: 7...90) {
-                Text("日志保留天数：\(logRetentionBinding.wrappedValue)")
-            }
-            HStack {
-                Text("工作区保留天数")
-                Spacer()
-                Text("\(workspaceRetentionBinding.wrappedValue)")
-                    .foregroundStyle(.secondary)
+            Section("保留策略") {
+                LabeledContent("最近文件保留数量") {
+                    Stepper("\(recentFilesCapBinding.wrappedValue) 个", value: recentFilesCapBinding, in: 1...50)
+                }
+                LabeledContent("日志保留天数") {
+                    Stepper("\(logRetentionBinding.wrappedValue) 天", value: logRetentionBinding, in: 7...90)
+                }
+                LabeledContent("工作区保留天数") {
+                    Stepper("\(workspaceRetentionBinding.wrappedValue) 天", value: workspaceRetentionBinding, in: 1...90)
+                }
             }
         }
-        .padding(16)
+        .formStyle(.grouped)
     }
 
     private var transferTab: some View {
         Form {
-            TextField("设备名", text: deviceNameBinding)
-            Toggle("开机自启", isOn: $launchAtLogin)
-                .onChange(of: launchAtLogin) { newValue in
-                    LaunchAtLogin.setEnabled(newValue)
+            Section {
+                TextField("设备名", text: deviceNameBinding)
+                Toggle("开机自启", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { newValue in
+                        LaunchAtLogin.setEnabled(newValue)
+                    }
+                Toggle("隐身模式(不广播 Bonjour)", isOn: stealthBinding)
+                LabeledContent("历史保留天数") {
+                    Stepper(retentionBinding.wrappedValue == 0 ? "永久" : "\(retentionBinding.wrappedValue) 天",
+                            value: retentionBinding, in: 0...365)
                 }
-            Toggle("隐身模式(不广播 Bonjour)", isOn: stealthBinding)
-            Stepper(value: retentionBinding, in: 0...365) {
-                Text(retentionBinding.wrappedValue == 0
-                     ? "历史保留天数：永久"
-                     : "历史保留天数：\(retentionBinding.wrappedValue)")
             }
-            HStack {
-                Button("清空传输历史") { transfer.clearHistory() }
-                Button("清空已配对设备") { transfer.clearPairedDevices() }
+            Section {
+                Button("清空传输历史", role: .destructive) { transfer.clearHistory() }
+                Button("清空已配对设备", role: .destructive) { transfer.clearPairedDevices() }
             }
         }
-        .padding(16)
+        .formStyle(.grouped)
     }
 
     private var aboutTab: some View {
