@@ -10,7 +10,8 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
     @Published var isChecking = false
     @Published var lastCheckError: String?
     @Published var upToDateNotice = false         // 手动检查且已是最新 → true(UI 弹一下)
-    @Published var installerOpened = false        // dmg 已挂载打开 → true
+    @Published var installerOpened = false        // dmg 已挂载打开(回退路径)→ true
+    @Published var readyToInstall = false         // 新版已下载并 staged,等用户点「安装并重启」
 
     private let defaults = UserDefaults.standard
     private let lastCheckKey = "update.lastCheckAt"
@@ -18,6 +19,7 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
     private var session: URLSession!
     private var downloadTask: URLSessionDownloadTask?
     private var pendingVersion: String?           // captured on main before download starts
+    private var stagedAppURL: URL?                // mountAndStage 的产物,供 installAndRelaunch 使用
 
     let logger: LoggerService
 
@@ -94,6 +96,8 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
     func startDownload() {
         guard let update = availableUpdate, downloadTask == nil else { return }
         installerOpened = false
+        readyToInstall = false
+        stagedAppURL = nil
         pendingVersion = update.version
         downloadProgress = 0
         let task = session.downloadTask(with: update.dmgURL)
@@ -107,7 +111,10 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
         downloadProgress = nil
     }
 
-    func dismissUpdate() { availableUpdate = nil; installerOpened = false }
+    func dismissUpdate() {
+        availableUpdate = nil; installerOpened = false
+        readyToInstall = false; stagedAppURL = nil
+    }
 
     // MARK: URLSessionDownloadDelegate
 
@@ -135,11 +142,36 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
             return
         }
         stripQuarantine(dest)
+        // 能自替换(已正经装入 /Applications 类位置 + 目录可写)→ 挂载 DMG 复制到 staging,
+        // 置为「可安装」状态(UI 出「安装并重启」)。否则(translocation / 不可写 / staging 失败)
+        // 回退到原行为:打开 DMG 让用户手动拖。
+        if AppInstaller.canSelfReplace(), let staged = try? AppInstaller.mountAndStage(dmg: dest) {
+            DispatchQueue.main.async {
+                self.stagedAppURL = staged
+                self.downloadProgress = nil
+                self.downloadTask = nil
+                self.readyToInstall = true
+            }
+            return
+        }
         DispatchQueue.main.async {
             self.downloadProgress = nil
             self.downloadTask = nil
-            NSWorkspace.shared.open(dest)        // 挂载 dmg,弹出拖拽窗口
+            NSWorkspace.shared.open(dest)        // 回退:挂载 dmg,弹出拖拽窗口
             self.installerOpened = true
+        }
+    }
+
+    /// 用户点「安装并重启」:用 staged 的新版替换当前 App 并重启(内部会退出本进程)。
+    /// 失败则提示,并清回可重新「下载更新」的状态。
+    func installAndRelaunch() {
+        guard let staged = stagedAppURL else { return }
+        do {
+            try AppInstaller.installAndRelaunch(stagedApp: staged)
+        } catch {
+            lastCheckError = "安装失败:\(error.localizedDescription)"
+            readyToInstall = false
+            stagedAppURL = nil
         }
     }
 
