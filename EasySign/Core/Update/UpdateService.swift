@@ -167,11 +167,20 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
     func installAndRelaunch() {
         guard let staged = stagedAppURL else { return }
         do {
-            try AppInstaller.installAndRelaunch(stagedApp: staged)
+            try AppInstaller.spawnRelaunchHelper(stagedApp: staged)
         } catch {
             lastCheckError = "安装失败:\(error.localizedDescription)"
             readyToInstall = false
             stagedAppURL = nil
+            return
+        }
+        logger.log(.info, tool: "update", "已起更新脚本,关闭更新窗口并退出以完成替换…")
+        // 关键:先关掉更新 sheet。presented 的 modal sheet 会推迟/拦住 NSApp.terminate,
+        // 导致点了「安装并重启」却没反应。关掉后下一拍再退出,脱壳脚本随即接手替换+重启。
+        availableUpdate = nil
+        readyToInstall = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            NSApp.terminate(nil)
         }
     }
 

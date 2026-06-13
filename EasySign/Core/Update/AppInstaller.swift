@@ -1,5 +1,4 @@
 import Foundation
-import AppKit
 
 /// 不签名前提下的「自动安装 + 重启」。下载好的新版 .app 替换当前 bundle,
 /// 替换后对新 bundle 去 quarantine(否则未签名 + 带隔离会被 Gatekeeper 拦),再重启。
@@ -99,8 +98,10 @@ enum AppInstaller {
         return staged
     }
 
-    /// 写脱壳脚本并分离启动(不 wait;脚本等本进程退出后替换+重启),随后退出当前 App。
-    static func installAndRelaunch(stagedApp: URL) throws {
+    /// 写脱壳脚本并分离启动(不 wait,也**不退出本进程**)。脚本会等本进程退出后再替换+重启,
+    /// 因此**调用方负责退出 App**——且必须先关掉 modal sheet,否则 NSApp.terminate 会被推迟/拦住,
+    /// 表现为「点了安装却没反应」。
+    static func spawnRelaunchHelper(stagedApp: URL) throws {
         let dest = Bundle.main.bundleURL
         let stagingDir = stagedApp.deletingLastPathComponent()
         let script = installerScript(pid: ProcessInfo.processInfo.processIdentifier,
@@ -113,7 +114,6 @@ enum AppInstaller {
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = [scriptURL.path]
         try p.run()   // 不 waitUntilExit:GUI App 退出后该子进程由 launchd 接管继续跑。
-        NSApp.terminate(nil)
     }
 
     // MARK: - 私有
