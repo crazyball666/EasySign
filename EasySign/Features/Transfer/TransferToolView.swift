@@ -2,84 +2,132 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+/// 互传主面板。状态驱动:顶部常驻一个醒目的连接状态条;未连接时只显示「怎么连」
+/// (配对码 / 发现的设备 / 折叠的手动 IP),连上后只显示「传什么」(发送文件 / 剪贴板 / 进度);
+/// 历史与排查日志收进底部折叠区。目的是去掉一长串同质卡片、让当前该做的事一眼可见。
 struct TransferToolView: View {
     @ObservedObject var service: TransferService
     @State private var host = ""
     @State private var portText = ""
-    @State private var codeInput = ""          // 「连接到另一台」手动卡片用
-    @State private var peerCodeInput = ""       // 发现设备行就地输码用(与上面解耦)
-    @State private var localIP: String?         // 本机局域网 IP(展示用)
+    @State private var codeInput = ""                       // 手动 IP 连接用
+    @State private var peerCodeInputs: [String: String] = [:]   // 每个未配对设备各自独立(按指纹键),避免共用一个输入框
+    @State private var localIP: String?                     // 本机局域网 IP(展示用)
     @State private var isDropTargeted = false
     @State private var showClearHistoryConfirm = false
+    @State private var showManualConnect = false            // 手动 IP(默认折叠)
+    @State private var showHistory = false                  // 传输历史(默认折叠)
+    @State private var showLog = false                      // 排查日志(默认折叠)
+
+    private var isConnected: Bool {
+        if case .connected = service.connectionState { return true }
+        return false
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                statusCard
-                pairingCard
-                discoveredCard
-                connectCard
-                sendFileCard
-                syncCard
-                if !service.activeTransfers.isEmpty {
-                    activeTransfersCard
+                statusHeader
+                if isConnected {
+                    connectedSection
+                } else {
+                    disconnectedSection
                 }
-                historyCard
-                logCard
+                historyDisclosure
+                logDisclosure
             }
             .padding(20)
         }
-    }
-
-    // MARK: - Log Card(排查用)
-
-    private var logCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("互传日志(排查用)", systemImage: "doc.plaintext").font(.headline)
-            Text("配对失败后,点面板右上「复制全文」把日志发给开发者").font(.caption).foregroundStyle(.secondary)
-            LogPanelView(logger: service.logger, toolId: "transfer")
-                .frame(height: 240)
-                .background(Color(nsColor: .textBackgroundColor))
-                .cornerRadius(8)
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
-    }
-
-    // MARK: - Status Card
-
-    private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("本机", systemImage: "desktopcomputer").font(.headline)
-            Text("设备名:\(service.deviceName)")
-            if let ip = localIP {
-                Text("本机 IP:\(ip)").textSelection(.enabled)
-            }
-            if let port = service.listenPort { Text("监听端口:\(String(port))") }
-            HStack(spacing: 8) {
-                Text(stateText).foregroundStyle(.secondary)
-                Spacer()
-                if case .connected = service.connectionState {
-                    Button("断开") { service.disconnect() }
-                        .controlSize(.small)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
         .onAppear { localIP = LocalNetwork.lanIPv4() }
         .onChange(of: service.listenPort) { _ in localIP = LocalNetwork.lanIPv4() }
     }
 
-    // MARK: - Pairing Card
+    // MARK: - 顶部状态条
+
+    private var statusHeader: some View {
+        let s = statusStyle
+        return HStack(alignment: .center, spacing: 12) {
+            if s.spinner {
+                ProgressView().controlSize(.small)
+                    .frame(width: 22, height: 22)
+            } else {
+                Image(systemName: s.icon)
+                    .font(.title2)
+                    .foregroundStyle(s.color)
+                    .frame(width: 22, height: 22)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(s.title)
+                    .font(.headline)
+                    .foregroundStyle(s.color)
+                    .lineLimit(2)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 8)
+            statusAction
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(s.color.opacity(0.12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(s.color.opacity(0.30)))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private var statusAction: some View {
+        switch service.connectionState {
+        case .connected:
+            Button("断开") { service.disconnect() }.controlSize(.large)
+        case .failed:
+            if service.canRetry {
+                Button("重试") { service.retry() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    /// 状态条的图标 / 配色 / 文案 / 是否转圈。
+    private var statusStyle: (icon: String, color: Color, title: String, spinner: Bool) {
+        switch service.connectionState {
+        case .idle:                return ("wifi.slash", .gray, "未连接", false)
+        case .connecting:          return ("",           .blue, "连接中…", true)
+        case .pairing:             return ("",           .blue, "配对中…", true)
+        case let .connected(name): return ("checkmark.circle.fill", .green, "已连接 · \(name)", false)
+        case let .failed(msg):     return ("exclamationmark.triangle.fill", .red, msg, false)
+        }
+    }
+
+    private var subtitle: String {
+        var parts = [service.deviceName]
+        if let ip = localIP {
+            parts.append(ip + (service.listenPort.map { ":\($0)" } ?? ""))
+        } else if let port = service.listenPort {
+            parts.append("端口 \(port)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    // MARK: - 未连接:怎么连
+
+    private var disconnectedSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            pairingCard
+            discoveredCard
+            manualConnectDisclosure
+        }
+    }
 
     private var pairingCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("本机配对码", systemImage: "key.fill").font(.headline)
             if let code = service.pendingPairingCode {
                 Text(code)
-                    .font(.system(size: 28, weight: .bold, design: .monospaced))
+                    .font(.system(size: 30, weight: .bold, design: .monospaced))
                     .textSelection(.enabled)
                 Text("想连接本机的设备,在它那边输入这个码").font(.caption).foregroundStyle(.secondary)
             } else {
@@ -90,19 +138,17 @@ struct TransferToolView: View {
         .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
     }
 
-    // MARK: - Discovered Peers Card
-
     private var discoveredCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label("发现的设备", systemImage: "wifi").font(.headline)
             if service.discoveredPeers.isEmpty {
-                Text("未发现设备（确保两台都在运行且同一网络）")
+                Text("未发现设备(确保两台都在运行且同一网络)")
                     .foregroundStyle(.secondary)
                     .font(.caption)
             } else {
-                ForEach(service.discoveredPeers) { peer in
+                ForEach(Array(service.discoveredPeers.enumerated()), id: \.element.id) { idx, peer in
                     discoveredPeerRow(peer)
-                    Divider()
+                    if idx < service.discoveredPeers.count - 1 { Divider() }
                 }
             }
         }
@@ -112,8 +158,14 @@ struct TransferToolView: View {
 
     private func discoveredPeerRow(_ peer: DiscoveredPeer) -> some View {
         let isPaired = service.pairedPeers.map(\.fingerprint).contains(peer.fingerprint)
+        // 每台未配对设备绑定自己的输入框(按指纹键),不再共用一个 @State。
+        let codeBinding = Binding(
+            get: { peerCodeInputs[peer.fingerprint] ?? "" },
+            set: { peerCodeInputs[peer.fingerprint] = $0 }
+        )
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
+                Image(systemName: "laptopcomputer").foregroundStyle(.secondary)
                 Text(peer.name).fontWeight(.medium)
                 Spacer()
                 Text(isPaired ? "已配对" : "未配对")
@@ -129,54 +181,59 @@ struct TransferToolView: View {
                         .controlSize(.small)
                 }
             }
-            // 未配对:就地填入「对方屏幕上显示的本机配对码」,带码连接(不再用无码探测去触发,杜绝竞态)。
+            // 未配对:就地填入「对方屏幕上显示的本机配对码」,带码连接(杜绝无码探测竞态)。
             if !isPaired {
                 HStack(spacing: 8) {
-                    TextField("输入「\(peer.name)」屏幕上的配对码", text: $peerCodeInput)
+                    TextField("输入「\(peer.name)」屏幕上的配对码", text: codeBinding)
                         .textFieldStyle(.roundedBorder)
-                    Button("配对并连接") { service.connect(to: peer, pairingCode: peerCodeInput) }
+                    Button("配对并连接") { service.connect(to: peer, pairingCode: codeBinding.wrappedValue) }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
-                        .disabled(peerCodeInput.count < 6)
+                        .disabled(codeBinding.wrappedValue.count < 6)
                 }
             }
         }
         .padding(.vertical, 2)
     }
 
-    // MARK: - Connect Card
-
-    private var connectCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("连接到另一台", systemImage: "arrow.right.circle").font(.headline)
-            HStack {
-                TextField("对方 IP", text: $host).textFieldStyle(.roundedBorder)
-                TextField("端口", text: $portText).frame(width: 80).textFieldStyle(.roundedBorder)
+    private var manualConnectDisclosure: some View {
+        DisclosureGroup(isExpanded: $showManualConnect) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    TextField("对方 IP", text: $host).textFieldStyle(.roundedBorder)
+                    TextField("端口", text: $portText).frame(width: 80).textFieldStyle(.roundedBorder)
+                }
+                TextField("配对码(首次连接需要)", text: $codeInput).textFieldStyle(.roundedBorder)
+                Button("连接") {
+                    guard let port = UInt16(portText) else { return }
+                    service.connect(host: host, port: port,
+                                    pairingCode: codeInput.isEmpty ? nil : codeInput)
+                }
+                .disabled(host.isEmpty || UInt16(portText) == nil)
             }
-            TextField("配对码（首次连接需要）", text: $codeInput).textFieldStyle(.roundedBorder)
-            Button("连接") {
-                guard let port = UInt16(portText) else { return }
-                service.connect(host: host, port: port,
-                                pairingCode: codeInput.isEmpty ? nil : codeInput)
-            }
-            .disabled(host.isEmpty || UInt16(portText) == nil)
+            .padding(.top, 6)
+        } label: {
+            Label("手动输入 IP 连接", systemImage: "arrow.right.circle").font(.headline)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
     }
 
-    // MARK: - Send File Card
+    // MARK: - 已连接:传什么
+
+    private var connectedSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            sendFileCard
+            syncCard
+            if !service.activeTransfers.isEmpty {
+                activeTransfersCard
+            }
+        }
+    }
 
     private var sendFileCard: some View {
-        let isConnected: Bool
-        if case .connected = service.connectionState { isConnected = true } else { isConnected = false }
-        return VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
             Label("发送文件", systemImage: "arrow.up.doc").font(.headline)
-            if !isConnected {
-                Text("需先连接并配对")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(
@@ -187,19 +244,13 @@ struct TransferToolView: View {
                         RoundedRectangle(cornerRadius: 8)
                             .fill(isDropTargeted ? Color.accentColor.opacity(0.08) : Color.clear)
                     )
-                Text("拖文件到此发送")
-                    .foregroundStyle(isConnected ? .primary : .secondary)
-                    .padding(24)
+                Text("拖文件到此发送").padding(24)
             }
             .frame(maxWidth: .infinity, minHeight: 72)
             .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted) { providers in
                 handleDrop(providers)
             }
-            .disabled(!isConnected)
-            Button("发送文件…") {
-                openFilePicker()
-            }
-            .disabled(!isConnected)
+            Button("发送文件…") { openFilePicker() }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
@@ -229,16 +280,12 @@ struct TransferToolView: View {
         }
     }
 
-    // MARK: - Sync Card
-
     private var syncCard: some View {
         Toggle(isOn: $service.clipboardSyncEnabled) {
-            Label("共享剪贴板（文本）", systemImage: "doc.on.clipboard")
+            Label("共享剪贴板(文本)", systemImage: "doc.on.clipboard")
         }
         .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
     }
-
-    // MARK: - Active Transfers Card
 
     private var activeTransfersCard: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -271,25 +318,35 @@ struct TransferToolView: View {
         .padding(.vertical, 2)
     }
 
-    // MARK: - History Card
+    // MARK: - 折叠区:历史 / 日志
 
-    private var historyCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("传输历史", systemImage: "clock.arrow.circlepath").font(.headline)
-                Spacer()
-                if !service.history.isEmpty {
-                    Button("清理") { showClearHistoryConfirm = true }
+    private var historyDisclosure: some View {
+        DisclosureGroup(isExpanded: $showHistory) {
+            VStack(alignment: .leading, spacing: 8) {
+                if service.history.isEmpty {
+                    Text("暂无记录").foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Button("清理历史和收到的文件") { showClearHistoryConfirm = true }
                         .controlSize(.small)
+                    if service.history.count > 6 {
+                        // 记录多时锁定高度,卡片内独立滚动,避免整页被撑得过长。
+                        ScrollView { historyList }.frame(height: 360)
+                    } else {
+                        historyList
+                    }
                 }
             }
-            if service.history.isEmpty {
-                Text("暂无记录").foregroundStyle(.secondary)
-            } else if service.history.count > 6 {
-                // 记录多时锁定高度,卡片内独立滚动,避免整页被撑得过长。
-                ScrollView { historyList }.frame(height: 360)
-            } else {
-                historyList
+            .padding(.top, 6)
+        } label: {
+            HStack(spacing: 8) {
+                Label("传输历史", systemImage: "clock.arrow.circlepath").font(.headline)
+                if !service.history.isEmpty {
+                    Text("\(service.history.count)")
+                        .font(.caption2).monospacedDigit()
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(.quaternary).cornerRadius(8)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -352,6 +409,7 @@ struct TransferToolView: View {
                 NSPasteboard.general.setString(item.preview, forType: .string)
             } label: { Image(systemName: "doc.on.doc") }
             .buttonStyle(.borderless)
+            .help("复制文本")
 
         case .file:
             if let url = item.localURL {
@@ -388,15 +446,21 @@ struct TransferToolView: View {
         }
     }
 
-    // MARK: - Helpers
-
-    private var stateText: String {
-        switch service.connectionState {
-        case .idle: return "未连接"
-        case .connecting: return "连接中…"
-        case .pairing: return "配对中…"
-        case let .connected(name): return "已连接：\(name)"
-        case let .failed(msg): return "失败：\(msg)"
+    private var logDisclosure: some View {
+        DisclosureGroup(isExpanded: $showLog) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("连接/配对失败后,点面板右上「复制全文」把日志发给开发者").font(.caption).foregroundStyle(.secondary)
+                LogPanelView(logger: service.logger, toolId: "transfer")
+                    .frame(height: 240)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .cornerRadius(8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+            }
+            .padding(.top, 6)
+        } label: {
+            Label("排查日志", systemImage: "doc.plaintext").font(.headline)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
     }
 }
