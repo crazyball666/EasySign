@@ -37,6 +37,14 @@ final class PeerDiscovery {
             let fp = txt["fp"] ?? ""
             peers.append(DiscoveredPeer(deviceId: deviceId, name: name, fingerprint: fp, endpoint: r.endpoint))
         }
-        onPeersChanged?(peers)
+        // 同一设备可能经多个接口(Wi-Fi + includePeerToPeer 的 P2P)被发现 → deviceId 重复。
+        // 按 deviceId 去重(保留首条),否则 UI ForEach(id: deviceId) 会撞 id。
+        onPeersChanged?(Self.deduped(peers))
+    }
+
+    /// 按 deviceId 去重,保留首次出现的那条。纯函数,便于单测。
+    static func deduped(_ peers: [DiscoveredPeer]) -> [DiscoveredPeer] {
+        var seen = Set<String>()
+        return peers.filter { seen.insert($0.deviceId).inserted }
     }
 }
