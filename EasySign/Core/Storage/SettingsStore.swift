@@ -46,6 +46,9 @@ public final class SettingsStore: ObservableObject {
     }
 
     public func set(_ value: Any?, for key: SettingsKey) {
+        // SettingsStore 没有 @Published(值都存 UserDefaults),必须手动通知 SwiftUI 刷新,
+        // 否则 @ObservedObject 视图读不到新值 —— 步进器点了数字不变就是因为缺这一行。
+        objectWillChange.send()
         if let v = value {
             defaults.set(v, forKey: key.rawValue)
         } else {
