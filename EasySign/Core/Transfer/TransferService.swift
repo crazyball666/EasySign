@@ -560,7 +560,26 @@ final class TransferService: ObservableObject {
             }
         }
         conn.onBinary = { [weak self] data in self?.fileManager.handleBinary(data) }
-        conn.onMessage = { [weak self] msg in
+        // 已绑定连接的入站路由:数据帧照常处理;若对端在此连接上(重新)发起配对,就地补一个应答方握手,
+        // 避免「一端在配对、另一端已绑定」的角色错位把对端拖到配对超时(死锁)。
+        // 在主线程(本方法)先把配对所需的不可变量捕获好,makePairing 构造应答方时不读可变服务状态,
+        // 故可安全地从连接的网络队列惰性调用;onOutcome 自行跳回主线程(见 handleBoundRepair)。
+        let code = pendingPairingCode ?? ""
+        let selfId = try? identity()
+        let myDeviceId = identityStore.deviceId
+        let myName = deviceName
+        let router = BoundInboundRouter(makePairing: { [weak self, weak conn] in
+            guard let conn, let selfId else { return nil }
+            let pm = PairingManager(code: code, selfFingerprint: selfId.fingerprint,
+                                    selfDeviceId: myDeviceId, selfName: myName,
+                                    peerFingerprint: peer.fingerprint)
+            pm.send = { [weak conn] msg in conn?.send(msg) }
+            pm.onOutcome = { [weak self] outcome in
+                DispatchQueue.main.async { self?.handleBoundRepair(peer: peer, outcome: outcome) }
+            }
+            return pm
+        })
+        router.onData = { [weak self] msg in
             guard let self else { return }
             switch msg {
             case let .clipboardText(text, hash):
@@ -574,6 +593,25 @@ final class TransferService: ObservableObject {
             default:
                 break
             }
+        }
+        conn.onMessage = { router.handle($0) }   // 强捕获 router:连接持有该闭包即维持其与内部 pm 存活
+    }
+
+    /// 已连接通道上对端发起的「重新配对」结果。连接已绑定,无需再 bindConnected:
+    /// 成功仅刷新已配对信息并轮换配对码(与 finishPairing 一致);失败仅记账,不主动断开
+    /// (这条连接的数据通道仍可用,贸然断开反而打断正常使用;对端若不满意会自行 cancel)。
+    private func handleBoundRepair(peer: PairedPeer, outcome: PairingManager.Outcome) {
+        switch outcome {
+        case let .success(repaired):
+            failureCounts[repaired.fingerprint] = 0
+            peerStore.upsert(repaired)
+            pairedPeers = peerStore.all()
+            pendingPairingCode = PairingCrypto.makeCode()
+            pairingCodeIssuedAt = Date()
+            logger.log(.info, tool: "transfer", "对端在已连接通道上完成重新配对 \(repaired.name)")
+        case let .failed(reason):
+            recordPairFailure()
+            logger.log(.warn, tool: "transfer", "对端在已连接通道上发起的重新配对失败: \(reason)")
         }
     }
 
