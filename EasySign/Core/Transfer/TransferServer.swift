@@ -99,11 +99,13 @@ final class TransferConnection {
         return CertFingerprint.sha256Hex(of: der)
     }
 
-    func send(_ msg: WireMessage) {
-        guard let data = try? msg.encoded() else { return }
+    /// `completion` 在本帧被 Network.framework 接收处理(写入协议栈)后回调,供需要"先冲刷再关闭"的场景使用
+    /// (如断开前的 .bye)。默认 no-op,既有调用方无需改动。
+    func send(_ msg: WireMessage, completion: @escaping (NWError?) -> Void = { _ in }) {
+        guard let data = try? msg.encoded() else { completion(nil); return }
         let meta = NWProtocolWebSocket.Metadata(opcode: .text)
         let ctx = NWConnection.ContentContext(identifier: "msg", metadata: [meta])
-        nw.send(content: data, contentContext: ctx, isComplete: true, completion: .contentProcessed { _ in })
+        nw.send(content: data, contentContext: ctx, isComplete: true, completion: .contentProcessed { completion($0) })
     }
 
     /// 以 WS .binary 帧发送原始字节(文件/图片分块)。

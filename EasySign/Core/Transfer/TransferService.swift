@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import Security
+import AppKit
 
 /// 互传服务门面。串联身份 / 监听 / 连接 / 剪贴板 / 配对,持有 @Published 状态供 UI 观察。
 /// 设计要点:剪贴板同步、收消息不依赖主窗口(本对象活在 ServiceHub,App 生命周期)。
@@ -44,6 +45,14 @@ final class TransferService: ObservableObject {
     private var reconnectGeneration = 0
     private var userStopped = false
     private var wasConnected = false
+    // 自动(免码)重连:记住「最后一次成功连上的那台」,前台/睡醒/Bonjour 重新发现时免码重连它。
+    // 见 TransferAutoReconnect.target 的纯决策与 maybeAutoReconnect 的触发装配。
+    private var lastConnectedPeer: TransferAutoReconnect.PeerRef?
+    private var lastAutoReconnectAt: Date?            // 自动重连冷却,避免发现回调/前台事件密集触发成紧密循环
+    private var lastDiscoveryRefreshAt: Date?         // 前台/睡醒重启 Bonjour 浏览的去抖(didBecomeActive 很频繁)
+    private var autoReconnecting = false              // 本次出站是否为「静默自动重连」:失败时不弹红条,静默回落 .idle
+    private var appActiveObserver: NSObjectProtocol?  // NSApplication.didBecomeActive
+    private var didWakeObserver: NSObjectProtocol?    // NSWorkspace.didWake(系统睡醒)
 
     init(logger: LoggerService) {
         self.logger = logger
@@ -157,10 +166,16 @@ final class TransferService: ObservableObject {
             self.server = server
             self.client = TransferClient(identity: { try self.identity().identity })
             // 启动 Bonjour 浏览,发现局域网内其它 EasySign 设备。
+            // 列表变化时除刷新 UI 外,顺带尝试免码自动重连「最后那台」(它若刚重新出现就接上)。
             discovery.onPeersChanged = { [weak self] peers in
-                DispatchQueue.main.async { self?.discoveredPeers = peers }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.discoveredPeers = peers
+                    self.maybeAutoReconnect()
+                }
             }
             discovery.start()
+            installLifecycleObservers()
             monitor.start()
             pollPort(attempts: 25)
             logger.log(.info, tool: "transfer", "互传服务已启动,本机指纹 \(id.fingerprint.prefix(8))…")
@@ -176,6 +191,9 @@ final class TransferService: ObservableObject {
         userStopped = true
         reconnectGeneration += 1      // 取消任何挂起的重连
         wasConnected = false
+        autoReconnecting = false
+        lastConnectedPeer = nil       // 停服:清掉自动重连目标
+        removeLifecycleObservers()
         connectTimeoutWork?.cancel(); connectTimeoutWork = nil
         cleanupTimer?.cancel(); cleanupTimer = nil
         monitor.stop()
@@ -197,13 +215,24 @@ final class TransferService: ObservableObject {
     func disconnect() {
         userStopped = true            // 阻止本次断开触发自动重连
         reconnectGeneration += 1      // 撤销任何挂起的重连
+        autoReconnecting = false
+        lastConnectedPeer = nil       // 主动断开:本机不再自动重连这台
         connectTimeoutWork?.cancel(); connectTimeoutWork = nil
         wasConnected = false
         let c = activeConn; activeConn = nil   // 先置空,使断开回调的 guard 失效,避免重复收尾
         activePeerFingerprint = nil
         activePairing = nil
         let pc = activePairingConn; activePairingConn = nil
-        c?.cancel(); pc?.cancel()
+        // 先告知对端「我主动断开」,让对端也清掉自动重连目标(否则对端的「发现即连」会把本机又拉回来)。
+        // bye 必须在关闭前真正写出去:在 send 完成回调里关闭(冲刷后再 cancel),再挂 0.5s 兜底
+        // (回调因连接半死不来时也能收口)。两路都走 closeOnce,只 cancel 一次(且 cancel 本身幂等)。
+        if let c {
+            var closed = false
+            let closeOnce: () -> Void = { if !closed { closed = true; c.cancel() } }
+            c.send(.bye) { _ in DispatchQueue.main.async(execute: closeOnce) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: closeOnce)
+        }
+        pc?.cancel()
         fileManager.reset()
         connectionState = .idle
         logger.log(.info, tool: "transfer", "已手动断开当前连接(配对关系保留)")
@@ -228,6 +257,7 @@ final class TransferService: ObservableObject {
 
     func connect(host: String, port: UInt16, pairingCode: String?) {
         // 一次用户主动连接 = 取消上次的"已停止"并清零重连计数、撞代际取消任何挂起重连。
+        autoReconnecting = false      // 用户主动发起:失败要可见(红条 + 重试)
         reconnectGeneration += 1
         reconnectAttempts = 0
         userStopped = false
@@ -252,17 +282,24 @@ final class TransferService: ObservableObject {
             beginOutbound(conn, pairingCode: pairingCode)
         } catch {
             logger.log(.error, tool: "transfer", "出站连接创建失败: \(error.localizedDescription)")
-            connectionState = .failed("连接失败: \(error.localizedDescription)")
+            failState("连接失败: \(error.localizedDescription)")
         }
     }
 
     /// 连接 Bonjour 发现出的对端。复用与手动 IP 完全相同的配对/pinning 流程(`.acceptAny` → 读指纹 → 配对/绑定)。
+    /// 用户点「连接」/「重试」走这里(auto=false,失败可见);静默自动重连由 maybeAutoReconnect 用 auto=true 调私有重载。
     func connect(to peer: DiscoveredPeer, pairingCode: String?) {
+        connect(to: peer, pairingCode: pairingCode, auto: false)
+    }
+
+    private func connect(to peer: DiscoveredPeer, pairingCode: String?, auto: Bool) {
+        autoReconnecting = auto
         reconnectGeneration += 1
         reconnectAttempts = 0
         userStopped = false
         wasConnected = false
         lastReconnect = { [weak self] in self?.performOutbound(to: peer, pairingCode: nil) }
+        // 用户重试 = 非 auto(失败可见);故指向公开重载。
         lastManualConnect = { [weak self] in self?.connect(to: peer, pairingCode: pairingCode) }
         performOutbound(to: peer, pairingCode: pairingCode)
     }
@@ -278,7 +315,7 @@ final class TransferService: ObservableObject {
             beginOutbound(conn, pairingCode: pairingCode)
         } catch {
             logger.log(.error, tool: "transfer", "出站连接创建失败: \(error.localizedDescription)")
-            connectionState = .failed("连接失败: \(error.localizedDescription)")
+            failState("连接失败: \(error.localizedDescription)")
         }
     }
 
@@ -329,7 +366,7 @@ final class TransferService: ObservableObject {
             if case .connecting = self.connectionState {
                 conn?.cancel()
                 self.logger.log(.warn, tool: "transfer", "出站:12s 内未完成握手(仍 .connecting)→ 判定连接超时。若对端已显示连接/配对成功,通常是网络只通单向(VPN / MTU / AP 隔离),导致对端回发的握手数据到不了本端。")
-                self.connectionState = .failed("连接超时(握手未完成,可能是网络/VPN/MTU 问题)")
+                self.failState("连接超时(握手未完成,可能是网络/VPN/MTU 问题)")
             } else if case .pairing = self.connectionState {
                 // 配对中也设个上限
                 conn?.cancel()
@@ -357,7 +394,7 @@ final class TransferService: ObservableObject {
             logger.log(.warn, tool: "transfer", "出站配对中连接被断开: \(failure ?? "对端无响应")")
             return
         }
-        if let failure { connectionState = .failed(failure) }
+        if let failure { failState(failure) }
     }
 
     /// 已建立连接断开的统一收尾。清理 activeConn/状态;仅出站且非用户停止时尝试重连。
@@ -394,7 +431,7 @@ final class TransferService: ObservableObject {
         activeIsOutbound = true   // 此连接为主动出站:断开后允许重连
         guard let fp = conn.peerFingerprint else {
             logger.log(.warn, tool: "transfer", "出站:.ready 但读不到对端证书指纹")
-            connectionState = .failed("未取到对端证书"); return
+            failState("未取到对端证书"); return
         }
         logger.log(.info, tool: "transfer", "出站:已读到对端指纹 \(fp.prefix(8))…(\(pairingCode == nil ? "查已配对" : "开始配对"))")
         if pairingCode == nil {
@@ -402,7 +439,7 @@ final class TransferService: ObservableObject {
                 bindConnected(conn: conn, peer: paired)
             } else {
                 activeConn?.cancel(); activeConn = nil
-                connectionState = .failed("该设备未配对,请输入对端显示的配对码")
+                failState("该设备未配对,请输入对端显示的配对码")
             }
             return
         }
@@ -544,8 +581,14 @@ final class TransferService: ObservableObject {
         wasConnected = true
         if let old = activeConn, old !== conn { old.cancel() }
         connectionState = .connected(peerName: peer.name)
+        autoReconnecting = false   // 已连上,本次(可能的)自动重连结束
         activeConn = conn
         activePeerFingerprint = peer.fingerprint
+        // 记住这台,供前台/睡醒/重新发现时免码自动重连(出/入站都记,使两端断开后都能各自重连)。
+        lastConnectedPeer = .init(deviceId: peer.deviceId, fingerprint: peer.fingerprint)
+        // 已绑定 = 已配对:把「重试」改走免码重连(lastReconnect),避免重放已轮换失效的旧配对码
+        // (否则首连后码已轮换,点重试会拿旧码重新配对而失败——正是用户最初抱怨的「码变了又要重配」)。
+        if activeIsOutbound, lastReconnect != nil { lastManualConnect = lastReconnect }
         // 绑定后统一接管断开收尾(覆盖 acceptInbound/beginOutbound 的 pre-bind 回调),
         // 入站/出站均处理:出站 .cancelled 也曾被忽略,入站 .cancelled 之前完全没有收尾。
         conn.onStateChange = { [weak self, weak conn] st in
@@ -590,11 +633,26 @@ final class TransferService: ObservableObject {
                 self.fileManager.handleOffer(id: id, name: "image-\(id).png", size: size, isImage: true)
             case let .fileComplete(id):
                 self.fileManager.handleComplete(id: id)
+            case .bye:
+                DispatchQueue.main.async { self.handlePeerBye(peer: peer) }
             default:
                 break
             }
         }
         conn.onMessage = { router.handle($0) }   // 强捕获 router:连接持有该闭包即维持其与内部 pm 存活
+    }
+
+    /// 对端主动断开(收到 .bye):尊重对端的「断开」意图,本机不再自动重连它。连接随后会被对端 cancel,
+    /// 由 handleConnectedDrop 收尾回 idle;此处不强行 cancel,避免与收尾竞态。
+    /// 两条自动重连路径都要堵死:
+    ///   - 清 lastConnectedPeer → 挡住「发现即连」(maybeAutoReconnect);
+    ///   - 清 wasConnected + 撞 reconnectGeneration → 挡住出站随之而来的 scheduleReconnect
+    ///     (本机若是出站方,紧接着的断开本会触发 3 次重连,把刚被对方断开的会话又拉回来)。
+    private func handlePeerBye(peer: PairedPeer) {
+        if lastConnectedPeer?.deviceId == peer.deviceId { lastConnectedPeer = nil }
+        wasConnected = false
+        reconnectGeneration += 1
+        logger.log(.info, tool: "transfer", "对端 \(peer.name) 主动断开,停止对其自动重连")
     }
 
     /// 已连接通道上对端发起的「重新配对」结果。连接已绑定,无需再 bindConnected:
@@ -710,7 +768,91 @@ final class TransferService: ObservableObject {
         }
     }
 
-    func clearPairedDevices() { peerStore.removeAll(); pairedPeers = [] }
+    func clearPairedDevices() {
+        peerStore.removeAll(); pairedPeers = []
+        lastConnectedPeer = nil   // 配对全清:不再有可自动重连的对象
+    }
+
+    /// 置失败态。但若本次是「静默自动重连」(autoReconnecting),失败不打扰用户——清标志并回落 .idle
+    /// (下次前台/发现/睡醒会再试),避免用户没点过的红色错误条凭空闪现。
+    private func failState(_ msg: String) {
+        if autoReconnecting {
+            autoReconnecting = false
+            connectionState = .idle
+            logger.log(.info, tool: "transfer", "自动重连未成功(静默回落空闲): \(msg)")
+        } else {
+            connectionState = .failed(msg)
+        }
+    }
+
+    // MARK: - 自动(免码)重连
+
+    /// 统一的自动重连入口:Bonjour 列表变化 / 切回前台 / 系统睡醒都会调用。
+    /// 仅在「空闲 + 非用户主动断开 + 记得最后那台且它已配对并正被发现」时,免码重连最后那台。
+    /// 决策本身是纯函数(TransferAutoReconnect.target),便于单测;这里只负责装配实参与节流。
+    private func maybeAutoReconnect() {
+        let busy: Bool
+        switch connectionState {
+        case .connected, .connecting, .pairing: busy = true
+        case .idle, .failed:                     busy = false
+        }
+        // 让位给正在退避中的 scheduleReconnect(出站断线后的 2/4/8s 三次快速重连),避免两条重连路径互抢;
+        // 三次用尽后 reconnectAttempts 停在 3,此时由本路径接管。
+        if reconnectAttempts >= 1, reconnectAttempts < 3 { return }
+        // 决策(含「本机 id 较小才主动拨号」的单向仲裁)收敛在纯函数里,便于单测。
+        guard let target = TransferAutoReconnect.target(
+            busy: busy,
+            userStopped: userStopped,
+            selfDeviceId: identityStore.deviceId,
+            last: lastConnectedPeer,
+            discovered: discoveredPeers,
+            pairedFingerprints: Set(pairedPeers.map(\.fingerprint))
+        ) else { return }
+        // 冷却:失败后发现回调 / 前台事件可能密集触发,避免连成紧密循环(连接中/已连接时上面的 busy 已挡住)。
+        if let t = lastAutoReconnectAt, Date().timeIntervalSince(t) < 4 { return }
+        lastAutoReconnectAt = Date()
+        logger.log(.info, tool: "transfer", "自动重连(免码)→ \(target.name)")
+        connect(to: target, pairingCode: nil, auto: true)   // auto:失败静默回落 .idle,不弹红条
+    }
+
+    /// 切回前台 / 系统睡醒:重启 Bonjour 浏览(睡眠后发现缓存可能失效),并尝试免码重连最后那台。
+    /// 对端重新出现会再触发一次 onPeersChanged → maybeAutoReconnect,故这里直接调一次即可。
+    private func onWokeOrActivated(_ reason: String) {
+        guard server != nil, !userStopped, lastConnectedPeer != nil else { return }
+        // 已连接/连接中/配对中无需打扰(getFocus 会频繁触发 didBecomeActive,避免每次都重启浏览)。
+        switch connectionState {
+        case .connected, .connecting, .pairing: return
+        case .idle, .failed: break
+        }
+        logger.log(.info, tool: "transfer", "\(reason):刷新发现并尝试自动重连")
+        // 去抖:didBecomeActive 在每次窗口获焦都会触发,不必每次都 cancel+重建 NWBrowser。
+        // 距上次刷新超过 3s 才重启浏览;否则直接拿现有发现结果试一次。
+        if lastDiscoveryRefreshAt == nil || Date().timeIntervalSince(lastDiscoveryRefreshAt!) >= 3 {
+            lastDiscoveryRefreshAt = Date()
+            discovery.start()    // 重新浏览,促使对端尽快重新出现
+        }
+        maybeAutoReconnect()
+    }
+
+    deinit { removeLifecycleObservers() }   // 兜底:本对象虽为 App 生命周期常驻,仍对称移除观察者
+
+    private func installLifecycleObservers() {
+        if appActiveObserver == nil {
+            appActiveObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in self?.onWokeOrActivated("前台活跃") }
+        }
+        if didWakeObserver == nil {
+            didWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+            ) { [weak self] _ in self?.onWokeOrActivated("系统睡醒") }
+        }
+    }
+
+    private func removeLifecycleObservers() {
+        if let o = appActiveObserver { NotificationCenter.default.removeObserver(o); appActiveObserver = nil }
+        if let o = didWakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(o); didWakeObserver = nil }
+    }
 
     private func isCoolingDown(_ fp: String) -> Bool {
         guard let until = cooldownUntil[fp] else { return false }

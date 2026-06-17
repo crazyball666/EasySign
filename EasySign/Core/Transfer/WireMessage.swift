@@ -11,6 +11,9 @@ enum WireMessage: Equatable {
     case fileOffer(id: String, name: String, size: Int)
     case fileComplete(id: String)
     case clipboardImageOffer(id: String, size: Int, hash: String)
+    /// 主动断开告知:发起断开的一方在 cancel 前发一帧,让对端清掉自动重连目标,
+    /// 以免「发现即连」把刚被对方主动断开的会话又立即拉回来。无负载。
+    case bye
 
     enum WireError: Error { case unknownType(String); case malformed }
 
@@ -49,6 +52,8 @@ enum WireMessage: Equatable {
             e.type = "fileComplete"; e.id = id
         case let .clipboardImageOffer(id, size, hash):
             e.type = "clipboardImageOffer"; e.id = id; e.size = size; e.contentHash = hash
+        case .bye:
+            e.type = "bye"
         }
         return try JSONEncoder().encode(e)
     }
@@ -83,6 +88,8 @@ enum WireMessage: Equatable {
         case "clipboardImageOffer":
             guard let id = e.id, let s = e.size, let h = e.contentHash else { throw WireError.malformed }
             return .clipboardImageOffer(id: id, size: s, hash: h)
+        case "bye":
+            return .bye
         default:
             throw WireError.unknownType(e.type)
         }
