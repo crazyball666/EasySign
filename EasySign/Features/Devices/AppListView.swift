@@ -223,8 +223,12 @@ struct AppListView: View {
         errorMessage = nil
 
         DispatchQueue.global().async {
-            let connected = DeviceManager.shared.connect(to: device)
-            guard connected else {
+            // 已连接同一台设备时复用现有会话,不要无脑重连。安装/卸载只是开了几条 service 连接
+            // (用完即 AMDServiceConnectionInvalidate),并不会动主会话;而 connect()→performConnect
+            // 会在 readDeviceMetadata 里对活跃 ref 做一遍 Connect/Disconnect 把会话拆了再重建,设备
+            // 此刻常忙于收尾安装、握手易瞬时失败 → 误报「无法连接到设备」,逼用户重新点设备。
+            let reusing = DeviceManager.shared.getConnectedDeviceRef(for: device.id) != nil
+            if !reusing, !DeviceManager.shared.connect(to: device) {
                 DispatchQueue.main.async {
                     self.errorMessage = "无法连接到设备"
                     self.isLoading = false
@@ -233,16 +237,25 @@ struct AppListView: View {
             }
 
             do {
-                let lister = AppLister(device: device)
-                let appList = try lister.listInstalledApps()
+                let appList = try AppLister(device: device).listInstalledApps()
                 DispatchQueue.main.async {
                     self.apps = appList
                     self.isLoading = false
                 }
             } catch {
-                DispatchQueue.main.async {
-                    self.errorMessage = error.localizedDescription
-                    self.isLoading = false
+                // 复用的会话可能确已失效(设备被拔过/被系统回收)→ 重连一次再列一次,仍失败才报错。
+                if reusing,
+                   DeviceManager.shared.connect(to: device),
+                   let appList = try? AppLister(device: device).listInstalledApps() {
+                    DispatchQueue.main.async {
+                        self.apps = appList
+                        self.isLoading = false
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        self.errorMessage = error.localizedDescription
+                        self.isLoading = false
+                    }
                 }
             }
         }
