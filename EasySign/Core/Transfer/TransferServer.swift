@@ -160,21 +160,40 @@ final class TransferConnection {
 /// 监听入站连接。Phase 1:server 以 `.acceptAny` 起(放行任意对端,应用层 HMAC 鉴权),
 /// 每条连接在 `.ready` 后从自身 TLS metadata 自取对端指纹,由上层依据配对状态决定后续处理。
 final class TransferServer {
+    // 并发模型:所有可变状态(listener / lastState / port / advertising)只在 `queue` 上读写——
+    // 该串行队列就是 NWListener 的回调队列,始终被 Network.framework 服务,不依赖主线程 runloop 被泵。
+    // 公开方法(start/restart/restartIfUnhealthy/setAdvertising/stop)都把改动派发到 `queue`;start 用
+    // queue.sync 以便把构造错误同步抛回调用方。stateUpdateHandler 本就在 `queue` 上,直接改状态、不再 hop。
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "transfer.server")
     private let identity: () throws -> SecIdentity
+    private var advertising = false           // 期望的广播开关:restart 后据此恢复(而非每次重读外部状态)
+    private var lastState: NWListener.State?   // 最近一次 listener 状态(queue;供 restartIfUnhealthy 判断)
+    private var stopped = false                // stop() 后置位:阻止挂起的退避重试/自愈再拉起 listener
 
     var onConnection: ((TransferConnection) -> Void)?
+    /// listener 状态变化(在 `queue` 上回调,带当前监听端口)。上层据此更新 @Published listenPort(自行切主线程)、感知掉线。
+    var onStateChange: ((NWListener.State, UInt16?) -> Void)?
     private(set) var port: UInt16?
 
-    /// Bonjour 广播信息(deviceId/name/fingerprint)。`setAdvertising(true)` 每次都按当前值重建 TXT。
-    var advertiseInfo: (deviceId: String, name: String, fingerprint: String)?
+    /// Bonjour 广播信息(deviceId/name/fingerprint)。queue 私有;经 setAdvertiseInfo 写入,applyAdvertising 读取。
+    private var advertiseInfo: (deviceId: String, name: String, fingerprint: String)?
 
     init(identity: @escaping () throws -> SecIdentity) {
         self.identity = identity
     }
 
-    func start() throws {
+    /// 设置/更新 Bonjour 广播信息(deviceId/name/fingerprint)。任意线程调用,改动派发到 `queue`。
+    /// 改名后需再调用 setAdvertising(true) 才会用新 TXT 重新广播。
+    func setAdvertiseInfo(_ info: (deviceId: String, name: String, fingerprint: String)?) {
+        queue.async { [weak self] in self?.advertiseInfo = info }
+    }
+
+    /// 首次启动:在 `queue` 上同步构造,失败抛回调用方以便启动流程感知。
+    func start() throws { try queue.sync { try makeListener() } }
+
+    /// 在 `queue` 上构造并启动 listener。仅由 start()/restart() 在 `queue` 上调用。
+    private func makeListener() throws {
         let id = try identity()
         // verify block 对所有入站连接共享,只做"放行";指纹由每条连接自己从 metadata 读取。
         let params = TransferTLS.parameters(identity: id, pin: .acceptAny)
@@ -186,19 +205,60 @@ final class TransferServer {
             self.onConnection?(conn)
         }
         listener.stateUpdateHandler = { [weak self] st in
-            if case .ready = st { self?.port = listener.port?.rawValue }
+            guard let self else { return }   // 已在 `queue` 上(listener.start(queue:)),直接改状态
+            // 已被 restart 顶替的旧 listener 的迟到回调(尤其 cancel 后的 .cancelled)直接丢弃,
+            // 否则会把刚换上的新 listener 的状态/端口覆盖回旧值。makeListener 在本队列上同步设好 self.listener。
+            guard self.listener === listener else { return }
+            self.lastState = st
+            if case .ready = st { self.port = listener.port?.rawValue }
+            // 自愈:系统睡眠/网络变更常把 listener 打到 .failed(终态,不会自行恢复)→ 退避后重建。
+            // 否则醒来后本机既无法被连入、Bonjour 广播也随之消失,对端永远发现不到本机(单向重连死锁的一半)。
+            // 退避期间若已被外部 restart 顶替(listener 已换),则跳过,避免把刚起来的监听又拆掉。
+            if case .failed = st {
+                self.queue.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    guard let self, self.listener === listener else { return }
+                    self.makeListenerReplacing()
+                }
+            }
+            self.onStateChange?(st, self.port)
         }
         listener.start(queue: queue)
         self.listener = listener
-        // 广播由调用方在 start() 之后用 setAdvertising(!stealth) 触发,从 advertiseInfo 现取现建,
-        // 这样 setDeviceName 改名后再调用即可反映新的 TXT name。
+        applyAdvertising()   // 重建后按期望值恢复广播(从 advertiseInfo 现取现建 TXT/SRV)
+    }
+
+    /// 在 `queue` 上拆旧建新(供自愈/重连复用)。构造失败则退避重试。
+    /// `stopped` 守卫:stop() 之后任何挂起的退避重试 / 自愈回调都不得再把 listener 拉起来。
+    private func makeListenerReplacing() {
+        guard !stopped else { return }
+        listener?.cancel(); listener = nil; lastState = nil
+        do { try makeListener() }
+        catch { queue.asyncAfter(deadline: .now() + 2) { [weak self] in self?.makeListenerReplacing() } }
+    }
+
+    /// 监听若已掉到终态(.failed/.cancelled)或从未起来就重建;.ready/.waiting/.setup 不动
+    /// (.waiting 会在网络恢复后自行回到 .ready,重建只会平添换端口)。睡醒/回前台时调用。
+    func restartIfUnhealthy() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            switch self.lastState {
+            case .ready, .waiting, .setup: return
+            case .failed, .cancelled, .none: self.makeListenerReplacing()
+            @unknown default: self.makeListenerReplacing()
+            }
+        }
     }
 
     /// 开关 Bonjour 广播。每次开启都从当前 `advertiseInfo` 重建 service/TXT,
-    /// 故改名(setDeviceName 更新 advertiseInfo)后再调用即可更新广播的 name。
+    /// 故改名(setDeviceName 更新 advertiseInfo)后再调用即可更新广播的 name。任意线程调用。
     func setAdvertising(_ on: Bool) {
+        queue.async { [weak self] in self?.advertising = on; self?.applyAdvertising() }
+    }
+
+    /// 在 `queue` 上按 advertising/advertiseInfo 重建 listener.service。
+    private func applyAdvertising() {
         guard let listener else { return }
-        if on, let info = advertiseInfo {
+        if advertising, let info = advertiseInfo {
             var txt = NWTXTRecord()
             txt["deviceId"] = info.deviceId
             txt["name"] = info.name
@@ -209,5 +269,9 @@ final class TransferServer {
         }
     }
 
-    func stop() { listener?.cancel(); listener = nil }
+    /// 停止监听。强持有 self 入队,保证即便上层随即丢弃引用,清理仍会执行。
+    /// 置 `stopped`:挡住任何挂起的退避重试 / 自愈把 listener 重新拉起来。
+    func stop() {
+        queue.async { self.stopped = true; self.listener?.cancel(); self.listener = nil; self.lastState = nil; self.advertising = false }
+    }
 }

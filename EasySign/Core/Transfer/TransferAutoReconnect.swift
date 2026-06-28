@@ -22,8 +22,10 @@ enum TransferAutoReconnect {
     /// - 该对端指纹仍在已配对列表(`pairedFingerprints`)里
     /// - 该对端此刻正被 Bonjour 发现到(deviceId + 指纹都对得上)
     /// - `selfDeviceId < peer.deviceId`:确定性单向拨号仲裁。对端重新出现时两端都会评估本函数,
-    ///   若都拨号会产生两条连接互相顶替而抖动;故只让「本机 id 较小」的一端发起,另一端走入站 accept。
-    ///   (deviceId 全局唯一不相等,故恰有一端通过。转瞬抖动仍由各自出站的 scheduleReconnect 兜底,与此无关。)
+    ///   若都拨号会产生两条连接互相顶替而抖动(glare);故只让「本机 id 较小」的一端发起,另一端走入站 accept。
+    ///   (deviceId 全局唯一不相等,故恰有一端通过。)关键不变量:**任何时刻最多一端会主动拨号**——
+    ///   睡醒重连也必须维持它,否则两端各拨一条连接会互相顶替抖动好几秒。睡醒那台若 id 较大,靠
+    ///   onWokeOrActivated 里的「自愈监听 + 重广播」让对端(id 较小、在线)发现并拨入,而非自己破例拨号。
     static func target(busy: Bool,
                        userStopped: Bool,
                        selfDeviceId: String,

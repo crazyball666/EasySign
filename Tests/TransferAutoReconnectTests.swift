@@ -63,7 +63,7 @@ struct TransferAutoReconnectTests {
                                                     discovered: many, pairedFingerprints: ["fa", "fb", "fc"])
         expect(pickMany?.deviceId == "A", "多台在线应只挑 A,实际 \(String(describing: pickMany?.deviceId))")
 
-        // 9. 单向拨号仲裁:本机 id 较大(> 对端)→ 不主动拨号,等待对端发起(否则两端互拨抖动)
+        // 9. 单向拨号仲裁:本机 id 较大(> 对端)→ 不主动拨号,等待对端发起(否则两端互拨抖动 glare)
         expect(TransferAutoReconnect.target(busy: false, userStopped: false, selfDeviceId: hi, last: last,
                                             discovered: discoveredA, pairedFingerprints: pairedA) == nil,
                "本机 id 较大时应等待对端发起,不主动拨号")

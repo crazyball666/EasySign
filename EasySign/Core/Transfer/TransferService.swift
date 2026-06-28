@@ -50,6 +50,7 @@ final class TransferService: ObservableObject {
     private var lastConnectedPeer: TransferAutoReconnect.PeerRef?
     private var lastAutoReconnectAt: Date?            // 自动重连冷却,避免发现回调/前台事件密集触发成紧密循环
     private var lastDiscoveryRefreshAt: Date?         // 前台/睡醒重启 Bonjour 浏览的去抖(didBecomeActive 很频繁)
+    private var lastReassertAt: Date?                 // 睡醒/前台重新广播的去抖(避免每次获焦都重注册 Bonjour,致对端发现抖动)
     private var autoReconnecting = false              // 本次出站是否为「静默自动重连」:失败时不弹红条,静默回落 .idle
     private var appActiveObserver: NSObjectProtocol?  // NSApplication.didBecomeActive
     private var didWakeObserver: NSObjectProtocol?    // NSWorkspace.didWake(系统睡醒)
@@ -111,7 +112,7 @@ final class TransferService: ObservableObject {
     func setDeviceName(_ name: String) {
         identityStore.deviceName = name
         // 重新广播以更新 TXT 中的 name(若已在广播)
-        server?.advertiseInfo = (deviceId: identityStore.deviceId, name: name, fingerprint: loadedIdentity?.fingerprint ?? "")
+        server?.setAdvertiseInfo((deviceId: identityStore.deviceId, name: name, fingerprint: loadedIdentity?.fingerprint ?? ""))
         server?.setAdvertising(!stealthMode)
     }
 
@@ -141,8 +142,9 @@ final class TransferService: ObservableObject {
     }
 
     /// 在主线程启动监听/发现/剪贴板(identity 已就绪)。
-    /// 单写者假设:`loadedIdentity` 由上面的后台线程在调用 startServices 之前写入一次,
-    /// 此后所有访问 `identity()` 都在主线程且只读缓存,故无需加锁。
+    /// 单写者假设:`loadedIdentity` 由上面的后台线程在调用 startServices 之前写入一次,此后只读不再改。
+    /// 故后续 `identity()` 即便被 server 的 `{ try self.identity().identity }` 闭包在 transfer.server 队列上
+    /// (listener 自愈/重建时)调用,也只是读取这份「初始化后即不变」的缓存引用,无写竞态,无需加锁。
     private func startServices() {
         // 与 SettingsStore(.transferStealthMode) 共用同一 UserDefaults 裸键;
         // 此处直接读以免把 SettingsStore 注入 TransferService(默认 false = 广播开)。
@@ -159,8 +161,19 @@ final class TransferService: ObservableObject {
             server.onConnection = { [weak self] conn in
                 DispatchQueue.main.async { self?.acceptInbound(conn) }
             }
+            // listener 重建(.failed 自愈 / 睡醒)会换端口:.ready 时把新端口同步到 @Published 显示;
+            // 掉线置 nil,避免「本机」卡片继续展示一个已失效的端口。
+            server.onStateChange = { [weak self] st, port in
+                DispatchQueue.main.async {
+                    switch st {
+                    case .ready:                 self?.listenPort = port
+                    case .failed, .cancelled:    self?.listenPort = nil
+                    default:                     break
+                    }
+                }
+            }
             // 在 start() 前装好广播信息(deviceId/name/指纹),随监听一起对外广播。
-            server.advertiseInfo = (deviceId: identityStore.deviceId, name: deviceName, fingerprint: id.fingerprint)
+            server.setAdvertiseInfo((deviceId: identityStore.deviceId, name: deviceName, fingerprint: id.fingerprint))
             try server.start()
             server.setAdvertising(!stealthMode)
             self.server = server
@@ -177,7 +190,7 @@ final class TransferService: ObservableObject {
             discovery.start()
             installLifecycleObservers()
             monitor.start()
-            pollPort(attempts: 25)
+            // 监听端口由 server.onStateChange 的 .ready 同步到 listenPort(见上),无需再轮询 server.port(跨线程读)。
             logger.log(.info, tool: "transfer", "互传服务已启动,本机指纹 \(id.fingerprint.prefix(8))…")
         } catch {
             logger.log(.error, tool: "transfer", "启动失败: \(error)")
@@ -200,6 +213,7 @@ final class TransferService: ObservableObject {
         discovery.stop()
         discoveredPeers = []
         server?.stop(); server = nil
+        listenPort = nil              // 监听已停:清掉「本机」卡片上的端口显示
         activeConn?.cancel(); activeConn = nil
         activePeerFingerprint = nil
         fileManager.reset()
@@ -236,14 +250,6 @@ final class TransferService: ObservableObject {
         fileManager.reset()
         connectionState = .idle
         logger.log(.info, tool: "transfer", "已手动断开当前连接(配对关系保留)")
-    }
-
-    private func pollPort(attempts: Int) {
-        guard attempts > 0 else { return }
-        if let p = server?.port { listenPort = p; return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            self?.pollPort(attempts: attempts - 1)
-        }
     }
 
     private func identity() throws -> DeviceIdentity.Loaded {
@@ -779,6 +785,9 @@ final class TransferService: ObservableObject {
         if autoReconnecting {
             autoReconnecting = false
             connectionState = .idle
+            // 失败即释放自动重连冷却:让随后刷新的发现/前台事件能立刻用重新解析的地址再试,
+            // 不被冷却吞掉(冷却本意是挡密集触发,不该挡「上一发已失败」后的合法重试)。
+            lastAutoReconnectAt = nil
             logger.log(.info, tool: "transfer", "自动重连未成功(静默回落空闲): \(msg)")
         } else {
             connectionState = .failed(msg)
@@ -800,6 +809,8 @@ final class TransferService: ObservableObject {
         // 三次用尽后 reconnectAttempts 停在 3,此时由本路径接管。
         if reconnectAttempts >= 1, reconnectAttempts < 3 { return }
         // 决策(含「本机 id 较小才主动拨号」的单向仲裁)收敛在纯函数里,便于单测。
+        // 仲裁不可破例:睡醒那台若 id 较大,不在此自拨(会与对端的拨入撞成 glare 抖动),
+        // 改由 onWokeOrActivated 的「自愈监听 + 重广播」让对端发现并拨入。
         guard let target = TransferAutoReconnect.target(
             busy: busy,
             userStopped: userStopped,
@@ -808,7 +819,8 @@ final class TransferService: ObservableObject {
             discovered: discoveredPeers,
             pairedFingerprints: Set(pairedPeers.map(\.fingerprint))
         ) else { return }
-        // 冷却:失败后发现回调 / 前台事件可能密集触发,避免连成紧密循环(连接中/已连接时上面的 busy 已挡住)。
+        // 冷却:发现回调 / 前台事件可能密集触发,避免连成紧密循环(连接中/已连接时上面的 busy 已挡住)。
+        // 注:auto 失败会在 failState 里清空冷却,允许随后刷新的发现用新地址即试,不被这 4s 吞掉。
         if let t = lastAutoReconnectAt, Date().timeIntervalSince(t) < 4 { return }
         lastAutoReconnectAt = Date()
         logger.log(.info, tool: "transfer", "自动重连(免码)→ \(target.name)")
@@ -818,15 +830,29 @@ final class TransferService: ObservableObject {
     /// 切回前台 / 系统睡醒:重启 Bonjour 浏览(睡眠后发现缓存可能失效),并尝试免码重连最后那台。
     /// 对端重新出现会再触发一次 onPeersChanged → maybeAutoReconnect,故这里直接调一次即可。
     private func onWokeOrActivated(_ reason: String) {
-        guard server != nil, !userStopped, lastConnectedPeer != nil else { return }
+        guard let server else { return }
         // 已连接/连接中/配对中无需打扰(getFocus 会频繁触发 didBecomeActive,避免每次都重启浏览)。
         switch connectionState {
         case .connected, .connecting, .pairing: return
         case .idle, .failed: break
         }
-        logger.log(.info, tool: "transfer", "\(reason):刷新发现并尝试自动重连")
+        // 始终自愈监听,确保本机持续可被连入(睡眠/网络变更可能打死 listener;健康时为 no-op,无副作用)。
+        // 这对「本机 id 较大」尤其关键:它不主动拨号(单向仲裁),全靠对端发现本机后拨入——前提是本机可被发现。
+        server.restartIfUnhealthy()
+        // 没有「最后那台」记忆 / 用户已主动停:仅维持可达性,不主动重连、也不重广播打扰对端。
+        guard !userStopped, lastConnectedPeer != nil else { return }
+        logger.log(.info, tool: "transfer", "\(reason):自愈监听/广播并尝试自动重连")
+        // 「我回来了」重广播:提示对端尽快重新发现本机并拨入。仅在
+        //   ① 没有正在退避的出站重连(reconnectAttempts==0)——退避中说明本端就是拨号方,再催对端会两边都拨成 glare;
+        //   ② 距上次重广播 ≥5s(didBecomeActive 每次获焦都触发)——避免频繁重注册 Bonjour 致对端发现抖动
+        // 时才发。
+        if reconnectAttempts == 0,
+           lastReassertAt == nil || Date().timeIntervalSince(lastReassertAt!) >= 5 {
+            lastReassertAt = Date()
+            server.setAdvertising(!stealthMode)
+        }
         // 去抖:didBecomeActive 在每次窗口获焦都会触发,不必每次都 cancel+重建 NWBrowser。
-        // 距上次刷新超过 3s 才重启浏览;否则直接拿现有发现结果试一次。
+        // 距上次刷新超过 3s 才重启浏览;其初始结果回调会再驱动一次 maybeAutoReconnect(用重新解析的 endpoint)。
         if lastDiscoveryRefreshAt == nil || Date().timeIntervalSince(lastDiscoveryRefreshAt!) >= 3 {
             lastDiscoveryRefreshAt = Date()
             discovery.start()    // 重新浏览,促使对端尽快重新出现

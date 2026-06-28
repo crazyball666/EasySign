@@ -77,3 +77,25 @@ Core signing logic lives in `ResignService/`:
 - `Vendor/OpenSSL/`: Bundled OpenSSL xcframework for zsign crypto operations
 - `Vendor/ZSign/`: Embedded zsign source used by the zsign backend and Mach-O dylib injection
 - CocoaPods dependencies (Pods/) - including CryptoSwift
+
+### Transfer / 互联 (EasySign/Core/Transfer/)
+LAN peer-to-peer sync (clipboard text/images + files) between two EasySign instances. Independent of the resign pipeline. `TransferService` is the ObservableObject facade (lives in `ServiceHub`, App lifetime), publishing state for the UI in `Features/Transfer/` and `App/TransferMenuBar.swift`.
+
+**Transport & trust:**
+- Discovery: Bonjour `_easysign-transfer._tcp` (`PeerDiscovery`), TXT carries deviceId/name/cert-fingerprint.
+- Connection: WebSocket-over-TLS via Network.framework (`TransferServer` listens, `TransferClient` dials, `TransferConnection` wraps an `NWConnection`). Each connection reads the peer's leaf-cert fingerprint from its own TLS metadata.
+- Pairing (first time): 6-digit code → symmetric HMAC-SHA256 proof (`PairingManager` / `PairingCrypto`). On success the peer is persisted to `PairedPeerStore` (UserDefaults JSON) and the code rotates.
+- Reconnect (already paired): **codeless** — TLS certificate-fingerprint pinning against `PairedPeerStore`; the pairing code is never involved. `pendingPairingCode` is in-memory only (regenerated each launch / after each pairing); it is irrelevant to reconnection.
+
+**Reconnection invariants (subtle — read before touching `maybeAutoReconnect` / `TransferAutoReconnect`):**
+- **One-way dial arbitration:** when both ends rediscover each other, only the device with the **smaller deviceId** dials; the other waits for the inbound. This prevents connection **glare** (two competing connections that supersede each other and flap, since the inbound-replaces-active supersede in `inboundReady`/`bindConnected` is not deterministic across ends). Do NOT add an "ignore arbitration / force dial" path — a woke device that can't dial (larger id) must instead become reachable again (below) and let the peer dial in.
+- **Wake/foreground handling (`onWokeOrActivated`):** system sleep can drop the listener and its Bonjour advertisement. On `NSWorkspace.didWake` / `NSApplication.didBecomeActive` the service (1) self-heals the listener (`TransferServer` rebuilds on `.failed`; `restartIfUnhealthy()` on wake) and **re-advertises** Bonjour (debounced) so the peer rediscovers it, and (2) restarts discovery + tries an arbitration-respecting reconnect. A failed silent auto-reconnect clears its cooldown so the next discovery refresh can retry immediately.
+- `lastConnectedPeer` (volatile) is the auto-reconnect target; cleared on user `disconnect()`/`stop()` and on peer `.bye`.
+- `TransferServer` confines all its mutable state to its private serial `queue` (the NWListener callback queue); public methods hop onto it. Don't read its state from the main thread.
+
+### Tests
+Pure-logic tests live in `Tests/` as standalone `@main` executables compiled with `swiftc` (NOT an XCTest target), e.g.:
+```bash
+swiftc -o /tmp/t EasySign/Core/Transfer/*.swift Tests/TransferLoopbackTests.swift && /tmp/t   # exclude TransferService.swift for unit-level tests
+```
+Expected output ends with `ALL PASS`. The `.sh` files under `Tests/` are stale source-grep checks.
