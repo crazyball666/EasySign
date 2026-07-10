@@ -687,7 +687,8 @@ struct ResignContentView: View {
         viewModel.ipaPreviewLoading = true
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let previewInfo = try IPAPreviewService().preview(url: inputURL)
+                // 主 App 的预览面板不展示 App Entitlements,不必为此整块解压可执行文件
+                let previewInfo = try IPAPreviewService().preview(url: inputURL, includeAppEntitlements: false)
                 DispatchQueue.main.async {
                     viewModel.ipaPreviewLoading = false
                     viewModel.ipaPreviewInfo = previewInfo
