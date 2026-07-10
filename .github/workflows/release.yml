@@ -26,13 +26,17 @@ jobs:
         id: ver
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build (unsigned, Release)
+      - name: Build (ad-hoc signed, Release)
         run: |
+          # 必须让 Xcode 做 ad-hoc 签名(identity "-"),不能 CODE_SIGNING_ALLOWED=NO
+          # 整个跳过:跳过签名会导致 bundle 没有封印、appex 的 sandbox entitlements
+          # 不被嵌入,pluginkit 验签失败拒绝注册 QuickLook 扩展(插件永远不生效)。
+          # ad-hoc 签名不需要任何证书,CI 上开箱即用。
           xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Release \
             -derivedDataPath build \
             MARKETING_VERSION=${{ steps.ver.outputs.version }} \
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
-            CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="-" DEVELOPMENT_TEAM="" \
             build
 
       - name: Package .dmg
