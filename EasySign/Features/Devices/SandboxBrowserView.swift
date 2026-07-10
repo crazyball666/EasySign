@@ -46,7 +46,12 @@ struct SandboxBrowserView: View {
             content
         }
         .onAppear { connectAndBrowse() }
-        .onChange(of: source) { _ in
+        // 必须挂在最外层、不随 content 分支销毁的节点上:传输完成时
+        // .succeeded 和紧随其后的 connectAndBrowse() 的 isLoading=true 会合并
+        // 进同一次渲染,若 onChange 挂在 content 的 else 分支里,分支被 loading
+        // 替换的那次更新收不到变化,自动消失永远不会被安排,成功条卡死。
+        .autoDismissTransferSuccess($transferState)
+        .onChange(of: source) { _, _ in
             currentPath = "/"
             pathHistory.removeAll()
             selectedIDs.removeAll()
@@ -205,33 +210,43 @@ struct SandboxBrowserView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            VStack(spacing: 0) {
-                List(fileNodes, selection: $selectedIDs) { node in
-                    FileNodeRow(node: node, isSelected: selectedIDs.contains(node.id))
-                        .contentShape(Rectangle())
-                        // onTapGesture(count: 2) is .gesture() internally and
-                        // *replaces* default click handling. Despite that,
-                        // List's NSTableView-backed selection still gets a
-                        // chance at the click on macOS. simultaneousGesture
-                        // didn't behave better here — it killed selection
-                        // entirely.
-                        .onTapGesture(count: 2) { handleNodeSelection(node) }
-                        .contextMenu { contextMenu(for: node) }
-                }
-                .listStyle(.plain)
-                // Accept files dragged from Finder. We filter out folders
-                // because v1 doesn't support recursive upload.
-                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                    handleFinderDrop(providers: providers)
-                    return true
-                }
-
+            // Mount the progress bar on the List via safeAreaInset(bottom:)
+            // instead of stacking it next to the List in a VStack. Otherwise
+            // the bottom row sits in the List's NSTableView bottom inset and
+            // gets visually clipped + its hover/click hit-area swallowed by
+            // the bar that pops in during transfers.
+            List(fileNodes, selection: $selectedIDs) { node in
+                FileNodeRow(node: node, isSelected: selectedIDs.contains(node.id))
+                    .contentShape(Rectangle())
+                    // onTapGesture(count: 2) is .gesture() internally and
+                    // *replaces* default click handling. Despite that,
+                    // List's NSTableView-backed selection still gets a
+                    // chance at the click on macOS. simultaneousGesture
+                    // didn't behave better here — it killed selection
+                    // entirely.
+                    .onTapGesture(count: 2) { handleNodeSelection(node) }
+                    .contextMenu { contextMenu(for: node) }
+            }
+            .listStyle(.plain)
+            // Drop the List's default bottom content margin so the very last
+            // row's hit-area isn't swallowed.
+            .listBottomContentMarginZero()
+            // Accept files dragged from Finder. We filter out folders
+            // because v1 doesn't support recursive upload.
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                handleFinderDrop(providers: providers)
+                return true
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 if transferState.isActive {
                     TransferProgressBar(state: transferState)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .autoDismissTransferSuccess($transferState)
+            // 只对显隐(isActive)做隐式动画。不能 key 在 transferState 本身:
+            // .inProgress 的 bytes 每 ~0.1s 变一次,会让整个 List 子树在传输
+            // 期间持续重启 0.2s 动画(updateTransfer 刻意不带 withAnimation)。
+            .animation(.easeInOut(duration: 0.2), value: transferState.isActive)
         }
     }
 

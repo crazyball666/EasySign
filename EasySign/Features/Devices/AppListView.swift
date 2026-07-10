@@ -85,7 +85,7 @@ struct AppListView: View {
             Text("将从设备删除该 App 及其数据,不可撤销。")
         }
         .onAppear { loadApps() }
-        .onChange(of: device) { _ in loadApps() }
+        .onChange(of: device) { _, _ in loadApps() }
     }
 
     private var searchBar: some View {
@@ -152,6 +152,9 @@ struct AppListView: View {
                     .onTapGesture { onAppSelected(app) }
             }
             .listStyle(.plain)
+            // Drop the List's default bottom content margin so the very last
+            // row is fully visible and clickable.
+            .listBottomContentMarginZero()
         }
     }
 

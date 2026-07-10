@@ -105,6 +105,7 @@ struct DestinationPickerSheet: View {
                 }
             }
             .listStyle(.plain)
+            .listBottomContentMarginZero()
         }
     }
 

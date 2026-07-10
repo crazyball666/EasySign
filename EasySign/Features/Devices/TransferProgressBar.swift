@@ -175,9 +175,10 @@ final class TransferProgressThrottle {
 // idle auto-dismiss with a 2-second pause, both inside withAnimation.
 extension View {
     func autoDismissTransferSuccess(_ state: Binding<TransferState>) -> some View {
-        // Single-param onChange; the two-param replacement requires macOS 14
-        // and our deployment target is 13.
-        onChange(of: state.wrappedValue) { newValue in
+        // initial: true 兜底:若挂载时状态已是 .succeeded(例如挂着 onChange
+        // 的分支在成功那一刻恰好被 loading 分支替换、之后重新挂载),仍会
+        // 安排自动消失,成功条不会卡死。
+        onChange(of: state.wrappedValue, initial: true) { _, newValue in
             guard case .succeeded = newValue else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
                 if case .succeeded = state.wrappedValue {
@@ -187,5 +188,12 @@ extension View {
                 }
             }
         }
+    }
+
+    /// SwiftUI `List` 在 macOS 上(NSTableView 宿主)即使设了
+    /// `.listStyle(.plain)`,也会在最后一行下留底部 content margin(约 8px),
+    /// 导致最后一行点击热区被吞、看起来底下还有一条白边。此方法将其归零。
+    func listBottomContentMarginZero() -> some View {
+        contentMargins(.bottom, 0, for: .scrollContent)
     }
 }
