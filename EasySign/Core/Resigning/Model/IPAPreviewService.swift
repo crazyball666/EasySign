@@ -34,7 +34,22 @@ struct IPAPreviewProvisioningProfile: Equatable {
     let apsEnvironment: String?
     let getTaskAllow: Bool?
     let entitlementKeys: [String]
+    /// 完整 entitlements 键值(递归格式化成 "key = value" 行,dict/array 带缩进)
+    let entitlementLines: [String]
     let certificates: [IPAPreviewCertificate]
+}
+
+/// 独立预览一个 .mobileprovision / .provisionprofile 文件时的结果
+struct IPAPreviewProfileFile {
+    let fileURL: URL
+    let fileName: String
+    let fileSize: Int64
+    let profile: IPAPreviewProvisioningProfile
+}
+
+enum IPAPreviewResult {
+    case app(IPAPreviewInfo)
+    case provisioningProfile(IPAPreviewProfileFile)
 }
 
 struct IPAPreviewCertificate: Identifiable, Equatable {
@@ -68,6 +83,8 @@ struct IPAPreviewInfo: Identifiable {
     let iconData: Data?
     let codeSignature: IPAPreviewCodeSignature
     let provisioningProfile: IPAPreviewProvisioningProfile?
+    /// 主可执行文件里实际签入的 entitlements(区别于描述文件声明);未签名/解析失败为空
+    let appEntitlementLines: [String]
     let appexes: [IPAPreviewEmbeddedBundle]
     let frameworks: [String]
     let dynamicLibraries: [String]
@@ -175,12 +192,13 @@ enum IPAPreviewError: LocalizedError {
     case invalidArchive
     case missingArchiveEntry(String)
     case unsupportedCompressionMethod(UInt16)
+    case invalidProvisioningProfile
     case commandFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .unsupportedInput:
-            return "仅支持预览 .ipa、.zip 或 .app"
+            return "仅支持预览 .ipa、.zip、.app 或 .mobileprovision"
         case .missingAppBundle:
             return "找不到 Payload 里的 .app"
         case .missingInfoPlist:
@@ -193,6 +211,8 @@ enum IPAPreviewError: LocalizedError {
             return "IPA/ZIP 中找不到 \(entry)"
         case .unsupportedCompressionMethod(let method):
             return "暂不支持 ZIP 压缩方式 \(method)"
+        case .invalidProvisioningProfile:
+            return "描述文件格式异常,无法解析"
         case .commandFailed(let message):
             return message
         }
@@ -200,21 +220,48 @@ enum IPAPreviewError: LocalizedError {
 }
 
 final class IPAPreviewService {
+    /// 为读取 entitlements 而整块解压/读入可执行文件的大小上限(约 200MB)。
+    /// 超过则跳过 App Entitlements,避免在内存受限的预览/缩略图扩展里被 jetsam。
+    static let maxExecutableBytesForEntitlements: UInt64 = 200 * 1024 * 1024
+
     private let fileManager: FileManager
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
     }
 
-    func preview(url: URL) throws -> IPAPreviewInfo {
+    /// includeAppEntitlements:是否读取主可执行文件并解析签入的 entitlements。
+    /// 可执行文件可能上百 MB,只要图标的场景(缩略图)应传 false。
+    func preview(url: URL, includeAppEntitlements: Bool = true) throws -> IPAPreviewInfo {
         let pathExtension = url.pathExtension.lowercased()
         if pathExtension == "app" {
-            return try previewAppDirectory(url)
+            return try previewAppDirectory(url, includeAppEntitlements: includeAppEntitlements)
         }
         if pathExtension == "ipa" || pathExtension == "zip" {
-            return try previewArchive(url)
+            return try previewArchive(url, includeAppEntitlements: includeAppEntitlements)
         }
         throw IPAPreviewError.unsupportedInput
+    }
+
+    /// 统一入口:除 IPA/app 外还支持独立的 .mobileprovision / .provisionprofile
+    func previewFile(url: URL) throws -> IPAPreviewResult {
+        let pathExtension = url.pathExtension.lowercased()
+        if pathExtension == "mobileprovision" || pathExtension == "provisionprofile" {
+            return .provisioningProfile(try previewProvisioningProfileFile(url))
+        }
+        return .app(try preview(url: url))
+    }
+
+    func previewProvisioningProfileFile(_ url: URL) throws -> IPAPreviewProfileFile {
+        guard let profile = try decodeProvisioningProfile(data: Data(contentsOf: url)) else {
+            throw IPAPreviewError.invalidProvisioningProfile
+        }
+        return IPAPreviewProfileFile(
+            fileURL: url,
+            fileName: url.lastPathComponent,
+            fileSize: fileSize(url),
+            profile: profile
+        )
     }
 }
 
@@ -263,7 +310,7 @@ private struct IPAPreviewArchiveEntries {
 }
 
 private extension IPAPreviewService {
-    func previewArchive(_ archiveURL: URL) throws -> IPAPreviewInfo {
+    func previewArchive(_ archiveURL: URL, includeAppEntitlements: Bool) throws -> IPAPreviewInfo {
         var timing = IPAPreviewTiming(fileName: archiveURL.lastPathComponent)
         let archive = try ZIPArchiveReader(url: archiveURL)
         timing.step("loadEntries")
@@ -276,6 +323,19 @@ private extension IPAPreviewService {
 
         let embeddedProfile = try archiveProvisioningProfile(archive: archive, profileEntry: archiveEntries.profileEntry)
         timing.step("decodeProvisioningProfile")
+
+        var appEntitlementLines: [String] = []
+        if includeAppEntitlements, let executableName = info["CFBundleExecutable"] as? String {
+            let executableEntry = "Payload/\(archiveEntries.appDirectoryName)/\(executableName)"
+            // 只读 entitlements 却要整块解压可执行文件;对超大(含 zip 炸弹)条目设上限,
+            // 避免在内存受限的 QuickLook 扩展里 OOM 被 jetsam。
+            let size = archive.uncompressedSize(for: executableEntry) ?? 0
+            if size > 0, size <= Self.maxExecutableBytesForEntitlements,
+               let executableData = try? archive.data(for: executableEntry) {
+                appEntitlementLines = MachOEntitlementsReader.entitlementLines(fromExecutable: executableData)
+            }
+        }
+        timing.step("readMachOEntitlements")
 
         let appexes = try archiveAppexes(archive: archive, infoEntries: archiveEntries.appexInfoEntries)
         timing.step("readAppexInfo")
@@ -300,13 +360,14 @@ private extension IPAPreviewService {
             iconData: iconData,
             codeSignature: codeSignature,
             provisioningProfile: embeddedProfile,
+            appEntitlementLines: appEntitlementLines,
             appexes: appexes,
             frameworks: archiveEntries.frameworks,
             dynamicLibraries: archiveEntries.dynamicLibraries
         )
     }
 
-    func previewAppDirectory(_ appURL: URL) throws -> IPAPreviewInfo {
+    func previewAppDirectory(_ appURL: URL, includeAppEntitlements: Bool) throws -> IPAPreviewInfo {
         let infoURL = appURL.appendingPathComponent("Info.plist")
         guard fileManager.fileExists(atPath: infoURL.path) else {
             throw IPAPreviewError.missingInfoPlist
@@ -318,6 +379,16 @@ private extension IPAPreviewService {
         let appexes = try directoryAppexes(appURL)
         let iconData = try directoryIconData(appURL: appURL, entries: entries, info: info)
         let codeSignature = directoryCodeSignature(appURL)
+
+        var appEntitlementLines: [String] = []
+        if includeAppEntitlements, let executableName = info["CFBundleExecutable"] as? String {
+            let executableURL = appURL.appendingPathComponent(executableName)
+            let size = (try? executableURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init) ?? 0
+            if size > 0, size <= Self.maxExecutableBytesForEntitlements,
+               let executableData = try? Data(contentsOf: executableURL) {
+                appEntitlementLines = MachOEntitlementsReader.entitlementLines(fromExecutable: executableData)
+            }
+        }
 
         return IPAPreviewInfo(
             fileURL: appURL,
@@ -333,6 +404,7 @@ private extension IPAPreviewService {
             iconData: iconData,
             codeSignature: codeSignature,
             provisioningProfile: embeddedProfile,
+            appEntitlementLines: appEntitlementLines,
             appexes: appexes,
             frameworks: frameworkNames(in: entries, appPrefix: ""),
             dynamicLibraries: dynamicLibraryNames(in: entries, appPrefix: "")
@@ -628,6 +700,7 @@ private extension IPAPreviewService {
             apsEnvironment: entitlements["aps-environment"] as? String,
             getTaskAllow: getTaskAllow,
             entitlementKeys: entitlements.keys.sorted(),
+            entitlementLines: IPAPreviewPlistFormatter.lines(from: entitlements),
             certificates: (plist["DeveloperCertificates"] as? [Data] ?? []).compactMap(certificateInfo(from:))
         )
     }
@@ -790,6 +863,11 @@ private final class ZIPArchiveReader {
         for name in entriesByName.keys {
             body(name)
         }
+    }
+
+    /// 条目解压后的大小(不读取内容),用于在解压前对超大条目做防护
+    func uncompressedSize(for name: String) -> UInt64? {
+        entriesByName[name]?.uncompressedSize
     }
 
     func data(for name: String) throws -> Data {
@@ -1008,5 +1086,65 @@ private extension Data {
 private extension Sequence where Element: Hashable & Comparable {
     func uniqueSorted() -> [Element] {
         Array(Set(self)).sorted()
+    }
+}
+
+/// 把 plist 字典递归格式化成 "key = value" 的可读行(等宽字体展示用),
+/// entitlements(描述文件里的和 Mach-O 里签入的)都走这里。
+enum IPAPreviewPlistFormatter {
+    /// 递归深度上限:entitlements plist 来自被预览文件(不可信输入),
+    /// 恶意构造的深层嵌套会撑爆调用栈,超过此深度直接截断显示。
+    private static let maxDepth = 32
+    private static let iso8601 = ISO8601DateFormatter()
+
+    static func lines(from dictionary: [String: Any]) -> [String] {
+        dictionary.keys.sorted().flatMap { key -> [String] in
+            "\(key) = \(format(dictionary[key] as Any, indentationLevel: 0))"
+                .components(separatedBy: "\n")
+        }
+    }
+
+    private static func format(_ value: Any, indentationLevel: Int) -> String {
+        guard indentationLevel < maxDepth else {
+            return "…"
+        }
+        switch value {
+        case let string as String:
+            return string
+        case let number as NSNumber:
+            // plist 的 Bool 反序列化成 CFBoolean;不先区分会把 true 显示成 1
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return number.boolValue ? "true" : "false"
+            }
+            return number.stringValue
+        case let date as Date:
+            return iso8601.string(from: date)
+        case let data as Data:
+            return "<\(data.count) bytes>"
+        case let array as [Any]:
+            guard !array.isEmpty else {
+                return "()"
+            }
+            let nextIndent = indentation(level: indentationLevel + 1)
+            let items = array
+                .map { "\(nextIndent)\(format($0, indentationLevel: indentationLevel + 1))" }
+                .joined(separator: "\n")
+            return "(\n\(items)\n\(indentation(level: indentationLevel)))"
+        case let dictionary as [String: Any]:
+            guard !dictionary.isEmpty else {
+                return "{}"
+            }
+            let nextIndent = indentation(level: indentationLevel + 1)
+            let items = dictionary.keys.sorted()
+                .map { "\(nextIndent)\($0) = \(format(dictionary[$0] as Any, indentationLevel: indentationLevel + 1))" }
+                .joined(separator: "\n")
+            return "{\n\(items)\n\(indentation(level: indentationLevel))}"
+        default:
+            return "\(value)"
+        }
+    }
+
+    private static func indentation(level: Int) -> String {
+        String(repeating: "    ", count: level)
     }
 }

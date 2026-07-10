@@ -31,6 +31,9 @@
 				<key>QLSupportedContentTypes</key>
 				<array>
 					<string>com.apple.itunes.ipa</string>
+					<string>com.apple.mobileprovision</string>
+					<string>com.apple.iphone.mobileprovision</string>
+					<string>com.apple.provisionprofile</string>
 				</array>
 				<key>QLSupportsSearchableItems</key>
 				<false/>
@@ -58,6 +61,24 @@
 					<key>public.filename-extension</key>
 					<array>
 						<string>ipa</string>
+					</array>
+				</dict>
+			</dict>
+			<dict>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>com.apple.mobileprovision</string>
+					<string>public.data</string>
+				</array>
+				<key>UTTypeDescription</key>
+				<string>iOS Provisioning Profile (Legacy)</string>
+				<key>UTTypeIdentifier</key>
+				<string>com.apple.iphone.mobileprovision</string>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>mobileprovision</string>
 					</array>
 				</dict>
 			</dict>
