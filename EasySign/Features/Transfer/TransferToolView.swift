@@ -38,7 +38,7 @@ struct TransferToolView: View {
             .padding(20)
         }
         .onAppear { localIP = LocalNetwork.lanIPv4() }
-        .onChange(of: service.listenPort) { _ in localIP = LocalNetwork.lanIPv4() }
+        .onChange(of: service.listenPort) { _, _ in localIP = LocalNetwork.lanIPv4() }
     }
 
     // MARK: - 顶部状态条

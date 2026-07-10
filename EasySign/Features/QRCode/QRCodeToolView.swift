@@ -25,7 +25,7 @@ struct QRCodeToolView: View {
                     HStack(spacing: 10) {
                         TextField("粘贴需要生成二维码的内容", text: $inputText)
                             .textFieldStyle(.roundedBorder)
-                            .onChange(of: inputText) { newValue in
+                            .onChange(of: inputText) { _, newValue in
                                 if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                     qrImage = nil
                                     statusText = ""

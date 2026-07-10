@@ -62,7 +62,7 @@ struct SettingsView: View {
             Section {
                 TextField("设备名", text: deviceNameBinding)
                 Toggle("开机自启", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { newValue in
+                    .onChange(of: launchAtLogin) { _, newValue in
                         LaunchAtLogin.setEnabled(newValue)
                     }
                 Toggle("隐身模式(不广播 Bonjour)", isOn: stealthBinding)

@@ -83,7 +83,7 @@ struct DeviceView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(Color.gray.opacity(0.06))
-        .onChange(of: mode) { _ in
+        .onChange(of: mode) { _, _ in
             // Switching mode collapses any deeper navigation in the previous mode.
             selectedApp = nil
             previewFile = nil
