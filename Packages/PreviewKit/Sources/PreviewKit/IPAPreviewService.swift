@@ -11,85 +11,85 @@ import Security
 import os
 #endif
 
-struct IPAPreviewEmbeddedBundle: Identifiable, Equatable {
-    var id: String { bundleIdentifier }
-    let name: String
-    let bundleIdentifier: String
-    let version: String
-    let buildVersion: String
+public struct IPAPreviewEmbeddedBundle: Identifiable, Equatable {
+    public var id: String { bundleIdentifier }
+    public let name: String
+    public let bundleIdentifier: String
+    public let version: String
+    public let buildVersion: String
 }
 
-struct IPAPreviewProvisioningProfile: Equatable {
-    let name: String
-    let uuid: String
-    let teamName: String
-    let teamIdentifier: String
-    let applicationIdentifier: String
-    let profileType: String
-    let creationDate: Date?
-    let expirationDate: Date?
-    let provisionedDeviceCount: Int
-    let provisionedDevices: [String]
-    let provisionsAllDevices: Bool
-    let apsEnvironment: String?
-    let getTaskAllow: Bool?
-    let entitlementKeys: [String]
+public struct IPAPreviewProvisioningProfile: Equatable {
+    public let name: String
+    public let uuid: String
+    public let teamName: String
+    public let teamIdentifier: String
+    public let applicationIdentifier: String
+    public let profileType: String
+    public let creationDate: Date?
+    public let expirationDate: Date?
+    public let provisionedDeviceCount: Int
+    public let provisionedDevices: [String]
+    public let provisionsAllDevices: Bool
+    public let apsEnvironment: String?
+    public let getTaskAllow: Bool?
+    public let entitlementKeys: [String]
     /// 完整 entitlements 键值(递归格式化成 "key = value" 行,dict/array 带缩进)
-    let entitlementLines: [String]
-    let certificates: [IPAPreviewCertificate]
+    public let entitlementLines: [String]
+    public let certificates: [IPAPreviewCertificate]
 }
 
 /// 独立预览一个 .mobileprovision / .provisionprofile 文件时的结果
-struct IPAPreviewProfileFile {
-    let fileURL: URL
-    let fileName: String
-    let fileSize: Int64
-    let profile: IPAPreviewProvisioningProfile
+public struct IPAPreviewProfileFile {
+    public let fileURL: URL
+    public let fileName: String
+    public let fileSize: Int64
+    public let profile: IPAPreviewProvisioningProfile
 }
 
-enum IPAPreviewResult {
+public enum IPAPreviewResult {
     case app(IPAPreviewInfo)
     case provisioningProfile(IPAPreviewProfileFile)
 }
 
-struct IPAPreviewCertificate: Identifiable, Equatable {
-    var id: String { sha1Fingerprint.isEmpty ? commonName : sha1Fingerprint }
-    let commonName: String
-    let organization: String
-    let teamIdentifier: String
-    let countryName: String
-    let notBefore: Date?
-    let notAfter: Date?
-    let sha1Fingerprint: String
+public struct IPAPreviewCertificate: Identifiable, Equatable {
+    public var id: String { sha1Fingerprint.isEmpty ? commonName : sha1Fingerprint }
+    public let commonName: String
+    public let organization: String
+    public let teamIdentifier: String
+    public let countryName: String
+    public let notBefore: Date?
+    public let notAfter: Date?
+    public let sha1Fingerprint: String
 }
 
-struct IPAPreviewCodeSignature: Equatable {
-    let hasCodeResources: Bool
-    let codeResourcesPath: String?
+public struct IPAPreviewCodeSignature: Equatable {
+    public let hasCodeResources: Bool
+    public let codeResourcesPath: String?
 }
 
-struct IPAPreviewInfo: Identifiable {
-    var id: String { fileURL.path }
-    let fileURL: URL
-    let fileName: String
-    let fileSize: Int64
-    let appDirectoryName: String
-    let appName: String
-    let bundleIdentifier: String
-    let version: String
-    let buildVersion: String
-    let minimumOSVersion: String?
-    let executableName: String?
-    let iconData: Data?
-    let codeSignature: IPAPreviewCodeSignature
-    let provisioningProfile: IPAPreviewProvisioningProfile?
+public struct IPAPreviewInfo: Identifiable {
+    public var id: String { fileURL.path }
+    public let fileURL: URL
+    public let fileName: String
+    public let fileSize: Int64
+    public let appDirectoryName: String
+    public let appName: String
+    public let bundleIdentifier: String
+    public let version: String
+    public let buildVersion: String
+    public let minimumOSVersion: String?
+    public let executableName: String?
+    public let iconData: Data?
+    public let codeSignature: IPAPreviewCodeSignature
+    public let provisioningProfile: IPAPreviewProvisioningProfile?
     /// 主可执行文件里实际签入的 entitlements(区别于描述文件声明);未签名/解析失败为空
-    let appEntitlementLines: [String]
-    let appexes: [IPAPreviewEmbeddedBundle]
-    let frameworks: [String]
-    let dynamicLibraries: [String]
+    public let appEntitlementLines: [String]
+    public let appexes: [IPAPreviewEmbeddedBundle]
+    public let frameworks: [String]
+    public let dynamicLibraries: [String]
 
-    var versionDescription: String {
+    public var versionDescription: String {
         if version.isEmpty && buildVersion.isEmpty {
             return "-"
         }
@@ -102,7 +102,7 @@ struct IPAPreviewInfo: Identifiable {
         return "\(version) (\(buildVersion))"
     }
 
-    var signingDescription: String {
+    public var signingDescription: String {
         var parts: [String] = []
         if codeSignature.hasCodeResources {
             parts.append("已包含 CodeResources")
@@ -122,13 +122,13 @@ struct IPAPreviewInfo: Identifiable {
 }
 
 /// 证书/描述文件的有效性状态。供 UI 用。
-enum ValidityStatus: Equatable {
+public enum ValidityStatus: Equatable {
     case notYetValid
     case valid
     case expiringSoon   // 30 天内
     case expired
 
-    var label: String {
+    public var label: String {
         switch self {
         case .notYetValid:  return "未生效"
         case .valid:        return "有效"
@@ -138,7 +138,7 @@ enum ValidityStatus: Equatable {
     }
 
     /// macOS HIG 风格调色：绿/橙/红
-    var color: String {
+    public var color: String {
         switch self {
         case .notYetValid:  return "systemYellow"
         case .valid:        return "systemGreen"
@@ -149,7 +149,7 @@ enum ValidityStatus: Equatable {
 }
 
 extension IPAPreviewCertificate {
-    var validityStatus: ValidityStatus {
+    public var validityStatus: ValidityStatus {
         guard let notBefore, let notAfter else { return .valid }  // 无法判断时按"未知"显示
         let now = Date()
         if now < notBefore { return .notYetValid }
@@ -160,7 +160,7 @@ extension IPAPreviewCertificate {
     }
 
     /// 距离过期还有多少天（负数表示已过期多少天）
-    var daysUntilExpiry: Int? {
+    public var daysUntilExpiry: Int? {
         guard let notAfter else { return nil }
         let now = Date()
         return Int(notAfter.timeIntervalSince(now) / 86400)
@@ -168,7 +168,7 @@ extension IPAPreviewCertificate {
 }
 
 extension IPAPreviewProvisioningProfile {
-    var validityStatus: ValidityStatus {
+    public var validityStatus: ValidityStatus {
         guard let expirationDate else { return .valid }
         let now = Date()
         if let creationDate, now < creationDate { return .notYetValid }
@@ -178,13 +178,13 @@ extension IPAPreviewProvisioningProfile {
         return .valid
     }
 
-    var daysUntilExpiry: Int? {
+    public var daysUntilExpiry: Int? {
         guard let expirationDate else { return nil }
         return Int(expirationDate.timeIntervalSince(Date()) / 86400)
     }
 }
 
-enum IPAPreviewError: LocalizedError {
+public enum IPAPreviewError: LocalizedError {
     case unsupportedInput
     case missingAppBundle
     case missingInfoPlist
@@ -195,7 +195,7 @@ enum IPAPreviewError: LocalizedError {
     case invalidProvisioningProfile
     case commandFailed(String)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .unsupportedInput:
             return "仅支持预览 .ipa、.zip、.app 或 .mobileprovision"
@@ -219,20 +219,20 @@ enum IPAPreviewError: LocalizedError {
     }
 }
 
-final class IPAPreviewService {
+public final class IPAPreviewService {
     /// 为读取 entitlements 而整块解压/读入可执行文件的大小上限(约 200MB)。
     /// 超过则跳过 App Entitlements,避免在内存受限的预览/缩略图扩展里被 jetsam。
     static let maxExecutableBytesForEntitlements: UInt64 = 200 * 1024 * 1024
 
     private let fileManager: FileManager
 
-    init(fileManager: FileManager = .default) {
+    public init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
     }
 
     /// includeAppEntitlements:是否读取主可执行文件并解析签入的 entitlements。
     /// 可执行文件可能上百 MB,只要图标的场景(缩略图)应传 false。
-    func preview(url: URL, includeAppEntitlements: Bool = true) throws -> IPAPreviewInfo {
+    public func preview(url: URL, includeAppEntitlements: Bool = true) throws -> IPAPreviewInfo {
         let pathExtension = url.pathExtension.lowercased()
         if pathExtension == "app" {
             return try previewAppDirectory(url, includeAppEntitlements: includeAppEntitlements)
@@ -244,7 +244,7 @@ final class IPAPreviewService {
     }
 
     /// 统一入口:除 IPA/app 外还支持独立的 .mobileprovision / .provisionprofile
-    func previewFile(url: URL) throws -> IPAPreviewResult {
+    public func previewFile(url: URL) throws -> IPAPreviewResult {
         let pathExtension = url.pathExtension.lowercased()
         if pathExtension == "mobileprovision" || pathExtension == "provisionprofile" {
             return .provisioningProfile(try previewProvisioningProfileFile(url))
@@ -252,7 +252,7 @@ final class IPAPreviewService {
         return .app(try preview(url: url))
     }
 
-    func previewProvisioningProfileFile(_ url: URL) throws -> IPAPreviewProfileFile {
+    public func previewProvisioningProfileFile(_ url: URL) throws -> IPAPreviewProfileFile {
         guard let profile = try decodeProvisioningProfile(data: Data(contentsOf: url)) else {
             throw IPAPreviewError.invalidProvisioningProfile
         }

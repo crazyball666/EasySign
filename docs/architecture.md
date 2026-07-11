@@ -156,9 +156,9 @@ DeviceManager(设备枚举 + 会话,串行 refreshQueue 收敛全部状态)
 
 仓库根有两个 appex target:`EasySignQuickLook/`(预览)与 `EasySignThumbnail/`(缩略图),给 IPA / mobileprovision 提供 Finder 预览与缩略图。
 
-**代码共享方式**:工程用 Xcode 16 的 `PBXFileSystemSynchronizedRootGroup`,每个 target 自动纳入自己的文件夹;**没有共享 framework**。主 App 的若干源文件(`IPAPreviewService.swift`、`IPAPreviewHTMLRenderer.swift`、`MachOEntitlementsReader.swift`)通过**手工加入 appex target 的 Sources 构建阶段**来复用(pbxproj 里的 “Shared Preview Sources” 组)。appex 自己的 UI 层(`PreviewViews.swift` 等)独立定义。
+**代码共享方式**:预览/解析这坨共享代码已抽成**本地 Swift Package** `Packages/PreviewKit`(product/module `PreviewKit`),包含 `IPAPreviewService.swift`、`IPAPreviewHTMLRenderer.swift`、`MachOEntitlementsReader.swift`。主 App、`EasySignQuickLook`、`EasySignThumbnail` 三个 target 都以 SPM 依赖方式引用它(`import PreviewKit`),**共享由编译期强制**——取代了原先在 pbxproj 里逐文件挂 target membership 的脆弱做法。appex 自己的 UI 层(`PreviewViews.swift` 等)仍独立定义。
 
-> ⚠️ 这是"单一文本来源、非复制粘贴",但边界**隐式且靠手工维护**:被共享的 `IPAPreviewService.swift`(1150 行)必须保持完全自包含,它新增的任何依赖都得手动加进两个 appex target 的 Sources,漏了会静默编译失败、无编译期保护。**这是当前构建里最脆的一环**,建议改成本地 SPM package / 共享 framework(见 §7)。
+> 包只 import 系统框架(Foundation / Compression / CryptoKit / Security / os),对外 API(`IPAPreviewService`、`IPAPreviewInfo`、`IPAPreviewResult` 等模型类型)标 `public`;`IPAPreviewHTMLRenderer` / `MachOEntitlementsReader` 仅包内使用故保持 internal。新增依赖若不在包内会**编译期报错**,不再有"漏挂 appex Sources 静默失败"的隐患。
 
 QuickLook 测试有坑:`qlmanage -t` 不走新管线且会挂死,只有 `/Applications` 里的副本会被真实派发 —— 见用户记忆 `quicklook-testing-gotchas`。
 
@@ -167,7 +167,7 @@ QuickLook 测试有坑:`qlmanage -t` 不走新管线且会挂死,只有 `/Applic
 ## 5. 构建与依赖
 
 - **原始 pbxproj**(无 xcodegen、无 CocoaPods)。README 的编译命令为准;`CLAUDE.md` / `AGENTS.md` 里的 `pod install`、`xcodegen generate`、`project.yml`、`Views/`、`ResignService/` 均已过时。
-- **依赖三类**:SPM `CryptoSwift`(仅主 target);内嵌 `Vendor/OpenSSL/OpenSSL.xcframework`(OpenSSL 3.5.x);内嵌 zsign C++(`Vendor/ZSign/src`)经 `Core/Resigning/ZSign/` 的桥接(`ZSignBridge.mm`、`ZSignMachOInjector.cpp`,过 `EasySign-Bridging-Header.h`)。`MobileDevice.framework` 直接链接。
+- **依赖**:SPM `CryptoSwift`(仅主 target);**本地 SPM 包 `Packages/PreviewKit`**(主 App + 两个 appex 共享,见 §4);内嵌 `Vendor/OpenSSL/OpenSSL.xcframework`(OpenSSL 3.5.x);内嵌 zsign C++(`Vendor/ZSign/src`)经 `Core/Resigning/ZSign/` 的桥接(`ZSignBridge.mm`、`ZSignMachOInjector.cpp`,过 `EasySign-Bridging-Header.h`)。`MobileDevice.framework` 直接链接。
   - `Vendor/ZSign`(上游库)与 `Core/Resigning/ZSign`(本项目的桥/注入器)**不是重复**。
 
 ---
@@ -202,7 +202,7 @@ swiftc -o /tmp/t EasySign/Core/Transfer/*.swift Tests/TransferLoopbackTests.swif
 - ✅ **统一日志(已完成)**:`LoggerService` 改为合并式 `@Published`(新增 `revision`,删掉 `LogPanelView` 的 0.5s 轮询定时器);重签并入 `LoggerService(tool:"resign")` + 结构化 `LogPanelView`,删除整套平行栈 `LegacyLogLevel/LoggerProtocol/ConsoleLogger/LegacyLogPanelView/ContentViewModel.logString`;Devices 26 处裸 `print` 并入 `LoggerService(tool:"devices")`(`DeviceManager.logger` 由 `ServiceHub.live()` 启动时注入)。唯一留置:`ResignTask` 的 `Dictionary.toPlist()` 兜底 catch 里 1 处 stdout print(泛型扩展无 logger 上下文)。
 - ✅ **抽公共传输基础设施(已完成)**:HouseArrest / InstallationProxy / AFC 传输里重复的 secureStart 瞬时重试、send-all、recv-exact、瞬时错误码集合,归一到 `Core/Devices/ServiceConnectionIO`(各调用方仍抛自己的错误类型、errno 读取时机不变)。注:文件传输/进度的两套实现(互传 NWConnection 的 `FileTransferManager` vs 设备 AFC 的 `AFCClient`)是**不同传输协议**,未强行合并。
 - ✅ **修 `DeviceService` 死壳门面(已完成)**:`afcClient(for:)` 返回真实现(+ 新增 `afcClient(forApp:)`),`SandboxBrowserView`/`FilePreviewView`/`DestinationPickerSheet` 的 AFC client 构造统一走门面;文件批处理循环抽到 `Features/Devices/SandboxFileOperations`(882→721 行)。
-- **appex 共享改本地 SPM package / 共享 framework**:同时解决 §4 的构建脆弱点和 1150 行 god-file(item 8,待做)。
+- ✅ **appex 共享改本地 SPM package(已完成)**:预览/解析三件套抽成 `Packages/PreviewKit`,三个 target 以 SPM 依赖引用(编译期强制),消除 §4 的构建脆弱点。对外类型改 `public`,手改 pbxproj 接线(`XCLocalSwiftPackageReference` + 三个 target 的 product 依赖)。注:1150 行的 `IPAPreviewService` god-file 现可在包内安全拆分(后续)。
 
 **C · 大重构(等它真正付利息)**
 - 引入 `ResignBackend` 协议(`func resign(...) throws -> URL`)+ `AppleResigner` / `ZSignResigner` 策略,把 `updateEntitlements` / `verifyZSignCandidate` 归位;统一 3 套 Mach-O 解析器与 3 套 IPA 解包。

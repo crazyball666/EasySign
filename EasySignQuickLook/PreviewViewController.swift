@@ -6,6 +6,7 @@
 import Cocoa
 import Quartz
 import SwiftUI
+import PreviewKit
 
 final class PreviewViewController: NSViewController, QLPreviewingController {
     override func loadView() {

@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import PreviewKit
 
 struct IPAPreviewPanelView: View {
     let info: IPAPreviewInfo

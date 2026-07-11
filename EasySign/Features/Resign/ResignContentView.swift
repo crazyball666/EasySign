@@ -7,6 +7,7 @@
 
 import SwiftUI
 import UniformTypeIdentifiers
+import PreviewKit
 
 extension Binding where Value == Bool {
     init<T>(value: Binding<T?>) {

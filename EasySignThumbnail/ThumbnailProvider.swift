@@ -5,6 +5,7 @@
 
 import AppKit
 import QuickLookThumbnailing
+import PreviewKit
 
 /// Finder 缩略图:.ipa 直接显示 App 真实图标(右下角 IPA 角标);
 /// .mobileprovision 显示齿轮文档图 + 设备数胶囊(颜色按有效期红/橙/绿)。
