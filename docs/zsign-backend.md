@@ -48,8 +48,7 @@ EasySign 现在保留原有的系统重签逻辑，并新增一个内嵌的 zsig
 建议改动后至少运行：
 
 ```bash
-swiftc EasySign/ResignService/Model/DylibInjection.swift Tests/DylibInjectionTests.swift -o /tmp/easysign-dylib-injection-tests && /tmp/easysign-dylib-injection-tests
-sh Tests/SourceInjectionBackendTests.sh
+swiftc EasySign/Core/Resigning/Model/DylibInjection.swift Tests/DylibInjectionTests.swift -o /tmp/easysign-dylib-injection-tests && /tmp/easysign-dylib-injection-tests
 xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Debug build
 xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Release build
 ```

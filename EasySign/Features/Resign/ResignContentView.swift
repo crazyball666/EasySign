@@ -791,6 +791,7 @@ struct ResignContentView: View {
         )
         viewModel.loading = true
         let logger = hub.logger
+        logger.clear(tool: "resign")   // 按次隔离:清掉上次任务残留的日志
         DispatchQueue.global().async {
             do {
                 try ResignTask(taskInfo: taskInfo, logger: logger).Start()

@@ -75,4 +75,11 @@ public final class LoggerService: ObservableObject {
     public func setCurrentRun(_ runId: UUID?) {
         queue.sync { _currentRunId = runId }
     }
+
+    /// 清空某个工具的日志。重签每次开始前调用,恢复「按次隔离」——
+    /// 否则历史 run 的成功/失败日志会混进当前任务、连带被复制/保存。
+    public func clear(tool: String) {
+        queue.sync { _buffer.removeAll { $0.tool == tool } }
+        scheduleRefresh()
+    }
 }

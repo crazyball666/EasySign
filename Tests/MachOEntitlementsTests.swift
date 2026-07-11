@@ -4,8 +4,8 @@
 //  顺带验证 IPAPreviewPlistFormatter 的 Bool/嵌套格式化。
 //
 //  运行:
-//    swiftc -o /tmp/t EasySign/Core/Resigning/Model/IPAPreviewService.swift \
-//      EasySign/Core/Resigning/Model/MachOEntitlementsReader.swift \
+//    swiftc -o /tmp/t Packages/PreviewKit/Sources/PreviewKit/IPAPreviewService.swift \
+//      Packages/PreviewKit/Sources/PreviewKit/MachOEntitlementsReader.swift \
 //      Tests/MachOEntitlementsTests.swift && /tmp/t [可选:真实二进制路径...]
 //
 
