@@ -24,21 +24,75 @@ struct TransferToolView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                statusHeader
-                if isConnected {
-                    connectedSection
-                } else {
-                    disconnectedSection
+        GlassCanvas {
+            GeometryReader { proxy in
+                let usesInspector = GlassLayout.contextPresentation(for: proxy.size.width) == .inspector
+                ScrollView {
+                    VStack(alignment: .leading, spacing: GlassMetric.spacingL) {
+                        transferHeader(showsInspector: usesInspector)
+                        HStack(alignment: .top, spacing: GlassMetric.spacingL) {
+                            VStack(alignment: .leading, spacing: GlassMetric.spacingL) {
+                                statusHeader
+                                if isConnected {
+                                    connectedSection
+                                } else {
+                                    disconnectedSection
+                                }
+                                historyDisclosure
+                                logDisclosure
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                            if !usesInspector {
+                                transferContextRail.frame(width: 290)
+                            }
+                        }
+                    }
+                    .padding(GlassMetric.spacingXL)
                 }
-                historyDisclosure
-                logDisclosure
             }
-            .padding(20)
         }
         .onAppear { localIP = LocalNetwork.lanIPv4() }
         .onChange(of: service.listenPort) { _, _ in localIP = LocalNetwork.lanIPv4() }
+    }
+
+    @ViewBuilder
+    private func transferHeader(showsInspector: Bool) -> some View {
+        WorkspaceHeader(
+            icon: "arrow.left.arrow.right",
+            title: "互传会话",
+            subtitle: isConnected ? "已连接，可传输文件与剪贴板" : "配对后可在局域网内安全互传",
+            status: workspaceStatus,
+            statusTitle: statusStyle.title
+        ) {
+            if showsInspector {
+                GlassInspectorButton(title: "会话信息") {
+                    ScrollView { transferContextRail }
+                }
+            } else {
+                statusAction
+            }
+        }
+    }
+
+    private var transferContextRail: some View {
+        ContextRail(title: "会话信息", subtitle: "当前连接与信任状态") {
+            ResignSummaryRow(label: "本机", value: service.deviceName, icon: "laptopcomputer")
+            ResignSummaryRow(label: "网络", value: localIP ?? "正在检测", icon: "network")
+            ResignSummaryRow(label: "端口", value: service.listenPort.map(String.init) ?? "未监听", icon: "point.3.connected.trianglepath.dotted")
+            ResignSummaryRow(label: "信任设备", value: "\(service.pairedPeers.count) 台", icon: "checkmark.shield")
+            ResignSummaryRow(label: "进行中", value: service.activeTransfers.isEmpty ? "无" : "\(service.activeTransfers.count) 项", icon: "arrow.up.arrow.down.circle")
+            ActivityCard(title: statusStyle.title, detail: subtitle, status: workspaceStatus)
+        }
+    }
+
+    private var workspaceStatus: GlassStatus {
+        switch service.connectionState {
+        case .connected: .success
+        case .connecting, .pairing: .active
+        case .failed: .danger
+        case .idle: .idle
+        }
     }
 
     // MARK: - 顶部状态条
@@ -68,11 +122,9 @@ struct TransferToolView: View {
             Spacer(minLength: 8)
             statusAction
         }
-        .padding(14)
+        .padding(GlassMetric.spacingL)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(s.color.opacity(0.12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(s.color.opacity(0.30)))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .glassSurface(.standard, radius: GlassMetric.radiusLarge, padding: 0)
     }
 
     @ViewBuilder
@@ -135,7 +187,7 @@ struct TransferToolView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
+        .glassSurface(.standard, radius: GlassMetric.radiusMedium, padding: 12)
     }
 
     private var discoveredCard: some View {
@@ -153,7 +205,7 @@ struct TransferToolView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
+        .glassSurface(.standard, radius: GlassMetric.radiusMedium, padding: 12)
     }
 
     private func discoveredPeerRow(_ peer: DiscoveredPeer) -> some View {
@@ -216,7 +268,7 @@ struct TransferToolView: View {
             Label("手动输入 IP 连接", systemImage: "arrow.right.circle").font(.headline)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
+        .glassSurface(.standard, radius: GlassMetric.radiusMedium, padding: 12)
     }
 
     // MARK: - 已连接:传什么
@@ -253,7 +305,7 @@ struct TransferToolView: View {
             Button("发送文件…") { openFilePicker() }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
+        .glassSurface(.standard, radius: GlassMetric.radiusMedium, padding: 12)
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -284,7 +336,7 @@ struct TransferToolView: View {
         Toggle(isOn: $service.clipboardSyncEnabled) {
             Label("共享剪贴板(文本)", systemImage: "doc.on.clipboard")
         }
-        .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
+        .glassSurface(.standard, radius: GlassMetric.radiusMedium, padding: 12)
     }
 
     private var activeTransfersCard: some View {
@@ -295,7 +347,7 @@ struct TransferToolView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
+        .glassSurface(.standard, radius: GlassMetric.radiusMedium, padding: 12)
     }
 
     private func activeTransferRow(_ p: FileTransferManager.Progress) -> some View {

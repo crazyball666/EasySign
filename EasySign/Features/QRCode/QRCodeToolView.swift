@@ -17,114 +17,24 @@ struct QRCodeToolView: View {
     @State private var presentError: Error?
 
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 16) {
-                QRCodePageHeader()
-
-                ResignSectionView(title: "二维码内容", systemImage: "qrcode") {
-                    HStack(spacing: 10) {
-                        TextField("粘贴需要生成二维码的内容", text: $inputText)
-                            .textFieldStyle(.roundedBorder)
-                            .onChange(of: inputText) { _, newValue in
-                                if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                    qrImage = nil
-                                    statusText = ""
-                                }
-                            }
-
-                        Button(action: generateQRCode) {
-                            Label("生成二维码", systemImage: "qrcode.viewfinder")
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-
-                    DropdownPickerRow(
-                        title: "图片尺寸",
-                        selection: $selectedSize,
-                        options: QRCodeCanvasSize.allCases,
-                        displayTitle: { $0.title }
-                    )
-                }
-
-                ResignSectionView(title: "二维码预览", systemImage: "square.on.square") {
-                    HStack(alignment: .top, spacing: 18) {
-                        qrPreview
-                            .frame(width: 320, height: 320)
-
-                        VStack(alignment: .leading, spacing: 10) {
-                            Button(action: copyQRCode) {
-                                Label("复制二维码", systemImage: "doc.on.doc")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(qrImage == nil)
-
-                            Button(action: saveQRCode) {
-                                Label("保存二维码", systemImage: "square.and.arrow.down")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(qrImage == nil)
-
-                            Button(action: shareQRCode) {
-                                Label("分享二维码", systemImage: "square.and.arrow.up")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(qrImage == nil)
-
-                            Button(action: airDropQRCode) {
-                                Label("AirDrop", systemImage: "antenna.radiowaves.left.and.right")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(qrImage == nil)
-
-                            Button(action: scanScreen) {
-                                Label("扫描屏幕上的二维码", systemImage: "viewfinder")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-
-                            if !statusText.isEmpty {
-                                Text(statusText)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                                    .padding(.top, 4)
-                            }
-                        }
-                        .frame(width: 210)
-                    }
-                }
-
-                if !scanResults.isEmpty {
-                    ResignSectionView(title: "扫描结果", systemImage: "text.viewfinder") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(Array(scanResults.enumerated()), id: \.offset) { index, value in
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text("第 \(index + 1) 个二维码")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                    Text(value)
-                                        .font(.system(.body, design: .monospaced))
-                                        .textSelection(.enabled)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                .padding(10)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(Color.primary.opacity(0.04))
-                                )
+        GlassCanvas {
+            GeometryReader { proxy in
+                let usesInspector = GlassLayout.contextPresentation(for: proxy.size.width) == .inspector
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: GlassMetric.spacingL) {
+                        workspaceHeader(showsInspector: usesInspector)
+                        HStack(alignment: .top, spacing: GlassMetric.spacingL) {
+                            qrCodeCanvas
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
+                            if !usesInspector {
+                                qrCodeContextRail.frame(width: 300)
                             }
                         }
                     }
+                    .padding(GlassMetric.spacingXL)
                 }
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .alert("Error", isPresented: Binding(value: $presentError)) {
             Button("OK", role: .cancel) {}
@@ -134,14 +44,106 @@ struct QRCodeToolView: View {
     }
 
     @ViewBuilder
+    private func workspaceHeader(showsInspector: Bool) -> some View {
+        WorkspaceHeader(
+            icon: "qrcode",
+            title: "二维码工作台",
+            subtitle: "生成、分享与屏幕扫描",
+            status: qrImage == nil ? .idle : .success,
+            statusTitle: qrImage == nil ? "等待内容" : "已生成"
+        ) {
+            if showsInspector {
+                GlassInspectorButton(title: "本次会话") {
+                    ScrollView { qrCodeContextRail }
+                }
+            } else {
+                EmptyView()
+            }
+        }
+    }
+
+    private var qrCodeCanvas: some View {
+        VStack(alignment: .leading, spacing: GlassMetric.spacingL) {
+            VStack(alignment: .leading, spacing: GlassMetric.spacingM) {
+                ResignStageHeader(index: 1, title: "输入内容", detail: "内容仅用于本次生成，不会保存为历史记录")
+                HStack(spacing: GlassMetric.spacingS) {
+                    TextField("粘贴需要生成二维码的内容", text: $inputText)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: inputText) { _, newValue in
+                            if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                qrImage = nil
+                                statusText = ""
+                            }
+                        }
+                    Button(action: generateQRCode) {
+                        Label("生成二维码", systemImage: "qrcode.viewfinder")
+                    }
+                    .buttonStyle(GlassButtonStyle(.primary))
+                }
+                DropdownPickerRow(title: "图片尺寸", selection: $selectedSize, options: QRCodeCanvasSize.allCases, displayTitle: { $0.title })
+            }
+            .glassSurface(.standard, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingL)
+
+            HStack(alignment: .center, spacing: GlassMetric.spacingXL) {
+                qrPreview
+                    .frame(width: 340, height: 340)
+                VStack(alignment: .leading, spacing: GlassMetric.spacingS) {
+                    actionButton("复制二维码", icon: "doc.on.doc", action: copyQRCode)
+                    actionButton("保存二维码", icon: "square.and.arrow.down", action: saveQRCode)
+                    actionButton("分享二维码", icon: "square.and.arrow.up", action: shareQRCode)
+                    actionButton("AirDrop", icon: "antenna.radiowaves.left.and.right", action: airDropQRCode)
+                    Divider().padding(.vertical, 3)
+                    Button(action: scanScreen) {
+                        Label("扫描屏幕上的二维码", systemImage: "viewfinder")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(GlassButtonStyle(.primary))
+                }
+                .frame(width: 220)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .glassSurface(.standard, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingXL)
+        }
+    }
+
+    private var qrCodeContextRail: some View {
+        ContextRail(title: "本次会话", subtitle: statusText.isEmpty ? "尚未执行操作" : statusText) {
+            ResignSummaryRow(label: "图片尺寸", value: selectedSize.title, icon: "arrow.up.left.and.arrow.down.right")
+            ResignSummaryRow(label: "扫描结果", value: scanResults.isEmpty ? "暂无" : "\(scanResults.count) 条", icon: "text.viewfinder")
+            if !scanResults.isEmpty {
+                VStack(alignment: .leading, spacing: GlassMetric.spacingS) {
+                    GlassSectionTitle("扫描内容", icon: "list.bullet")
+                    ForEach(Array(scanResults.enumerated()), id: \.offset) { index, value in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("第 \(index + 1) 个二维码")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(value)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .lineLimit(3)
+                        }
+                        .glassSurface(.inset, radius: GlassMetric.radiusSmall, padding: GlassMetric.spacingS)
+                    }
+                }
+            }
+        }
+    }
+
+    private func actionButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: icon)
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(GlassButtonStyle())
+        .disabled(qrImage == nil)
+    }
+
+    @ViewBuilder
     private var qrPreview: some View {
         ZStack {
             RoundedRectangle(cornerRadius: qrcodePanelRadius, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor))
-                .overlay(
-                    RoundedRectangle(cornerRadius: qrcodePanelRadius, style: .continuous)
-                        .stroke(Color.primary.opacity(0.08))
-                )
+                .fill(.thinMaterial)
 
             if let qrImage {
                 Image(nsImage: qrImage)
@@ -155,6 +157,7 @@ struct QRCodeToolView: View {
                     .foregroundStyle(Color.secondary.opacity(0.35))
             }
         }
+        .glassSurface(.inset, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingM)
     }
 
     private func generateQRCode() {
