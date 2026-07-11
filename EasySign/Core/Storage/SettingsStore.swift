@@ -14,6 +14,7 @@ public enum SettingsKey: String {
     case enableExperimental
     case transferStealthMode
     case transferRetentionDays
+    case interfaceTheme
 }
 
 public final class SettingsStore: ObservableObject {
@@ -65,7 +66,7 @@ public final class SettingsStore: ObservableObject {
         for key in [SettingsKey.defaultOutputDir, .autoCleanWorkspace, .workspaceRetentionDays,
                     .logRetentionDays, .recentFilesCap, .launchRestoresLastTool,
                     .lastActiveTool, .windowSize, .sidebarWidth, .enableExperimental,
-                    .transferStealthMode, .transferRetentionDays] {
+                    .transferStealthMode, .transferRetentionDays, .interfaceTheme] {
             defaults.removeObject(forKey: key.rawValue)
         }
     }
