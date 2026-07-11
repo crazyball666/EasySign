@@ -47,6 +47,36 @@ struct GlassLayoutTests {
             "inspector has a readable accessibility label"
         )
 
+        let navigationIDs = ["resign", "qr", "devices", "transfer"]
+        expect(
+            GlassSidebarNavigation.selection(afterMovingFrom: "qr", in: navigationIDs, direction: .down) == "devices",
+            "down arrow moves to the following navigation item"
+        )
+        expect(
+            GlassSidebarNavigation.selection(afterMovingFrom: "qr", in: navigationIDs, direction: .up) == "resign",
+            "up arrow moves to the previous navigation item"
+        )
+        expect(
+            GlassSidebarNavigation.selection(afterMovingFrom: "resign", in: navigationIDs, direction: .up) == "resign",
+            "up arrow stops at the first navigation item"
+        )
+        expect(
+            GlassSidebarNavigation.selection(afterMovingFrom: nil, in: navigationIDs, direction: .down) == "resign",
+            "an unfocused sidebar starts at its first navigation item"
+        )
+        expect(
+            GlassSidebarNavigation.selection(afterMovingFrom: "transfer", in: navigationIDs, direction: .down) == "transfer",
+            "down arrow stops at the final navigation item"
+        )
+        expect(
+            GlassSidebarNavigation.selection(afterMovingFrom: "missing", in: navigationIDs, direction: .down) == "resign",
+            "an unknown selected item falls back to the first navigation item"
+        )
+        expect(
+            GlassSidebarNavigation.selection(afterMovingFrom: nil, in: [], direction: .down) == nil,
+            "an empty sidebar has no selection target"
+        )
+
         print("ALL PASS")
     }
 

@@ -62,6 +62,73 @@ enum GlassSurfaceTone {
     case inset
 }
 
+/// Material values stay intentionally below opaque white so the canvas remains
+/// visible through every workbench surface in the light appearance.
+enum GlassMaterialRecipe {
+    static func overlayOpacity(for tone: GlassSurfaceTone, colorScheme: ColorScheme) -> Double {
+        switch (tone, colorScheme) {
+        case (.standard, .dark): 0.08
+        case (.standard, .light): 0.28
+        case (.emphasized, .dark): 0.06
+        case (.emphasized, .light): 0.16
+        case (.inset, .dark): 0.13
+        case (.inset, .light): 0.08
+        default: 0.16
+        }
+    }
+
+    static func borderOpacity(for tone: GlassSurfaceTone, colorScheme: ColorScheme) -> Double {
+        switch (tone, colorScheme) {
+        case (.standard, .dark): 0.16
+        case (.standard, .light): 0.34
+        case (.emphasized, .dark): 0.10
+        case (.emphasized, .light): 0.22
+        case (.inset, .dark): 0.09
+        case (.inset, .light): 0.12
+        default: 0.16
+        }
+    }
+
+    static func highlightOpacity(for tone: GlassSurfaceTone, colorScheme: ColorScheme) -> Double {
+        switch (tone, colorScheme) {
+        case (.standard, .dark): 0.14
+        case (.standard, .light): 0.32
+        case (.emphasized, .dark): 0.09
+        case (.emphasized, .light): 0.20
+        case (.inset, .dark): 0.06
+        case (.inset, .light): 0.12
+        default: 0.12
+        }
+    }
+
+    static func material(for tone: GlassSurfaceTone) -> Material {
+        switch tone {
+        case .standard, .inset: .ultraThinMaterial
+        case .emphasized: .thinMaterial
+        }
+    }
+}
+
+/// The navigation rail uses a white-glass hierarchy rather than the system's
+/// neutral gray selection treatment.
+enum GlassSidebarRecipe {
+    static func railWhiteOverlayOpacity(for colorScheme: ColorScheme) -> Double {
+        colorScheme == .dark ? 0.08 : 0.38
+    }
+
+    static func selectedFillOpacity(for colorScheme: ColorScheme) -> Double {
+        colorScheme == .dark ? 0.18 : 0.92
+    }
+
+    static func selectedBorderOpacity(for colorScheme: ColorScheme) -> Double {
+        colorScheme == .dark ? 0.32 : 0.86
+    }
+
+    static func dividerOpacity(for colorScheme: ColorScheme) -> Double {
+        colorScheme == .dark ? 0.14 : 0.42
+    }
+}
+
 enum GlassButtonEmphasis {
     case primary
     case secondary
@@ -96,23 +163,27 @@ struct GlassPalette {
     }
 
     var railOverlay: Color {
-        colorScheme == .dark ? Color.white.opacity(0.065) : Color.white.opacity(0.64)
+        Color.white.opacity(GlassMaterialRecipe.overlayOpacity(for: .emphasized, colorScheme: colorScheme))
     }
 
     var surfaceOverlay: Color {
-        colorScheme == .dark ? Color.white.opacity(0.085) : Color.white.opacity(0.74)
+        Color.white.opacity(GlassMaterialRecipe.overlayOpacity(for: .standard, colorScheme: colorScheme))
     }
 
     var insetFill: Color {
-        colorScheme == .dark ? Color.black.opacity(0.18) : Color.black.opacity(0.045)
+        colorScheme == .dark ? Color.white.opacity(0.13) : Color.white.opacity(0.08)
     }
 
     var border: Color {
-        colorScheme == .dark ? Color.white.opacity(0.14) : Color.white.opacity(0.88)
+        Color.white.opacity(GlassMaterialRecipe.borderOpacity(for: .standard, colorScheme: colorScheme))
     }
 
     var mutedBorder: Color {
-        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.075)
+        Color.white.opacity(GlassMaterialRecipe.borderOpacity(for: .inset, colorScheme: colorScheme))
+    }
+
+    var railDivider: Color {
+        Color.white.opacity(GlassSidebarRecipe.dividerOpacity(for: colorScheme))
     }
 
     var primaryStart: Color { Color(red: 0.30, green: 0.91, blue: 0.76) }
@@ -174,19 +245,70 @@ private struct GlassSurfaceModifier: ViewModifier {
         case .emphasized: palette.railOverlay
         case .inset: palette.insetFill
         }
+        let border = Color.white.opacity(GlassMaterialRecipe.borderOpacity(for: tone, colorScheme: colorScheme))
+        let highlight = Color.white.opacity(GlassMaterialRecipe.highlightOpacity(for: tone, colorScheme: colorScheme))
 
         content
             .padding(padding ?? 0)
             .background {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(.thinMaterial)
+                    .fill(GlassMaterialRecipe.material(for: tone))
                     .overlay {
                         RoundedRectangle(cornerRadius: radius, style: .continuous)
                             .fill(fill)
                     }
                     .overlay {
                         RoundedRectangle(cornerRadius: radius, style: .continuous)
-                            .stroke(tone == .inset ? palette.mutedBorder : palette.border, lineWidth: 1)
+                            .stroke(border, lineWidth: 1)
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: radius, style: .continuous)
+                            .stroke(
+                                LinearGradient(
+                                    colors: [highlight, .clear],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 1
+                            )
+                            .padding(0.5)
+                    }
+                    .shadow(
+                        color: Color.black.opacity(colorScheme == .dark ? 0.22 : 0.07),
+                        radius: tone == .inset ? 4 : 12,
+                        y: tone == .inset ? 2 : 6
+                    )
+            }
+    }
+}
+
+private struct GlassSidebarRailModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        let palette = GlassPalette(colorScheme: colorScheme)
+
+        content
+            .background {
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .overlay {
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(GlassSidebarRecipe.railWhiteOverlayOpacity(for: colorScheme)),
+                                palette.railOverlay
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    }
+                    .overlay(alignment: .trailing) {
+                        LinearGradient(
+                            colors: [.clear, palette.railDivider, .clear],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(width: 1)
                     }
             }
     }
@@ -199,6 +321,10 @@ extension View {
         padding: CGFloat? = nil
     ) -> some View {
         modifier(GlassSurfaceModifier(tone: tone, radius: radius, padding: padding))
+    }
+
+    func glassSidebarRail() -> some View {
+        modifier(GlassSidebarRailModifier())
     }
 }
 

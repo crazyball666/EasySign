@@ -4,30 +4,60 @@ struct SidebarView: View {
     @Binding var selection: String?
     let tools: [any Tool]
     let mode: GlassSidebarMode
+    @FocusState private var focusedToolID: String?
 
     var body: some View {
         VStack(spacing: GlassMetric.spacingS) {
             brandHeader
 
-            List(selection: $selection) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: mode == .labelledRail ? GlassMetric.spacingM : GlassMetric.spacingS) {
                 ForEach(ToolCategory.allCases) { category in
                     let categoryTools = tools.filter { $0.category == category }
                         .sorted { $0.sortOrder < $1.sortOrder }
                     if !categoryTools.isEmpty {
-                        Section(mode == .labelledRail ? category.rawValue : "") {
+                        VStack(alignment: .leading, spacing: 3) {
+                            if mode == .labelledRail {
+                                Text(category.rawValue)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, GlassMetric.spacingS)
+                            }
                             ForEach(categoryTools, id: \.id) { tool in
-                                SidebarRow(tool: tool, mode: mode)
-                                    .tag(tool.id as String?)
+                                Button {
+                                    select(tool.id)
+                                } label: {
+                                    SidebarRow(
+                                        tool: tool,
+                                        mode: mode,
+                                        isSelected: selection == tool.id
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                                .focused($focusedToolID, equals: tool.id)
+                                .accessibilityAddTraits(selection == tool.id ? .isSelected : [])
+                                .accessibilityValue(selection == tool.id ? "已选中" : "未选中")
                             }
                         }
                     }
                 }
+                }
+                .padding(.horizontal, mode == .labelledRail ? 4 : 0)
+                .padding(.bottom, GlassMetric.spacingS)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
+            .scrollIndicators(.hidden)
+            .onMoveCommand { direction in
+                switch direction {
+                case .up:
+                    moveSelection(.up)
+                case .down:
+                    moveSelection(.down)
+                default:
+                    break
+                }
+            }
         }
         .padding(mode == .labelledRail ? GlassMetric.spacingS : 5)
-        .glassSurface(.emphasized, radius: GlassMetric.radiusLarge, padding: 0)
         .padding(.vertical, GlassMetric.spacingS)
         .padding(.leading, GlassMetric.spacingS)
         .frame(
@@ -35,6 +65,10 @@ struct SidebarView: View {
             idealWidth: mode == .labelledRail ? 242 : 66,
             maxWidth: mode == .labelledRail ? 320 : 72
         )
+        .glassSidebarRail()
+        .onAppear {
+            focusedToolID = selection ?? navigationTools.first?.id
+        }
     }
 
     @ViewBuilder
@@ -67,13 +101,40 @@ struct SidebarView: View {
                 .accessibilityLabel("EasySign")
         }
     }
+
+    private var navigationTools: [any Tool] {
+        ToolCategory.allCases.flatMap { category in
+            tools.filter { $0.category == category }
+                .sorted { $0.sortOrder < $1.sortOrder }
+        }
+    }
+
+    private func moveSelection(_ direction: GlassSidebarMoveDirection) {
+        guard let nextID = GlassSidebarNavigation.selection(
+            afterMovingFrom: selection,
+            in: navigationTools.map(\.id),
+            direction: direction
+        ) else { return }
+        select(nextID)
+    }
+
+    private func select(_ toolID: String) {
+        selection = toolID
+        focusedToolID = toolID
+    }
 }
 
 private struct SidebarRow: View {
     let tool: any Tool
     let mode: GlassSidebarMode
+    let isSelected: Bool
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let selectedFillOpacity = GlassSidebarRecipe.selectedFillOpacity(for: colorScheme)
+        let selectedFill = Color.white.opacity(selectedFillOpacity)
+        let selectedBorder = Color.white.opacity(GlassSidebarRecipe.selectedBorderOpacity(for: colorScheme))
+
         HStack(spacing: GlassMetric.spacingS) {
             Image(systemName: tool.icon)
                 .font(.system(size: 15, weight: .semibold))
@@ -92,7 +153,31 @@ private struct SidebarRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: mode == .labelledRail ? .leading : .center)
-        .padding(.vertical, mode == .labelledRail ? 3 : 5)
+        .padding(.horizontal, mode == .labelledRail ? GlassMetric.spacingS : 4)
+        .padding(.vertical, mode == .labelledRail ? 7 : 6)
+        .contentShape(RoundedRectangle(cornerRadius: GlassMetric.radiusSmall, style: .continuous))
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: GlassMetric.radiusSmall, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [selectedFill, Color.white.opacity(selectedFillOpacity * 0.88)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: GlassMetric.radiusSmall, style: .continuous)
+                            .stroke(selectedBorder, lineWidth: 1)
+                    }
+                    .shadow(
+                        color: Color.black.opacity(colorScheme == .dark ? 0.22 : 0.09),
+                        radius: 7,
+                        y: 3
+                    )
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: isSelected)
         .accessibilityLabel("\(tool.displayName)，\(tool.subtitle)")
         .help(tool.displayName)
     }

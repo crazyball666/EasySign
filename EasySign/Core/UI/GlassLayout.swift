@@ -31,6 +31,31 @@ enum GlassDeviceSelectorPresentation: Equatable {
     case topPicker
 }
 
+enum GlassSidebarMoveDirection {
+    case up
+    case down
+}
+
+enum GlassSidebarNavigation {
+    static func selection(
+        afterMovingFrom currentID: String?,
+        in navigationIDs: [String],
+        direction: GlassSidebarMoveDirection
+    ) -> String? {
+        guard let firstID = navigationIDs.first else { return nil }
+        guard let currentID, let currentIndex = navigationIDs.firstIndex(of: currentID) else {
+            return firstID
+        }
+
+        switch direction {
+        case .up:
+            return navigationIDs[max(0, currentIndex - 1)]
+        case .down:
+            return navigationIDs[min(navigationIDs.count - 1, currentIndex + 1)]
+        }
+    }
+}
+
 enum GlassLayout {
     static func sidebarMode(for width: CGFloat) -> GlassSidebarMode {
         if width < 700 { return .systemCollapsed }

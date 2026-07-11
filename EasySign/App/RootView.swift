@@ -30,6 +30,7 @@ struct RootView: View {
             }
         }
         .frame(minWidth: 620, minHeight: 620)
+        .modifier(GlassWindowToolbarStyle())
         .onChange(of: selection) { _, newValue in
             // 记住最后选中的工具,供下次启动按「启动时恢复上次工具」恢复
             if let id = newValue { hub.settings.set(id, for: .lastActiveTool) }
@@ -70,5 +71,21 @@ struct RootView: View {
             return saved
         }
         return ToolRegistry.allTools.first?.id
+    }
+}
+
+/// Integrates the automatic NavigationSplitView toolbar with the Glass canvas.
+/// macOS 15 adds removal of the generated title item; macOS 14 still loses the
+/// opaque toolbar background while retaining its native title presentation.
+private struct GlassWindowToolbarStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content
+                .toolbar(removing: .title)
+                .toolbarBackground(.hidden, for: .windowToolbar)
+        } else {
+            content
+                .toolbarBackground(.hidden, for: .windowToolbar)
+        }
     }
 }
