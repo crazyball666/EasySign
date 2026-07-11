@@ -17,6 +17,11 @@ struct MobileProvision {
     let createDate: Date?
     let expirationDate: Date?
     let applicationIdentifier: String
+    let applicationIdentifierPattern: String
+    let applicationIdentifierPrefixes: [String]
+    let teamIdentifiers: [String]
+    let teamIdentifierEntitlement: String?
+    let developerCertificateDERs: [Data]
     let certs: [SecCertificate]
     let entitlements: [String: Any]
     let provisionedDevices: [String]?
@@ -51,14 +56,33 @@ struct MobileProvision {
         }
         name = plist["Name"] as? String ?? ""
         uuid = plist["UUID"] as? String ?? ""
-        teamId = (plist["TeamIdentifier"] as? [String])?.first ?? ""
+        teamIdentifiers = plist["TeamIdentifier"] as? [String] ?? []
+        teamId = teamIdentifiers.first ?? ""
         createDate = plist["CreationDate"] as? Date
         expirationDate = plist["ExpirationDate"] as? Date
         entitlements = plist["Entitlements"] as? [String: Any] ?? [:]
-        let fullApplicationIdentifier = entitlements["application-identifier"] as? String ?? ""
-        applicationIdentifier = fullApplicationIdentifier.replacingOccurrences(of: "\(teamId).", with: "")
-        certs = (plist["DeveloperCertificates"] as? [Data] ?? []).compactMap { SecCertificate.create(data: $0) }
+        applicationIdentifierPattern = entitlements["application-identifier"] as? String ?? ""
+        applicationIdentifierPrefixes = plist["ApplicationIdentifierPrefix"] as? [String] ?? []
+        teamIdentifierEntitlement = entitlements["com.apple.developer.team-identifier"] as? String
+        developerCertificateDERs = plist["DeveloperCertificates"] as? [Data] ?? []
+        // Display-only compatibility field. Never use TeamIdentifier to derive the signing prefix.
+        if let separator = applicationIdentifierPattern.firstIndex(of: ".") {
+            applicationIdentifier = String(applicationIdentifierPattern[applicationIdentifierPattern.index(after: separator)...])
+        } else {
+            applicationIdentifier = applicationIdentifierPattern
+        }
+        certs = developerCertificateDERs.compactMap { SecCertificate.create(data: $0) }
         provisionedDevices = plist["ProvisionedDevices"] as? [String] ?? []
+    }
+
+    func zsignProfileContext() -> ZSignProfileContext {
+        ZSignProfileContext(
+            entitlements: entitlements,
+            applicationIdentifierPrefixes: applicationIdentifierPrefixes,
+            teamIdentifiers: teamIdentifiers,
+            developerCertificateDERs: developerCertificateDERs,
+            expirationDate: expirationDate
+        )
     }
     
     func install() throws {

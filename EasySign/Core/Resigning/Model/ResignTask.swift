@@ -106,8 +106,41 @@ struct ResignTask {
 
     private func startZSignResign() throws {
         let appBundle = try getAppBundle()
-
         logger?.log(.INFO, "开始 zsign 重签名...")
+
+        guard let sourceMainExecutable = appBundle.executableFilePath else {
+            throw NSError(message: "找不到 App 主可执行文件")
+        }
+        // Source identity is deliberately captured before Info.plist/custom XML changes.
+        let originalEntitlements: [String: Any]?
+        do {
+            originalEntitlements = try appBundle.getEntitlements()
+        } catch {
+            originalEntitlements = nil
+            logger?.log(.INFO, "读取原 entitlements 失败，zsign 将从空请求集合开始：\(error.localizedDescription)")
+        }
+        let sourceApplicationIdentifier = originalEntitlements?["application-identifier"] as? String
+
+        let injectedDylibs = try validatedInjectedDylibs()
+        logger?.log(.INFO, "执行 zsign Mach-O 签前检查...")
+        try MachOExecutableScanner.validateAppTopology(appRoot: appBundle.path, mainExecutable: sourceMainExecutable)
+        try injectedDylibs.forEach { try MachOExecutableScanner.validateInjectedDylib($0) }
+
+        logger?.log(.INFO, "读取 App 描述文件...")
+        guard let mobileProvision = try MobileProvision(file: taskInfo.mobileProvisionPath) else {
+            throw NSError(message: "读取 App 描述文件异常")
+        }
+        let targetBundleIdentifier = taskInfo.bundleId ?? appBundle.bundleId
+        let zsignProfile = mobileProvision.zsignProfileContext()
+        let profileIdentity = try zsignProfile.validatedIdentity(targetBundleIdentifier: targetBundleIdentifier)
+        logger?.log(.INFO, "App 描述文件名称：\(mobileProvision.name), Team ID: \(profileIdentity.teamIdentifier)")
+
+        logger?.log(.INFO, "校验 App p12 是否属于描述文件...")
+        let pkcs12 = try PKCS12(file: taskInfo.p12Path, password: taskInfo.p12Password)
+        let certificateDER = SecCertificateCopyData(pkcs12.certificate) as Data
+        guard zsignProfile.containsCertificateDER(certificateDER) else {
+            throw NSError(message: "p12 证书不属于所选描述文件 DeveloperCertificates")
+        }
 
         logger?.log(.INFO, "修改包体信息...")
         try appBundle.update(bundleId: taskInfo.bundleId, displayName: taskInfo.displayName, version: taskInfo.version, buildVersion: taskInfo.buildVersion)
@@ -120,10 +153,6 @@ struct ResignTask {
         内置版本号：\(appBundle.buildVersion)
         """)
 
-        if !appBundle.appexList.isEmpty {
-            logger?.log(.INFO, "zsign 将使用主 App 证书和描述文件递归重签 Appex：\(appBundle.appexList.map { $0.path.lastPathComponent }.joined(separator: ", "))")
-        }
-
         logger?.log(.INFO, "删除包体内无用文件...")
         // argv 形式 + 括号保证 -exec 同时作用于两个 -name(否则 -o 优先级会让 .DS_Store 漏删);
         // 旧的 find|xargs rm -rf 经 shell 拼路径,路径含特殊字符会破损/注入,且 xargs 无 -0 遇空格会断词。
@@ -132,21 +161,39 @@ struct ResignTask {
                                            "(", "-name", ".DS_Store", "-o", "-name", "__MACOSX", ")",
                                            "-exec", "rm", "-rf", "{}", "+"])
 
-        let injectedDylibs = try validatedInjectedDylibs()
         if !injectedDylibs.isEmpty {
             logger?.log(.INFO, "zsign 将注入动态库：\(injectedDylibs.map { $0.lastPathComponent }.joined(separator: ", "))")
         }
 
-        logger?.log(.INFO, "读取 App 描述文件...")
-        guard let mobileProvision = try MobileProvision(file: taskInfo.mobileProvisionPath) else {
-            throw NSError.init(message: "读取 App 描述文件异常")
+        logger?.log(.INFO, "按描述文件生成 zsign entitlements...")
+        let reconciledEntitlements = try EntitlementReconciler.reconcile(
+            EntitlementReconciliationInput(
+                customEntitlementsXML: taskInfo.entitlements,
+                originalEntitlements: originalEntitlements,
+                profile: EntitlementProfileContext(
+                    entitlements: mobileProvision.entitlements,
+                    applicationIdentifierPattern: profileIdentity.applicationIdentifierPattern,
+                    applicationIdentifierPrefixes: mobileProvision.applicationIdentifierPrefixes,
+                    teamIdentifiers: mobileProvision.teamIdentifiers
+                ),
+                sourceApplicationIdentifier: sourceApplicationIdentifier,
+                targetBundleIdentifier: appBundle.bundleId
+            )
+        )
+        for change in reconciledEntitlements.changes {
+            let action: String
+            switch change.action {
+            case .kept: action = "保留"
+            case .removed: action = "移除"
+            case .rewritten: action = "改写"
+            }
+            logger?.log(.INFO, "zsign entitlement \(action)：\(change.keyPath)（\(change.reason)）")
         }
-        logger?.log(.INFO, "App 描述文件名称：\(mobileProvision.name), Team ID: \(mobileProvision.teamId)")
-
-        logger?.log(.INFO, "生成 zsign entitlements...")
-        let newEntitlements = try updateEntitlements(appBundle: appBundle, mobileProvision: mobileProvision, logger: logger)
         let entitlementsPath = workspacePath.appendingPathComponent("zsign.entitlements")
-        try newEntitlements.write(to: entitlementsPath, atomically: true, encoding: .utf8)
+        try reconciledEntitlements.xml.write(to: entitlementsPath, atomically: true, encoding: .utf8)
+
+        let publisher = try ResignOutputPublisher(finalURL: taskInfo.outputPath)
+        defer { try? publisher.discardCandidate() }
 
         let options = ZSignBridgeOptions()
         options.inputPath = appBundle.path.path
@@ -154,7 +201,7 @@ struct ResignTask {
         options.p12Password = taskInfo.p12Password
         options.mobileProvisionPath = taskInfo.mobileProvisionPath.path
         options.entitlementsPath = entitlementsPath.path
-        options.outputPath = taskInfo.outputPath.path
+        options.outputPath = publisher.candidateURL.path
         options.temporaryDirectory = workspacePath.path
         options.injectedDylibPaths = injectedDylibs.map { $0.path }
         options.weakInject = false
@@ -171,6 +218,17 @@ struct ResignTask {
 
         logger?.log(.INFO, "执行 zsign 签名和打包...")
         try ZSignBridge.resign(with: options)
+
+        logger?.log(.INFO, "校验 zsign 候选 IPA...")
+        try verifyZSignCandidate(
+            publisher.candidateURL,
+            mobileProvision: mobileProvision,
+            targetBundleIdentifier: appBundle.bundleId,
+            expectedEntitlements: reconciledEntitlements.entitlements,
+            expectedIdentifier: appBundle.bundleId,
+            expectedTeamIdentifier: profileIdentity.teamIdentifier
+        )
+        try publisher.publish()
 
         logger?.log(.INFO, "输出 ipa：\(taskInfo.outputPath.path)")
         logger?.log(.INFO, "重签名完成🎉🎉🎉")
@@ -202,6 +260,62 @@ extension ResignTask {
         } else {
             throw NSError(message: "非法文件")
         }
+    }
+
+    private func verifyZSignCandidate(
+        _ candidateIPA: URL,
+        mobileProvision: MobileProvision,
+        targetBundleIdentifier: String,
+        expectedEntitlements: [String: Any],
+        expectedIdentifier: String,
+        expectedTeamIdentifier: String
+    ) throws {
+        let verificationRoot = workspacePath.appendingPathComponent("zsign_verification")
+        try? FileManager.default.removeItem(at: verificationRoot)
+        try TaskCenter.execute(lanuchPath: "/usr/bin/unzip", arguments: ["-o", "-q", candidateIPA.path, "-d", verificationRoot.path])
+
+        let payload = verificationRoot.appendingPathComponent("Payload")
+        let appBundles = try FileManager.default.contentsOfDirectory(
+            at: payload,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ).filter { url in
+            url.pathExtension == "app" && (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }
+        guard appBundles.count == 1, let appURL = appBundles.first else {
+            throw NSError(message: "zsign 候选 IPA 的 Payload 必须且只能包含一个 .app")
+        }
+        guard let verifiedBundle = try? AppBundle(path: appURL), verifiedBundle.bundleId == targetBundleIdentifier,
+              let verifiedExecutable = verifiedBundle.executableFilePath,
+              FileManager.default.fileExists(atPath: verifiedExecutable.path)
+        else {
+            throw NSError(message: "zsign 候选 IPA 的 Bundle ID 或主可执行文件不符合预期")
+        }
+
+        let embeddedProfile = appURL.appendingPathComponent("embedded.mobileprovision")
+        guard try Data(contentsOf: embeddedProfile) == Data(contentsOf: mobileProvision.file) else {
+            throw NSError(message: "zsign 候选 IPA 的 embedded.mobileprovision 与所选描述文件不一致")
+        }
+        guard let reparsedProfile = try MobileProvision(file: embeddedProfile) else {
+            throw NSError(message: "无法重新解析 zsign 候选 IPA 的 embedded.mobileprovision")
+        }
+        _ = try reparsedProfile.zsignProfileContext().validatedIdentity(targetBundleIdentifier: targetBundleIdentifier)
+
+        try MachOExecutableScanner.validateAppTopology(appRoot: appURL, mainExecutable: verifiedExecutable)
+        for machoURL in try MachOExecutableScanner.machOFiles(in: appURL) {
+            let data = try Data(contentsOf: machoURL)
+            if machoURL.resolvingSymlinksInPath().standardizedFileURL == verifiedExecutable.resolvingSymlinksInPath().standardizedFileURL {
+                try MachOCodeSignatureInspector.inspectMainExecutable(
+                    in: data,
+                    expectedEntitlements: expectedEntitlements,
+                    expectedIdentifier: expectedIdentifier,
+                    expectedTeamIdentifier: expectedTeamIdentifier
+                )
+            } else {
+                try MachOCodeSignatureInspector.inspectNonExecutableMachO(in: data)
+            }
+        }
+        try TaskCenter.execute(lanuchPath: "/usr/bin/codesign", arguments: ["--verify", "--deep", "--strict", "--verbose=4", appURL.path])
     }
     
     /// 重签 Appex
