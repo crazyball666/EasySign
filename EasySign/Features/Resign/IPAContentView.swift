@@ -29,32 +29,41 @@ struct IPAContentView: View {
     @Binding var resignSetting: ResignSetting
     
     var body: some View {
-        VStack(alignment: .leading) {
-            HStack {
-                Text("应用名称：")
-                TextField("应用名称", text: $resignSetting.displayName)
+        GlassCanvas {
+            VStack(alignment: .leading, spacing: GlassMetric.spacingL) {
+                WorkspaceHeader(icon: "slider.horizontal.3", title: "应用信息", subtitle: "修改会应用到本次重签任务")
+
+                VStack(alignment: .leading, spacing: GlassMetric.spacingM) {
+                    editorRow("应用名称", text: $resignSetting.displayName)
+                    editorRow("应用包名", text: $resignSetting.bundleId)
+                    editorRow("应用版本", text: $resignSetting.version)
+                    editorRow("构建版本", text: $resignSetting.buildVersion)
+
+                    VStack(alignment: .leading, spacing: GlassMetric.spacingS) {
+                        GlassSectionTitle("权限信息", icon: "checkmark.shield")
+                        TextEditor(text: $resignSetting.entitlements)
+                            .font(.system(.caption, design: .monospaced))
+                            .scrollContentBackground(.hidden)
+                            .padding(GlassMetric.spacingS)
+                            .frame(height: 200)
+                            .glassSurface(.inset, radius: GlassMetric.radiusSmall, padding: 0)
+                    }
+                }
+                .glassSurface(.standard, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingL)
             }
-            HStack {
-                Text("应用包名：")
-                TextField("应用包名", text: $resignSetting.bundleId)
-            }
-            HStack {
-                Text("应用版本：")
-                TextField("应用版本", text: $resignSetting.version)
-            }
-            HStack {
-                Text("构建版本：")
-                TextField("构建版本", text: $resignSetting.buildVersion)
-            }
-            HStack {
-                Text("权限信息：")
-                TextEditor(text: $resignSetting.entitlements)
-                .frame(maxWidth: .infinity)
-                .frame(height: 200)
-                
-            }
+            .padding(GlassMetric.spacingL)
         }
-        .padding(.all)
         .frame(width: 600)
+    }
+
+    private func editorRow(_ title: String, text: Binding<String>) -> some View {
+        HStack(spacing: GlassMetric.spacingM) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 78, alignment: .trailing)
+            TextField(title, text: text)
+                .textFieldStyle(.roundedBorder)
+        }
     }
 }

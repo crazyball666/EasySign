@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 public struct LogPanelView: View {
     @ObservedObject var logger: LoggerService
     let toolId: String
+    @Environment(\.colorScheme) private var colorScheme
     @State private var minLevel: LogLevel = .debug
     @State private var filter: String = ""
 
@@ -17,6 +18,7 @@ public struct LogPanelView: View {
     public var body: some View {
         // logger 是 @ObservedObject;LoggerService.revision 为 @Published,
         // 新日志到达时会触发本视图重绘,无需再用定时器轮询。
+        let palette = GlassPalette(colorScheme: colorScheme)
         VStack(spacing: 0) {
             toolbar
             Divider()
@@ -30,8 +32,9 @@ public struct LogPanelView: View {
                 }
                 .padding(.vertical, 4)
             }
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(palette.insetFill)
         }
+        .glassSurface(.inset, radius: GlassMetric.radiusSmall, padding: 0)
     }
 
     private var filteredEntries: [LogEntry] {
@@ -72,7 +75,7 @@ public struct LogPanelView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(.bar)
+        .background(GlassPalette(colorScheme: colorScheme).surfaceOverlay)
     }
 
     private func copyAll() {
@@ -100,6 +103,7 @@ public struct LogPanelView: View {
 
 private struct LogRow: View {
     let entry: LogEntry
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
@@ -119,10 +123,10 @@ private struct LogRow: View {
 
     private var colorForLevel: Color {
         switch entry.level {
-        case .debug: return .secondary
+        case .debug: return GlassPalette(colorScheme: colorScheme).mutedText
         case .info:  return .primary
-        case .warn:  return .orange
-        case .error: return .red
+        case .warn:  return GlassPalette(colorScheme: colorScheme).warning
+        case .error: return GlassPalette(colorScheme: colorScheme).danger
         }
     }
 

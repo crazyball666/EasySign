@@ -23,19 +23,24 @@ extension Binding where Value == Bool {
 
 struct CustomLoadingView: View {
     let text: String
-    let color: Color
 
     var body: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-                .progressViewStyle(CircularProgressViewStyle(tint: color))
-                .scaleEffect(1.5)
-                .padding(.all, 12)
-            Text(text)
-                .foregroundColor(color)
-                .font(.title3)
+        GlassCanvas {
+            VStack(spacing: GlassMetric.spacingL) {
+                ZStack {
+                    ActivityPulse(isActive: true, color: Color.accentColor)
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Text(text)
+                    .font(.title3.weight(.bold))
+                Text("正在安全地处理签名与描述文件")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(minWidth: 260)
+            .glassSurface(.standard, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingXL)
         }
-        .padding()
     }
 }
 
@@ -111,7 +116,7 @@ class ContentViewModel: ObservableObject {
 
 
 private let resignLabelWidth: CGFloat = 104
-private let resignPanelRadius: CGFloat = 8
+private let resignPanelRadius: CGFloat = GlassMetric.radiusMedium
 
 struct ResignPageHeader: View {
     var body: some View {
@@ -151,30 +156,15 @@ struct ResignSectionView<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage)
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: 18)
-                Text(title)
-                    .font(.headline)
-                Spacer()
-            }
+        VStack(alignment: .leading, spacing: GlassMetric.spacingL) {
+            GlassSectionTitle(title, icon: systemImage)
 
             VStack(alignment: .leading, spacing: 12) {
                 content
             }
         }
-        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.08))
-        )
+        .glassSurface(.standard, radius: resignPanelRadius, padding: GlassMetric.spacingL)
     }
 }
 
@@ -426,11 +416,12 @@ struct InjectedDylibPickerView: View {
 struct ResignContentView: View {
     @StateObject var viewModel = ContentViewModel()
     let hub: ServiceHub
+    @ObservedObject private var logger: LoggerService
 
     init(hub: ServiceHub) {
         self.hub = hub
+        _logger = ObservedObject(wrappedValue: hub.logger)
     }
-    @State var logText = ""
     @State private var validationError: String?
 
     private var injectedDylibText: Binding<String> {
@@ -445,136 +436,28 @@ struct ResignContentView: View {
     }
 
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 16) {
-                ResignPageHeader()
+        GlassCanvas {
+            GeometryReader { proxy in
+                let usesInspector = GlassLayout.contextPresentation(for: proxy.size.width) == .inspector
+                ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: GlassMetric.spacingL) {
+                        workspaceHeader(showsInspector: usesInspector)
 
-                ResignSectionView(title: "文件与证书", systemImage: "doc.badge.gearshape") {
-                    FormRow("输入文件") {
-                        HStack(spacing: 8) {
-                            FilePickerField(
-                                title: "选择 IPA、ZIP 或 APP",
-                                path: $viewModel.inputFile,
-                                kind: .ipa,
-                                allowedContentTypes: [],
-                                serviceHub: hub
-                            )
+                        HStack(alignment: .top, spacing: GlassMetric.spacingL) {
+                            resignCanvas
+                                .frame(maxWidth: .infinity, alignment: .topLeading)
 
-                            Button(action: onTapPreview) {
-                                Label("预览", systemImage: "eye")
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(!canPreviewInput || viewModel.ipaPreviewLoading)
-                            .help("预览 IPA 内容")
-
-                            Button(action: showIPAInfo) {
-                                Label("编辑", systemImage: "slider.horizontal.3")
-                            }
-                            .buttonStyle(.bordered)
-                            .help("编辑应用信息")
-                            .popover(isPresented: $viewModel.isDetailActive, arrowEdge: .leading) {
-                                IPAContentView(resignSetting: Binding(get: { viewModel.resignSetting ?? ResignSetting() }, set: { newValue in viewModel.resignSetting = newValue }))
+                            if !usesInspector {
+                                resignContextRail
+                                    .frame(width: 320)
                             }
                         }
                     }
-
-                    FormRow("P12 证书") {
-                        FilePickerField(
-                            title: "选择 .p12 文件",
-                            path: $viewModel.p12Path,
-                            kind: .p12,
-                            allowedContentTypes: [],
-                            serviceHub: hub
-                        )
-                    }
-
-                    InputField(
-                        title: "证书密码",
-                        text: $viewModel.p12Password,
-                        placeholder: "输入 P12 密码",
-                        isSecure: true
-                    )
-
-                    FormRow("描述文件") {
-                        FilePickerField(
-                            title: "选择 .mobileprovision 文件",
-                            path: $viewModel.mobileprovisionPath,
-                            kind: .mobileprovision,
-                            allowedContentTypes: [],
-                            serviceHub: hub
-                        )
-                    }
-                }
-
-                ResignSectionView(title: "签名选项", systemImage: "checkmark.seal") {
-                    DropdownPickerRow(
-                        title: "重签方式",
-                        selection: $viewModel.resignBackend,
-                        options: ResignBackend.allCases,
-                        displayTitle: { $0.displayName }
-                    )
-
-                    DropdownPickerRow(
-                        title: "导出类型",
-                        selection: $viewModel.resignType,
-                        options: ResignExportType.allCases,
-                        displayTitle: { $0.rawValue }
-                    )
-
-                    InjectedDylibPickerView(
-                        isEnabled: $viewModel.isDylibInjectionEnabled,
-                        paths: $viewModel.injectedDylibPaths,
-                        text: injectedDylibText
-                    ) {
-                        guard let selectedUrls = selectFiles(allowsMultipleSelection: true, allowedExtensions: ["dylib"]) else {
-                            return
-                        }
-                        viewModel.injectedDylibPaths = DylibInjection.mergePaths(
-                            existing: viewModel.injectedDylibPaths,
-                            adding: selectedUrls.map { $0.path }
-                        )
-                    }
-                }
-
-                ResignSectionView(title: "输出与日志", systemImage: "tray.and.arrow.up") {
-                    InputField(
-                        title: "输出目录",
-                        text: $viewModel.outputDir,
-                        placeholder: "选择输出目录",
-                        selectAction: {
-                            guard let selectedUrl = selectFile(isDirectory: true) else {
-                                return
-                            }
-                            viewModel.outputDir = selectedUrl.path
-                        },
-                        selectTitle: "选择",
-                        selectIcon: "folder"
-                    )
-
-                    LogPanelView(logger: hub.logger, toolId: "resign")
-                        .frame(minHeight: 132, maxHeight: 132)
-                        .clipShape(RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
-                                .stroke(Color.primary.opacity(0.08))
-                        )
-
-                    HStack {
-                        Spacer()
-                        Button(action: onTapStart) {
-                            Label("开始重签", systemImage: "play.fill")
-                                .frame(minWidth: 96)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .disabled(viewModel.loading)
-                    }
+                    .padding(GlassMetric.spacingXL)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear(perform: {
             viewModel.inputFile = UserDefaults.standard.string(forKey: CacheKey.selectedInput.rawValue) ?? ""
@@ -614,11 +497,219 @@ struct ResignContentView: View {
             Text(validationError ?? "")
         }
         .sheet(isPresented: $viewModel.loading) {
-            CustomLoadingView(text: "重签中", color: .blue)
+            CustomLoadingView(text: "重签中")
         }
         .sheet(item: $viewModel.ipaPreviewInfo) { info in
             IPAPreviewPanelView(info: info)
         }
+    }
+
+    @ViewBuilder
+    private func workspaceHeader(showsInspector: Bool) -> some View {
+        WorkspaceHeader(
+            icon: "signature",
+            title: "重签工作台",
+            subtitle: "IPA / APP · 分阶段校验与导出",
+            status: resignStatus,
+            statusTitle: resignStatusTitle
+        ) {
+            if showsInspector {
+                GlassInspectorButton(title: "任务摘要") {
+                    ScrollView {
+                        resignContextRail
+                    }
+                }
+            } else {
+                EmptyView()
+            }
+        }
+    }
+
+    private var resignCanvas: some View {
+        VStack(alignment: .leading, spacing: GlassMetric.spacingL) {
+            ResignSectionView(title: "输入 IPA", systemImage: "app.badge.checkmark") {
+                ResignStageHeader(index: 1, title: "选择待重签包", detail: "导入 IPA、ZIP 或 APP，并可查看应用信息")
+                FormRow("输入文件") {
+                    HStack(spacing: GlassMetric.spacingS) {
+                        FilePickerField(
+                            title: "选择 IPA、ZIP 或 APP",
+                            path: $viewModel.inputFile,
+                            kind: .ipa,
+                            allowedContentTypes: [],
+                            serviceHub: hub
+                        )
+
+                        Button(action: onTapPreview) {
+                            Label("预览", systemImage: "eye")
+                        }
+                        .buttonStyle(GlassButtonStyle())
+                        .disabled(!canPreviewInput || viewModel.ipaPreviewLoading)
+                        .help("预览 IPA 内容")
+
+                        Button(action: showIPAInfo) {
+                            Label("编辑", systemImage: "slider.horizontal.3")
+                        }
+                        .buttonStyle(GlassButtonStyle())
+                        .help("编辑应用信息")
+                        .popover(isPresented: $viewModel.isDetailActive, arrowEdge: .leading) {
+                            IPAContentView(resignSetting: Binding(get: { viewModel.resignSetting ?? ResignSetting() }, set: { newValue in viewModel.resignSetting = newValue }))
+                        }
+                    }
+                }
+            }
+
+            ResignSectionView(title: "证书与权限", systemImage: "checkmark.seal") {
+                ResignStageHeader(index: 2, title: "匹配身份与能力", detail: "描述文件决定最终可签入的 entitlement 集合")
+                FormRow("P12 证书") {
+                    FilePickerField(
+                        title: "选择 .p12 文件",
+                        path: $viewModel.p12Path,
+                        kind: .p12,
+                        allowedContentTypes: [],
+                        serviceHub: hub
+                    )
+                }
+
+                InputField(
+                    title: "证书密码",
+                    text: $viewModel.p12Password,
+                    placeholder: "输入 P12 密码",
+                    isSecure: true
+                )
+
+                FormRow("描述文件") {
+                    FilePickerField(
+                        title: "选择 .mobileprovision 文件",
+                        path: $viewModel.mobileprovisionPath,
+                        kind: .mobileprovision,
+                        allowedContentTypes: [],
+                        serviceHub: hub
+                    )
+                }
+
+                DropdownPickerRow(
+                    title: "重签方式",
+                    selection: $viewModel.resignBackend,
+                    options: ResignBackend.allCases,
+                    displayTitle: { $0.displayName }
+                )
+
+                DropdownPickerRow(
+                    title: "导出类型",
+                    selection: $viewModel.resignType,
+                    options: ResignExportType.allCases,
+                    displayTitle: { $0.rawValue }
+                )
+
+                InjectedDylibPickerView(
+                    isEnabled: $viewModel.isDylibInjectionEnabled,
+                    paths: $viewModel.injectedDylibPaths,
+                    text: injectedDylibText
+                ) {
+                    guard let selectedUrls = selectFiles(allowsMultipleSelection: true, allowedExtensions: ["dylib"]) else {
+                        return
+                    }
+                    viewModel.injectedDylibPaths = DylibInjection.mergePaths(
+                        existing: viewModel.injectedDylibPaths,
+                        adding: selectedUrls.map { $0.path }
+                    )
+                }
+            }
+
+            ResignSectionView(title: "校验与导出", systemImage: "arrow.up.doc") {
+                ResignStageHeader(index: 3, title: "确认输出并开始", detail: "开始前会检查输入、P12、描述文件与导出目录")
+                InputField(
+                    title: "输出目录",
+                    text: $viewModel.outputDir,
+                    placeholder: "选择输出目录",
+                    selectAction: {
+                        guard let selectedUrl = selectFile(isDirectory: true) else {
+                            return
+                        }
+                        viewModel.outputDir = selectedUrl.path
+                    },
+                    selectTitle: "选择",
+                    selectIcon: "folder"
+                )
+
+                HStack(alignment: .center, spacing: GlassMetric.spacingM) {
+                    Label("运行详情与完整日志位于任务摘要。", systemImage: "waveform.path.ecg")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    ResignPrimaryAction(isRunning: viewModel.loading, action: onTapStart)
+                }
+            }
+        }
+    }
+
+    private var resignContextRail: some View {
+        ContextRail(title: "当前任务摘要", subtitle: resignStatusTitle) {
+            VStack(alignment: .leading, spacing: GlassMetric.spacingM) {
+                ResignSummaryRow(label: "证书", value: displayName(for: viewModel.p12Path, empty: "待选择"), icon: "key.fill")
+                ResignSummaryRow(label: "Profile", value: displayName(for: viewModel.mobileprovisionPath, empty: "待选择"), icon: "doc.badge.gearshape")
+                ResignSummaryRow(label: "Bundle ID", value: viewModel.resignSetting?.bundleId ?? "待读取", icon: "app.badge")
+                ResignSummaryRow(label: "权限改写", value: entitlementRewriteDescription, icon: "checkmark.shield")
+                ResignSummaryRow(label: "输出位置", value: viewModel.outputDir.isEmpty ? "待选择" : viewModel.outputDir, icon: "folder")
+            }
+
+            ActivityCard(
+                title: resignStatusTitle,
+                detail: activityDescription,
+                status: resignStatus
+            )
+
+            VStack(alignment: .leading, spacing: GlassMetric.spacingS) {
+                GlassSectionTitle("任务活动", icon: "list.bullet.rectangle")
+                LogPanelView(logger: logger, toolId: "resign")
+                    .frame(minHeight: 190, maxHeight: 250)
+                    .clipShape(RoundedRectangle(cornerRadius: GlassMetric.radiusSmall, style: .continuous))
+            }
+        }
+    }
+
+    private var resignStatus: GlassStatus {
+        if viewModel.loading { return .active }
+        if viewModel.resignSuccessOutputPath != nil { return .success }
+        return .idle
+    }
+
+    private var resignStatusTitle: String {
+        switch resignStatus {
+        case .active: "重签进行中"
+        case .success: "导出完成"
+        case .idle: "等待配置"
+        case .warning: "需要确认"
+        case .danger: "任务失败"
+        }
+    }
+
+    private var activityDescription: String {
+        if viewModel.loading {
+            return entitlementRewriteCount == 0 ? "正在校验签名与权限…" : "已发现 \(entitlementRewriteCount) 项 entitlement 调整"
+        }
+        if viewModel.resignSuccessOutputPath != nil {
+            return "签名包已生成，可在成功提示中显示或分享。"
+        }
+        return "补齐输入、证书、描述文件与输出位置后即可开始。"
+    }
+
+    private var entitlementRewriteCount: Int {
+        _ = logger.revision
+        return ResignActivitySummary.rewriteCount(
+            in: logger.recentEntries
+                .filter { $0.tool == "resign" }
+                .map(\.message)
+        )
+    }
+
+    private var entitlementRewriteDescription: String {
+        entitlementRewriteCount == 0 ? "待实际校验" : "\(entitlementRewriteCount) 项"
+    }
+
+    private func displayName(for path: String, empty: String) -> String {
+        guard !path.isEmpty else { return empty }
+        return URL(fileURLWithPath: path).lastPathComponent
     }
 
 

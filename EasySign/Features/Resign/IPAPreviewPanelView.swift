@@ -19,24 +19,25 @@ struct IPAPreviewPanelView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            heroHeader
-            tabBar
-            Divider()
-            ScrollView {
-                Group {
-                    switch selectedTab {
-                    case .info: infoTab
-                    case .profile: profileTab
-                    case .certificates: certificatesTab
-                    case .contents: contentsTab
+        GlassCanvas {
+            VStack(spacing: 0) {
+                heroHeader
+                tabBar
+                Divider()
+                ScrollView {
+                    Group {
+                        switch selectedTab {
+                        case .info: infoTab
+                        case .profile: profileTab
+                        case .certificates: certificatesTab
+                        case .contents: contentsTab
+                        }
                     }
+                    .padding(GlassMetric.spacingXL)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
         .frame(minWidth: 720, minHeight: 580)
     }
 
@@ -61,17 +62,8 @@ struct IPAPreviewPanelView: View {
 
             fileMeta
         }
-        .padding(20)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color.accentColor.opacity(0.08),
-                    Color(nsColor: .windowBackgroundColor)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
+        .glassSurface(.standard, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingXL)
+        .padding(GlassMetric.spacingS)
     }
 
     @ViewBuilder
@@ -161,7 +153,8 @@ struct IPAPreviewPanelView: View {
             }
             Spacer()
         }
-        .background(.bar)
+        .padding(.horizontal, GlassMetric.spacingS)
+        .glassSurface(.inset, radius: GlassMetric.radiusMedium, padding: 0)
     }
 
     private func iconForTab(_ tab: PreviewTab) -> String {
@@ -366,10 +359,8 @@ struct IPAPreviewPanelView: View {
             }
             content()
         }
-        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardBackground())
-        .overlay(cardBorder())
+        .glassSurface(.standard, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingL)
     }
 
     private func cardBackground(tint: Color = Color.clear) -> some View {
