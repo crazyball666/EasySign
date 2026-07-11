@@ -200,9 +200,9 @@ swiftc -o /tmp/t EasySign/Core/Transfer/*.swift Tests/TransferLoopbackTests.swif
 
 **B · 中杠杆**
 - ✅ **统一日志(已完成)**:`LoggerService` 改为合并式 `@Published`(新增 `revision`,删掉 `LogPanelView` 的 0.5s 轮询定时器);重签并入 `LoggerService(tool:"resign")` + 结构化 `LogPanelView`,删除整套平行栈 `LegacyLogLevel/LoggerProtocol/ConsoleLogger/LegacyLogPanelView/ContentViewModel.logString`;Devices 26 处裸 `print` 并入 `LoggerService(tool:"devices")`(`DeviceManager.logger` 由 `ServiceHub.live()` 启动时注入)。唯一留置:`ResignTask` 的 `Dictionary.toPlist()` 兜底 catch 里 1 处 stdout print(泛型扩展无 logger 上下文)。
-- **抽公共传输基础设施**:length-prefix 分帧 / `readExact` / 分块+进度在 Transfer、AFC、HouseArrest/InstallationProxy 之间重复;文件传输/进度有 3 套实现。
-- **修 `DeviceService` 门面**:`afcClient(for:)` 返回真实现,把浏览业务逻辑从 View 挪回 Core。
-- **appex 共享改本地 SPM package / 共享 framework**:同时解决 §4 的构建脆弱点和 1150 行 god-file。
+- ✅ **抽公共传输基础设施(已完成)**:HouseArrest / InstallationProxy / AFC 传输里重复的 secureStart 瞬时重试、send-all、recv-exact、瞬时错误码集合,归一到 `Core/Devices/ServiceConnectionIO`(各调用方仍抛自己的错误类型、errno 读取时机不变)。注:文件传输/进度的两套实现(互传 NWConnection 的 `FileTransferManager` vs 设备 AFC 的 `AFCClient`)是**不同传输协议**,未强行合并。
+- ✅ **修 `DeviceService` 死壳门面(已完成)**:`afcClient(for:)` 返回真实现(+ 新增 `afcClient(forApp:)`),`SandboxBrowserView`/`FilePreviewView`/`DestinationPickerSheet` 的 AFC client 构造统一走门面;文件批处理循环抽到 `Features/Devices/SandboxFileOperations`(882→721 行)。
+- **appex 共享改本地 SPM package / 共享 framework**:同时解决 §4 的构建脆弱点和 1150 行 god-file(item 8,待做)。
 
 **C · 大重构(等它真正付利息)**
 - 引入 `ResignBackend` 协议(`func resign(...) throws -> URL`)+ `AppleResigner` / `ZSignResigner` 策略,把 `updateEntitlements` / `verifyZSignCandidate` 归位;统一 3 套 Mach-O 解析器与 3 套 IPA 解包。

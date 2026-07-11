@@ -151,14 +151,8 @@ final class AFCServiceConnectionTransport: AFCTransport {
 
     func send(_ data: Data) throws {
         guard let conn = conn else { throw AFCSessionError.notConnected }
-        try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            guard let base = raw.baseAddress else { return }
-            var sent = 0
-            while sent < data.count {
-                let n = AMDServiceConnectionSend(conn, base.advanced(by: sent), data.count - sent)
-                if n <= 0 { throw AFCSessionError.sendFailed(errno: errno) }
-                sent += Int(n)
-            }
+        guard ServiceConnectionIO.sendAll(conn, data) else {
+            throw AFCSessionError.sendFailed(errno: errno)
         }
     }
 
@@ -167,12 +161,10 @@ final class AFCServiceConnectionTransport: AFCTransport {
         var buf = Data(count: count)
         try buf.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
             guard let base = raw.baseAddress else { return }
-            var read = 0
-            while read < count {
-                let n = AMDServiceConnectionReceive(conn, base.advanced(by: read), count - read)
-                if n == 0 { throw AFCSessionError.shortRead(expected: count, got: read) }
-                if n < 0 { throw AFCSessionError.recvFailed(errno: errno) }
-                read += Int(n)
+            switch ServiceConnectionIO.recvExact(conn, into: base, count: count) {
+            case .ok: break
+            case .eof(let read): throw AFCSessionError.shortRead(expected: count, got: read)
+            case .failed: throw AFCSessionError.recvFailed(errno: errno)
             }
         }
         return buf

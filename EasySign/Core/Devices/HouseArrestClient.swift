@@ -26,12 +26,7 @@ enum HouseArrestError: LocalizedError {
 
     var isTransient: Bool {
         if case .startServiceFailed(let code) = self {
-            switch UInt32(bitPattern: code) {
-            case 0xE8000003, 0xE8000004, 0xE8000005, 0xE800000C, 0xE8000012:
-                return true
-            default:
-                return false
-            }
+            return ServiceConnectionIO.isTransient(code)
         }
         return false
     }
@@ -92,28 +87,8 @@ enum HouseArrestClient {
     // MARK: - Private
 
     private static func startSecureService(deviceRef: AMDeviceRef) throws -> AMDServiceConnectionRef {
-        var serviceConn: AMDServiceConnectionRef?
-        var result: Int32 = -1
-
-        for attempt in 0..<3 {
-            serviceConn = nil
-            result = AMDeviceSecureStartService(
-                deviceRef,
-                "com.apple.mobile.house_arrest" as CFString,
-                nil,
-                &serviceConn
-            )
-            if result == AMDAppLEDETECT_SUCCESS, serviceConn != nil { break }
-            let transient: Bool = {
-                switch UInt32(bitPattern: result) {
-                case 0xE8000003, 0xE8000004, 0xE8000005, 0xE800000C, 0xE8000012:
-                    return true
-                default: return false
-                }
-            }()
-            if !transient { break }
-            Thread.sleep(forTimeInterval: 0.3 * Double(attempt + 1))
-        }
+        let (result, serviceConn) = ServiceConnectionIO.secureStartWithRetry(
+            deviceRef: deviceRef, service: "com.apple.mobile.house_arrest")
         guard result == AMDAppLEDETECT_SUCCESS, let conn = serviceConn else {
             throw HouseArrestError.startServiceFailed(result)
         }
@@ -145,14 +120,8 @@ enum HouseArrestClient {
         buffer.append(plistData)
 
         // Send length-prefixed plist over SSL.
-        try buffer.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            guard let base = raw.baseAddress else { return }
-            var sent = 0
-            while sent < buffer.count {
-                let n = AMDServiceConnectionSend(connection, base.advanced(by: sent), buffer.count - sent)
-                if n <= 0 { throw HouseArrestError.sendFailed(errno: errno) }
-                sent += Int(n)
-            }
+        guard ServiceConnectionIO.sendAll(connection, buffer) else {
+            throw HouseArrestError.sendFailed(errno: errno)
         }
 
         // Read 4-byte BE length prefix, then plist body.
@@ -187,11 +156,8 @@ enum HouseArrestClient {
         into pointer: UnsafeMutableRawPointer,
         count: Int
     ) throws {
-        var read = 0
-        while read < count {
-            let n = AMDServiceConnectionReceive(connection, pointer.advanced(by: read), count - read)
-            if n <= 0 { throw HouseArrestError.recvFailed(errno: errno) }
-            read += Int(n)
+        guard ServiceConnectionIO.recvExact(connection, into: pointer, count: count) == .ok else {
+            throw HouseArrestError.recvFailed(errno: errno)
         }
     }
 }

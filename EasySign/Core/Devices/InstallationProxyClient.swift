@@ -72,21 +72,7 @@ enum InstallationProxyClient {
     }
 
     private static func startService(_ deviceRef: AMDeviceRef) throws -> AMDServiceConnectionRef {
-        var conn: AMDServiceConnectionRef?
-        var result: Int32 = -1
-        for attempt in 0..<3 {
-            conn = nil
-            result = AMDeviceSecureStartService(deviceRef, serviceName as CFString, nil, &conn)
-            if result == AMDAppLEDETECT_SUCCESS, conn != nil { break }
-            let transient: Bool = {
-                switch UInt32(bitPattern: result) {
-                case 0xE8000003, 0xE8000004, 0xE8000005, 0xE800000C, 0xE8000012: return true
-                default: return false
-                }
-            }()
-            if !transient { break }
-            Thread.sleep(forTimeInterval: 0.3 * Double(attempt + 1))
-        }
+        let (result, conn) = ServiceConnectionIO.secureStartWithRetry(deviceRef: deviceRef, service: serviceName)
         guard result == AMDAppLEDETECT_SUCCESS, let c = conn else {
             throw InstallationProxyError.startServiceFailed(result)
         }
@@ -96,14 +82,8 @@ enum InstallationProxyClient {
     private static func send(_ dict: [String: Any], over conn: AMDServiceConnectionRef) throws {
         let buffer: Data
         do { buffer = try AMDPlistCodec.frame(dict) } catch { throw InstallationProxyError.badReply }
-        try buffer.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            guard let base = raw.baseAddress else { return }
-            var sent = 0
-            while sent < buffer.count {
-                let n = AMDServiceConnectionSend(conn, base.advanced(by: sent), buffer.count - sent)
-                if n <= 0 { throw InstallationProxyError.sendFailed(errno: errno) }
-                sent += Int(n)
-            }
+        guard ServiceConnectionIO.sendAll(conn, buffer) else {
+            throw InstallationProxyError.sendFailed(errno: errno)
         }
     }
 
@@ -122,11 +102,8 @@ enum InstallationProxyClient {
     }
 
     private static func readExact(_ conn: AMDServiceConnectionRef, into ptr: UnsafeMutableRawPointer, count: Int) throws {
-        var read = 0
-        while read < count {
-            let n = AMDServiceConnectionReceive(conn, ptr.advanced(by: read), count - read)
-            if n <= 0 { throw InstallationProxyError.recvFailed(errno: errno) }
-            read += Int(n)
+        guard ServiceConnectionIO.recvExact(conn, into: ptr, count: count) == .ok else {
+            throw InstallationProxyError.recvFailed(errno: errno)
         }
     }
 }
