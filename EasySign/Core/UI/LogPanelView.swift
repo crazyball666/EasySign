@@ -2,16 +2,12 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// 升级版日志面板：级别彩色 / 过滤 / 复制 / 保存到文件 / 切换 run。
+/// 升级版日志面板:级别彩色 / 过滤 / 复制 / 保存到文件 / 切换 run。
 public struct LogPanelView: View {
     @ObservedObject var logger: LoggerService
     let toolId: String
     @State private var minLevel: LogLevel = .debug
     @State private var filter: String = ""
-    // LoggerService 的 buffer 不是 @Published,光观察 logger 不会在新日志到达时重绘;
-    // 用定时器周期性 bump 强制重新读取 recentEntries,保证日志实时显示。
-    @State private var refreshTick = 0
-    private let refreshTimer = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
     public init(logger: LoggerService, toolId: String) {
         self.logger = logger
@@ -19,6 +15,8 @@ public struct LogPanelView: View {
     }
 
     public var body: some View {
+        // logger 是 @ObservedObject;LoggerService.revision 为 @Published,
+        // 新日志到达时会触发本视图重绘,无需再用定时器轮询。
         VStack(spacing: 0) {
             toolbar
             Divider()
@@ -31,11 +29,9 @@ public struct LogPanelView: View {
                     }
                 }
                 .padding(.vertical, 4)
-                .id(refreshTick)   // tick 变化即强制重读 filteredEntries
             }
             .background(Color(nsColor: .textBackgroundColor))
         }
-        .onReceive(refreshTimer) { _ in refreshTick &+= 1 }
     }
 
     private var filteredEntries: [LogEntry] {

@@ -30,6 +30,7 @@ final class ServiceHub {
         let recent = RecentFilesService()
         let artifact = ArtifactStore(logger: logger)
         let device = DeviceService.shared
+        DeviceManager.shared.logger = logger   // Devices 子系统诊断日志并入结构化日志
         let transfer = TransferService(logger: logger)
         let update = UpdateService(logger: logger)
         return ServiceHub(device: device, logger: logger, recent: recent,

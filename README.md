@@ -53,6 +53,8 @@ xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Release b
 
 三层结构,依赖只向下流:**App(应用外壳)→ Features(各工具 UI)→ Core(底层引擎/服务)**。工具通过统一的 `Tool` 协议接入,在 `ToolRegistry` 静态注册,共享服务由 `ServiceHub` 依赖注入。新增工具 = 实现一个 `Tool` + 一个视图,注册即出现在侧边栏。
 
+> 深入的架构设计文档(分层依赖规则、DI 契约、各子系统分层与不变量、应用扩展代码共享、已知技术债)见 [`docs/architecture.md`](docs/architecture.md);重签后端细节见 [`docs/zsign-backend.md`](docs/zsign-backend.md)。
+
 ```
 EasySign/
 ├── App/                     # 入口、侧边栏、菜单栏常驻、设置、更新 UI

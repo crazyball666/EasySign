@@ -11,25 +11,25 @@ import Foundation
 struct ResignTask {
     let taskInfo: ResignTaskInfo
     let workspacePath: URL
-    let logger: LoggerProtocol?
+    let logger: LoggerService?
     
-    init(taskInfo: ResignTaskInfo, logger: LoggerProtocol?) throws {
+    init(taskInfo: ResignTaskInfo, logger: LoggerService?) throws {
         self.taskInfo = taskInfo
         self.logger = logger
         /// 创建工作区
         workspacePath = try PathManager.getCacheDir().appendingPathComponent("ResignTask").appendingPathComponent(Date.now.formatString(format: "yyyyMMddHHmmssSSS"))
         try FileManager.default.createDirectory(at: workspacePath, withIntermediateDirectories: true, attributes: nil)
-        logger?.log(.INFO, "工作区目录：\(workspacePath.path)")
+        logger?.log(.info, tool: "resign", "工作区目录：\(workspacePath.path)")
     }
     
     
     func Start() throws {
         defer {
-            logger?.log(.INFO, "清理工作区目录：\(workspacePath.path)")
+            logger?.log(.info, tool: "resign", "清理工作区目录：\(workspacePath.path)")
             try? FileManager.default.removeItem(at: workspacePath)
         }
 
-        logger?.log(.INFO, "签名后端：\(taskInfo.backend.displayName)")
+        logger?.log(.info, tool: "resign", "签名后端：\(taskInfo.backend.displayName)")
         switch taskInfo.backend {
         case .zsign:
             try startZSignResign()
@@ -41,20 +41,20 @@ struct ResignTask {
     private func startAppleResign() throws {
         let appBundle = try getAppBundle()
         
-        logger?.log(.INFO, "开始重签名...")
+        logger?.log(.info, tool: "resign", "开始重签名...")
         
-        logger?.log(.INFO, "修改包体信息...")
+        logger?.log(.info, tool: "resign", "修改包体信息...")
         try appBundle.update(bundleId: taskInfo.bundleId, displayName: taskInfo.displayName, version: taskInfo.version, buildVersion: taskInfo.buildVersion)
         
-        logger?.log(.INFO, "包体信息：")
-        logger?.log(.INFO, """
+        logger?.log(.info, tool: "resign", "包体信息：")
+        logger?.log(.info, tool: "resign", """
         Bundle ID: \(appBundle.bundleId)
         应用名称：\(appBundle.displayName)
         外置版本号：\(appBundle.version)
         内置版本号：\(appBundle.buildVersion)
         """)
         
-        logger?.log(.INFO, "删除包体内无用文件...")
+        logger?.log(.info, tool: "resign", "删除包体内无用文件...")
         // argv 形式 + 括号保证 -exec 同时作用于两个 -name(否则 -o 优先级会让 .DS_Store 漏删);
         // 旧的 find|xargs rm -rf 经 shell 拼路径,路径含特殊字符会破损/注入,且 xargs 无 -0 遇空格会断词。
         try TaskCenter.execute(lanuchPath: "/usr/bin/find",
@@ -62,51 +62,51 @@ struct ResignTask {
                                            "(", "-name", ".DS_Store", "-o", "-name", "__MACOSX", ")",
                                            "-exec", "rm", "-rf", "{}", "+"])
         
-        logger?.log(.INFO, "安装 App p12 文件...")
+        logger?.log(.info, tool: "resign", "安装 App p12 文件...")
         let pkcs12 = try PKCS12(file: taskInfo.p12Path, password: taskInfo.p12Password)
-        logger?.log(.INFO, "App 证书名称：\(pkcs12.certificate.commonName) Sha1：\(pkcs12.certificate.sha1.hexString)")
+        logger?.log(.info, tool: "resign", "App 证书名称：\(pkcs12.certificate.commonName) Sha1：\(pkcs12.certificate.sha1.hexString)")
 
-        logger?.log(.INFO, "安装 App 描述文件...")
+        logger?.log(.info, tool: "resign", "安装 App 描述文件...")
         guard let mobileProvision = try MobileProvision(file: taskInfo.mobileProvisionPath) else {
             throw NSError.init(message: "读取 App 描述文件异常")
         }
         try mobileProvision.install()
-        logger?.log(.INFO, "App 描述文件名称：\(mobileProvision.name), Team ID: \(mobileProvision.teamId)")
+        logger?.log(.info, tool: "resign", "App 描述文件名称：\(mobileProvision.name), Team ID: \(mobileProvision.teamId)")
 
-        logger?.log(.INFO, "注入动态库...")
+        logger?.log(.info, tool: "resign", "注入动态库...")
         try injectDylibsForApple(appBundle: appBundle)
         
-        logger?.log(.INFO, "重签动态库...")
+        logger?.log(.info, tool: "resign", "重签动态库...")
         try codesignDynamicLibrary(appBundle: appBundle, pkcs12: pkcs12)
         
-        logger?.log(.INFO, "重签 Appex...")
+        logger?.log(.info, tool: "resign", "重签 Appex...")
         let appexResignReuslt = try codesignAppex(appBundle: appBundle, pkcs12: pkcs12, mobileProvision: mobileProvision, logger: logger)
         
-        logger?.log(.INFO, "替换 entitlements..")
+        logger?.log(.info, tool: "resign", "替换 entitlements..")
         let newEntitlements = try updateEntitlements(appBundle: appBundle, mobileProvision: mobileProvision, logger: logger)
         
-        logger?.log(.INFO, "重签 App...")
+        logger?.log(.info, tool: "resign", "重签 App...")
         try codesignApp(appBundle: appBundle, pkcs12: pkcs12, entitlements: newEntitlements)
         
         /// 复制 xcarchive 模板到工作区
-        logger?.log(.INFO, "复制 xcarchive 模板到工作区...")
+        logger?.log(.info, tool: "resign", "复制 xcarchive 模板到工作区...")
         let archiveTemplate = try createArchiveTemplate(appBundle: appBundle, pkcs12: pkcs12, mobileProvision: mobileProvision, appexResignInfo: appexResignReuslt, logger: logger)
         
-        logger?.log(.INFO, "执行 xcodebuild exportArchive...")
+        logger?.log(.info, tool: "resign", "执行 xcodebuild exportArchive...")
         let ipaPath = try xcodebuildExportArchive(xcarchivePath: archiveTemplate.xcarchivePath, exportOptionsPlistPath: archiveTemplate.exportOptionsPlistPath)
         
-        logger?.log(.INFO, "复制 ipa...")
+        logger?.log(.info, tool: "resign", "复制 ipa...")
         if FileManager.default.fileExists(atPath: taskInfo.outputPath.path) {
             try FileManager.default.removeItem(at: taskInfo.outputPath)
         }
         try FileManager.default.copyItem(at: ipaPath, to: taskInfo.outputPath)
         
-        logger?.log(.INFO, "重签名完成🎉🎉🎉")
+        logger?.log(.info, tool: "resign", "重签名完成🎉🎉🎉")
     }
 
     private func startZSignResign() throws {
         let appBundle = try getAppBundle()
-        logger?.log(.INFO, "开始 zsign 重签名...")
+        logger?.log(.info, tool: "resign", "开始 zsign 重签名...")
 
         guard let sourceMainExecutable = appBundle.executableFilePath else {
             throw NSError(message: "找不到 App 主可执行文件")
@@ -117,43 +117,43 @@ struct ResignTask {
             originalEntitlements = try appBundle.getEntitlements()
         } catch {
             originalEntitlements = nil
-            logger?.log(.INFO, "读取原 entitlements 失败，zsign 将从空请求集合开始：\(error.localizedDescription)")
+            logger?.log(.info, tool: "resign", "读取原 entitlements 失败，zsign 将从空请求集合开始：\(error.localizedDescription)")
         }
         let sourceApplicationIdentifier = originalEntitlements?["application-identifier"] as? String
 
         let injectedDylibs = try validatedInjectedDylibs()
-        logger?.log(.INFO, "执行 zsign Mach-O 签前检查...")
+        logger?.log(.info, tool: "resign", "执行 zsign Mach-O 签前检查...")
         try MachOExecutableScanner.validateAppTopology(appRoot: appBundle.path, mainExecutable: sourceMainExecutable)
         try injectedDylibs.forEach { try MachOExecutableScanner.validateInjectedDylib($0) }
 
-        logger?.log(.INFO, "读取 App 描述文件...")
+        logger?.log(.info, tool: "resign", "读取 App 描述文件...")
         guard let mobileProvision = try MobileProvision(file: taskInfo.mobileProvisionPath) else {
             throw NSError(message: "读取 App 描述文件异常")
         }
         let targetBundleIdentifier = taskInfo.bundleId ?? appBundle.bundleId
         let zsignProfile = mobileProvision.zsignProfileContext()
         let profileIdentity = try zsignProfile.validatedIdentity(targetBundleIdentifier: targetBundleIdentifier)
-        logger?.log(.INFO, "App 描述文件名称：\(mobileProvision.name), Team ID: \(profileIdentity.teamIdentifier)")
+        logger?.log(.info, tool: "resign", "App 描述文件名称：\(mobileProvision.name), Team ID: \(profileIdentity.teamIdentifier)")
 
-        logger?.log(.INFO, "校验 App p12 是否属于描述文件...")
+        logger?.log(.info, tool: "resign", "校验 App p12 是否属于描述文件...")
         let pkcs12 = try PKCS12(file: taskInfo.p12Path, password: taskInfo.p12Password)
         let certificateDER = SecCertificateCopyData(pkcs12.certificate) as Data
         guard zsignProfile.containsCertificateDER(certificateDER) else {
             throw NSError(message: "p12 证书不属于所选描述文件 DeveloperCertificates")
         }
 
-        logger?.log(.INFO, "修改包体信息...")
+        logger?.log(.info, tool: "resign", "修改包体信息...")
         try appBundle.update(bundleId: taskInfo.bundleId, displayName: taskInfo.displayName, version: taskInfo.version, buildVersion: taskInfo.buildVersion)
 
-        logger?.log(.INFO, "包体信息：")
-        logger?.log(.INFO, """
+        logger?.log(.info, tool: "resign", "包体信息：")
+        logger?.log(.info, tool: "resign", """
         Bundle ID: \(appBundle.bundleId)
         应用名称：\(appBundle.displayName)
         外置版本号：\(appBundle.version)
         内置版本号：\(appBundle.buildVersion)
         """)
 
-        logger?.log(.INFO, "删除包体内无用文件...")
+        logger?.log(.info, tool: "resign", "删除包体内无用文件...")
         // argv 形式 + 括号保证 -exec 同时作用于两个 -name(否则 -o 优先级会让 .DS_Store 漏删);
         // 旧的 find|xargs rm -rf 经 shell 拼路径,路径含特殊字符会破损/注入,且 xargs 无 -0 遇空格会断词。
         try TaskCenter.execute(lanuchPath: "/usr/bin/find",
@@ -162,10 +162,10 @@ struct ResignTask {
                                            "-exec", "rm", "-rf", "{}", "+"])
 
         if !injectedDylibs.isEmpty {
-            logger?.log(.INFO, "zsign 将注入动态库：\(injectedDylibs.map { $0.lastPathComponent }.joined(separator: ", "))")
+            logger?.log(.info, tool: "resign", "zsign 将注入动态库：\(injectedDylibs.map { $0.lastPathComponent }.joined(separator: ", "))")
         }
 
-        logger?.log(.INFO, "按描述文件生成 zsign entitlements...")
+        logger?.log(.info, tool: "resign", "按描述文件生成 zsign entitlements...")
         let reconciledEntitlements = try EntitlementReconciler.reconcile(
             EntitlementReconciliationInput(
                 customEntitlementsXML: taskInfo.entitlements,
@@ -187,7 +187,7 @@ struct ResignTask {
             case .removed: action = "移除"
             case .rewritten: action = "改写"
             }
-            logger?.log(.INFO, "zsign entitlement \(action)：\(change.keyPath)（\(change.reason)）")
+            logger?.log(.info, tool: "resign", "zsign entitlement \(action)：\(change.keyPath)（\(change.reason)）")
         }
         let entitlementsPath = workspacePath.appendingPathComponent("zsign.entitlements")
         try reconciledEntitlements.xml.write(to: entitlementsPath, atomically: true, encoding: .utf8)
@@ -213,13 +213,13 @@ struct ResignTask {
             guard !text.isEmpty else {
                 return
             }
-            logger?.log(level == 1 ? .ERROR : .INFO, text)
+            logger?.log(level == 1 ? .error : .info, tool: "resign", text)
         }
 
-        logger?.log(.INFO, "执行 zsign 签名和打包...")
+        logger?.log(.info, tool: "resign", "执行 zsign 签名和打包...")
         try ZSignBridge.resign(with: options)
 
-        logger?.log(.INFO, "校验 zsign 候选 IPA...")
+        logger?.log(.info, tool: "resign", "校验 zsign 候选 IPA...")
         try verifyZSignCandidate(
             publisher.candidateURL,
             mobileProvision: mobileProvision,
@@ -230,8 +230,8 @@ struct ResignTask {
         )
         try publisher.publish()
 
-        logger?.log(.INFO, "输出 ipa：\(taskInfo.outputPath.path)")
-        logger?.log(.INFO, "重签名完成🎉🎉🎉")
+        logger?.log(.info, tool: "resign", "输出 ipa：\(taskInfo.outputPath.path)")
+        logger?.log(.info, tool: "resign", "重签名完成🎉🎉🎉")
     }
 }
 
@@ -324,16 +324,16 @@ extension ResignTask {
     ///   - mobileProvision: 主 App 描述文件
     ///   - logger: 日志
     /// - Returns: 重签结果
-    private func codesignAppex(appBundle: AppBundle, pkcs12: PKCS12, mobileProvision: MobileProvision, logger: LoggerProtocol?) throws -> [(bundleId: String, mobileProvision: MobileProvision)] {
+    private func codesignAppex(appBundle: AppBundle, pkcs12: PKCS12, mobileProvision: MobileProvision, logger: LoggerService?) throws -> [(bundleId: String, mobileProvision: MobileProvision)] {
         guard !appBundle.appexList.isEmpty else {
-            logger?.log(.INFO, "未发现 Appex，跳过")
+            logger?.log(.info, tool: "resign", "未发现 Appex，跳过")
             return []
         }
 
         var appexResignReuslt: [(bundleId: String, mobileProvision: MobileProvision)] = []
         try appBundle.appexList.forEach { appex in
             let name = appex.path.lastPathComponent
-            logger?.log(.INFO, "使用主 App 证书重签 \(name)...")
+            logger?.log(.info, tool: "resign", "使用主 App 证书重签 \(name)...")
             try TaskCenter.execute(lanuchPath: "/usr/bin/codesign",
                                    arguments: ["-vvv", "--continue", "-f", "-s", pkcs12.certificate.sha1.hexString,
                                                "--generate-entitlement-der",
@@ -389,7 +389,7 @@ extension ResignTask {
     private func injectDylibsForApple(appBundle: AppBundle) throws {
         let dylibURLs = try validatedInjectedDylibs()
         guard !dylibURLs.isEmpty else {
-            logger?.log(.INFO, "未选择动态库，跳过注入")
+            logger?.log(.info, tool: "resign", "未选择动态库，跳过注入")
             return
         }
 
@@ -405,7 +405,7 @@ extension ResignTask {
             try FileManager.default.copyItem(at: dylibURL, to: targetURL)
 
             let loadCommandName = DylibInjection.loadCommandName(for: dylibURL)
-            logger?.log(.INFO, "注入动态库：\(loadCommandName)")
+            logger?.log(.info, tool: "resign", "注入动态库：\(loadCommandName)")
             loadCommandNames.append(loadCommandName)
         }
 
@@ -433,17 +433,17 @@ extension ResignTask {
         pkcs12: PKCS12,
         mobileProvision: MobileProvision,
         appexResignInfo: [(bundleId: String, mobileProvision: MobileProvision)],
-        logger: LoggerProtocol?
+        logger: LoggerService?
     ) throws -> (xcarchivePath: URL, exportOptionsPlistPath: URL) {
         /// 复制 xcarchive 模板到工作区
-        logger?.log(.INFO, "复制 xcarchive 模板到工作区...")
+        logger?.log(.info, tool: "resign", "复制 xcarchive 模板到工作区...")
         let templatePath = workspacePath.appendingPathComponent("template")
         guard let resignTemplate = Bundle.main.resourceURL?.appendingPathComponent("Resources/resign_template") else {
             throw NSError(message: "找不到重签模板")
         }
         try FileManager.default.copyItem(at: resignTemplate, to: templatePath)
 
-        logger?.log(.INFO, "修改 xcarchive 模板内容...")
+        logger?.log(.info, tool: "resign", "修改 xcarchive 模板内容...")
         let xcarchivePath = templatePath.appendingPathComponent("payload.xcarchive")
         let xcarchiveInfoPlistPath = xcarchivePath.appendingPathComponent("Info.plist")
         let exportOptionsPlistPath = templatePath.appendingPathComponent("ExportOptions.plist")
@@ -506,25 +506,25 @@ extension ResignTask {
         return ipaPath
     }
     
-    private func updateEntitlements(appBundle: AppBundle, mobileProvision: MobileProvision, logger: LoggerProtocol?) throws -> String {
+    private func updateEntitlements(appBundle: AppBundle, mobileProvision: MobileProvision, logger: LoggerService?) throws -> String {
         var newEntitlements: [String: Any]
         if let newEntitlementsString = taskInfo.entitlements,
            !newEntitlementsString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            logger?.log(.INFO, "解析自定义 entitlements...")
+            logger?.log(.info, tool: "resign", "解析自定义 entitlements...")
             guard let data = newEntitlementsString.data(using: .utf8),
                   let dict = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
                 throw NSError(message: "新 entitlements 格式异常")
             }
             newEntitlements = dict
-            logger?.log(.INFO, "自定义 entitlements：\(newEntitlements.toPlist())")
+            logger?.log(.info, tool: "resign", "自定义 entitlements：\(newEntitlements.toPlist())")
         } else {
             do {
                 newEntitlements = try appBundle.getEntitlements()
-                logger?.log(.INFO, "原 entitlements：\(newEntitlements.toPlist())")
+                logger?.log(.info, tool: "resign", "原 entitlements：\(newEntitlements.toPlist())")
             } catch {
-                logger?.log(.INFO, "读取原 entitlements 失败，改用描述文件 entitlements 作为基底：\(error.localizedDescription)")
+                logger?.log(.info, tool: "resign", "读取原 entitlements 失败，改用描述文件 entitlements 作为基底：\(error.localizedDescription)")
                 newEntitlements = mobileProvision.entitlements
-                logger?.log(.INFO, "描述文件 entitlements：\(newEntitlements.toPlist())")
+                logger?.log(.info, tool: "resign", "描述文件 entitlements：\(newEntitlements.toPlist())")
             }
         }
         
@@ -562,7 +562,7 @@ extension ResignTask {
             return true
         }
         
-        logger?.log(.INFO, "新 entitlements：\(newEntitlements.toPlist())")
+        logger?.log(.info, tool: "resign", "新 entitlements：\(newEntitlements.toPlist())")
         
         let data = try PropertyListSerialization.data(fromPropertyList: newEntitlements, format: .xml, options: 0)
         guard let result = String(data: data, encoding: .utf8) else {

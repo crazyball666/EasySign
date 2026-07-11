@@ -14,7 +14,7 @@ final class AppLister {
         }
 
         // 2. Start the installation_proxy service with options
-        print("[AppLister] Starting installation_proxy service...")
+        DeviceManager.shared.logger?.log(.debug, tool: "devices", "[AppLister] Starting installation_proxy service...")
         var connection: AFCConnectionRef?
         let serviceOptions: [String: Any] = [
             "Clutch": false as Any,
@@ -27,7 +27,7 @@ final class AppLister {
             &connection,
             nil
         )
-        print("[AppLister] AMDeviceStartServiceWithOptions result: \(serviceResult), socket: \(String(describing: connection))")
+        DeviceManager.shared.logger?.log(.debug, tool: "devices", "[AppLister] AMDeviceStartServiceWithOptions result: \(serviceResult), socket: \(String(describing: connection))")
 
         // 3. Create options dictionary with return attributes.
         // ApplicationType distinguishes System / User / Internal / Hidden — much
@@ -45,21 +45,21 @@ final class AppLister {
             ]
         ]
 
-        print("[AppLister] Calling AMDeviceLookupApplications with options")
+        DeviceManager.shared.logger?.log(.debug, tool: "devices", "[AppLister] Calling AMDeviceLookupApplications with options")
 
         // 4. Call AMDeviceLookupApplications with options dictionary
         var result: Unmanaged<CFDictionary>?
         let status = AMDeviceLookupApplications(deviceRef, options as CFDictionary, &result)
 
-        print("[AppLister] AMDeviceLookupApplications status: \(status)")
+        DeviceManager.shared.logger?.log(.debug, tool: "devices", "[AppLister] AMDeviceLookupApplications status: \(status)")
 
         guard status == AMDAppLEDETECT_SUCCESS,
               let dict = result?.takeRetainedValue() as? [String: Any] else {
-            print("[AppLister] Lookup failed, result: \(String(describing: result))")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[AppLister] Lookup failed, result: \(String(describing: result))")
             throw DeviceError.lookupFailed
         }
 
-        print("[AppLister] Lookup succeeded, dict keys: \(dict.keys)")
+        DeviceManager.shared.logger?.log(.debug, tool: "devices", "[AppLister] Lookup succeeded, dict keys: \(dict.keys)")
 
         // 4. Parse the returned App list
         return parseAppList(from: dict)

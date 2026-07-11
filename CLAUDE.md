@@ -4,79 +4,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-EasySign is a macOS application for resigning iOS IPA files with new certificates and provisioning profiles. It provides a SwiftUI interface to select IPA/P12/Mobileprovision files and export re-signed IPAs.
+EasySign is a macOS SwiftUI app — a developer toolbox that began as an iOS IPA re-signer and now hosts four tools behind a sidebar: **Resign**, **QRCode**, **Devices** (browse connected-iOS-device files over MobileDevice.framework), and **Transfer** (LAN peer-to-peer sync). Two auxiliary app-extension targets, `EasySignQuickLook` and `EasySignThumbnail`, provide Finder preview/thumbnails for IPA & mobileprovision files.
+
+> **Deep architecture reference: [`docs/architecture.md`](docs/architecture.md)** — layering rules, the Tool/ServiceHub DI contract, per-subsystem design, appex code-sharing, and known tech debt. Resign-backend detail: [`docs/zsign-backend.md`](docs/zsign-backend.md). This file is the quick orientation.
 
 ## Build Commands
 
 ```bash
-# Install dependencies (if using CocoaPods)
-pod install
-
-# Generate Xcode project (if project.yml exists)
-xcodegen generate
-
-# Build the project
+# Raw .xcodeproj — no CocoaPods, no xcodegen. CryptoSwift comes via Swift Package Manager.
 xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Debug build
-
-# Build release
 xcodebuild -project EasySign.xcodeproj -scheme EasySign -configuration Release build
 ```
 
+The project uses Xcode 16 `PBXFileSystemSynchronizedRootGroup`: new `.swift` files under `EasySign/` auto-join the target — no `project.pbxproj` edit needed. Deployment target is macOS 14.0.
+
 ## Architecture
 
-### UI Layer (Views/)
-- `EasySignApp.swift`: App entry point, creates a 750x670 fixed-size window
-- `ContentView.swift`: Main UI with input fields for IPA/P12/mobileprovision files, resign type picker, output directory, and log viewer
-- `IPAContentView.swift`: Detail popover for viewing/editing IPA metadata (bundle ID, display name, version, build version, entitlements)
-- `ContentViewModel`: ObservableObject managing all state and the resign workflow
+Three layers, dependencies flow downward only: **App (shell) → Features (per-tool views) → Core (engines/services, no UI)**. Tools plug in via the `Tool` protocol, register in `ToolRegistry.allTools`, and get shared services through the `ServiceHub` composition root (built once in `ServiceHub.live()`). See `docs/architecture.md` for the full picture; the essentials:
 
-### Resign Service Layer (ResignService/)
-Core signing logic lives in `ResignService/`:
+- **`App/`** — entry (`EasySignApp.swift`), `RootView`/`SidebarView` (resizable multi-tool shell), `SettingsView`, menu-bar residency (`TransferMenuBar`), update UI.
+- **`Features/{Resign,QRCode,Devices,Transfer}/`** — each tool's SwiftUI views + a small `*Tool.swift` conforming to `Tool`.
+- **`Core/`** — `Toolkit/` (Tool/ToolRegistry/ServiceHub/ServiceKey DI), `Resigning/` (signing core), `Devices/` (self-implemented AFC/HouseArrest/InstallationProxy over MobileDevice.framework), `Transfer/`, `QR/`, `Update/`, `Storage/`, `Logging/`, `UI/`.
 
-**Models:**
-- `IPA.swift`: Represents an IPA file - extracts Payload/.app to temp workspace
-- `AppBundle.swift`: Represents a .app bundle inside IPA, parses Info.plist, manages appex plugins
-- `BaseBundle.swift`: Base class for bundle info (bundleId, version, buildVersion) with Info.plist read/write
-- `AppexBundle.swift`: Represents .appex plugin bundles inside an app
-- `ResignTask.swift`: Main orchestrator - handles the complete resign flow
-- `ResignTaskInfo.swift`: Data model for resign parameters (file paths, export type, bundle metadata)
-- `PKCS12.swift`: Parses .p12 certificate files using Security framework
-- `MobileProvision.swift`: Parses .mobileprovision files, extracts entitlements/certs/team ID
-- `SecCertificate.swift`: Wraps Security framework certificate operations
-- `Logger.swift`: Simple `LoggerProtocol` for logging during resign operations
+### Resign core (`Core/Resigning/`)
+Signing logic lives in `Core/Resigning/` (the old `ResignService/` is deleted). `Model/` holds the data + orchestration types (`IPA`, `AppBundle`, `BaseBundle`, `AppexBundle`, `ResignTask`, `ResignTaskInfo`, `PKCS12`, `MobileProvision`, `SecCerticate`, plus the newer zsign layer: `EntitlementReconciler`, `MachOCodeSignatureInspector`, `MachOExecutableScanner`, `ZSignProfileContext`, `ResignOutputPublisher`). `Utils/` has `TaskCenter` (shell exec via `TaskCenter.execute`) + `PathManager`; `Ext/` has Data/Date/NSError; `ZSign/` bridges the embedded C++ zsign (`ZSignBridge`).
 
-**Utilities:**
-- `TaskCenter.swift`: Executes shell commands and processes synchronously/asynchronously
-- `PathManager.swift`: Provides cache directory and temp workspace paths
+Two backends selected by `ResignTaskInfo.backend` (a `switch` in `ResignTask.start()`, no protocol yet):
+- `.zsign` (default) — in-process embedded zsign; entitlements reconciled by `EntitlementReconciler`, output verified (`verifyZSignCandidate`) and published transactionally (`ResignOutputPublisher`).
+- `.apple` (legacy) — `codesign` + xcarchive template + `xcodebuild -exportArchive`.
 
-**Extensions:**
-- `NSError.swift`: Custom error initialization
-- `Date.swift`: Date formatting utilities
-- `Data.swift`: Data conversion helpers
+Appex plugins are signed with the **main app certificate** (separate appex certs were removed). Export types (`ResignExportType`): app-store, development, ad-hoc, enterprise, validation — on the zsign path they only shape entitlements. Optional dylib injection adds a `@executable_path/<name>` load command via embedded zsign.
 
-### Resign Workflow (ResignTask.Start())
-1. Extract IPA to temp workspace
-2. Update app bundle metadata (bundleId, displayName, version, build)
-3. Delete .DS_Store and __MACOSX
-4. Optionally copy injected dylibs into the app root and add Mach-O load commands through embedded zsign source
-5. Install p12 certificate and mobileprovision
-6. Codesign dynamic libraries (.dylib, .framework)
-7. Codesign appex plugins with optional separate certificates
-8. Update and apply entitlements based on export type
-9. Codesign main app bundle
-10. Copy to xcarchive template and run `xcodebuild -exportArchive`
-11. Copy resulting IPA to output path
-
-### Export Types
-`ResignExportType`: app-store, development, ad-hoc, enterprise, validation
-
-### Resources (EasySign/Resources/)
-- `resign_template/`: xcarchive template used for `xcodebuild -exportArchive`
-
-### Vendored Dependencies
-- `Vendor/OpenSSL/`: Bundled OpenSSL xcframework for zsign crypto operations
-- `Vendor/ZSign/`: Embedded zsign source used by the zsign backend and Mach-O dylib injection
-- CocoaPods dependencies (Pods/) - including CryptoSwift
+### Resources & vendored deps
+- `EasySign/Resources/resign_template/` — xcarchive template for the Apple path's `xcodebuild -exportArchive`.
+- `EasySign/Vendor/OpenSSL/` — bundled OpenSSL.xcframework (zsign crypto).
+- `EasySign/Vendor/ZSign/` — embedded zsign source (signing + Mach-O dylib injection). Its bridge/injector live in `Core/Resigning/ZSign/` — **not** a duplicate of the upstream lib.
+- CryptoSwift via Swift Package Manager (no CocoaPods).
 
 ### Transfer / 互联 (EasySign/Core/Transfer/)
 LAN peer-to-peer sync (clipboard text/images + files) between two EasySign instances. Independent of the resign pipeline. `TransferService` is the ObservableObject facade (lives in `ServiceHub`, App lifetime), publishing state for the UI in `Features/Transfer/` and `App/TransferMenuBar.swift`.
@@ -98,4 +61,4 @@ Pure-logic tests live in `Tests/` as standalone `@main` executables compiled wit
 ```bash
 swiftc -o /tmp/t EasySign/Core/Transfer/*.swift Tests/TransferLoopbackTests.swift && /tmp/t   # exclude TransferService.swift for unit-level tests
 ```
-Expected output ends with `ALL PASS`. The `.sh` files under `Tests/` are stale source-grep checks.
+Expected output ends with `ALL PASS`. Newer tests carry their exact `swiftc` invocation in a header comment; there is no aggregate runner and CI does not run them.

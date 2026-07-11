@@ -25,6 +25,10 @@ public final class LoggerService: ObservableObject {
     private let queue = DispatchQueue(label: "LoggerService")
     private var _buffer: [LogEntry] = []
     private var _currentRunId: UUID?
+    private var _bumpScheduled = false
+
+    /// 递增计数,仅用于驱动 SwiftUI 刷新(_buffer 在后台队列变更,不能直接 @Published)。
+    @Published public private(set) var revision: Int = 0
 
     public init() {}
 
@@ -40,6 +44,23 @@ public final class LoggerService: ObservableObject {
                                   category: category, tool: tool, message: message)
             _buffer.append(entry)
             if _buffer.count > 1000 { _buffer.removeFirst() }
+        }
+        scheduleRefresh()
+    }
+
+    // 合并高频日志的刷新:一个 runloop tick 内只发一次 @Published 变更,
+    // 取代 LogPanelView 之前的 0.5s 轮询定时器。
+    private func scheduleRefresh() {
+        let alreadyScheduled: Bool = queue.sync {
+            if _bumpScheduled { return true }
+            _bumpScheduled = true
+            return false
+        }
+        if alreadyScheduled { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.queue.sync { self._bumpScheduled = false }
+            self.revision &+= 1
         }
     }
 

@@ -147,6 +147,10 @@ private func deviceNotificationCallback(_ info: UnsafeMutableRawPointer?, _ user
 final class DeviceManager: ObservableObject {
     static let shared = DeviceManager()
 
+    // 结构化日志 sink,App 启动时由 ServiceHub.live() 注入(tool: "devices")。
+    // 仅启动时写一次、之后只读,故用普通 var 不加锁。
+    var logger: LoggerService?
+
     @Published private(set) var devices: [Device] = []
     // Internal session state — not observed by any view, so plain properties to
     // avoid the "publishing from background thread" warning when connect() runs.
@@ -251,7 +255,7 @@ final class DeviceManager: ObservableObject {
         // connections and turn our ref into garbage.
         guard let deviceList = AMDCreateDeviceList(),
               CFGetTypeID(deviceList) == CFArrayGetTypeID() else {
-            print("[DeviceManager] AMDCreateDeviceList failed")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] AMDCreateDeviceList failed")
             return false
         }
         let count = CFArrayGetCount(deviceList)
@@ -271,37 +275,37 @@ final class DeviceManager: ObservableObject {
         }
 
         guard let deviceRef = targetRef else {
-            print("[DeviceManager] Device not found in list")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] Device not found in list")
             return false
         }
 
-        print("[DeviceManager] Connecting to device...")
+        DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] Connecting to device...")
         let connectResult = AMDeviceConnect(deviceRef)
-        print("[DeviceManager] AMDeviceConnect result: \(connectResult)")
+        DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] AMDeviceConnect result: \(connectResult)")
         guard connectResult == AMDAppLEDETECT_SUCCESS else {
-            print("[DeviceManager] AMDeviceConnect failed")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] AMDeviceConnect failed")
             return false
         }
 
         // Skip AMDeviceIsPaired (unreliable) and go straight to ValidatePairing
-        print("[DeviceManager] Validating pairing...")
+        DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] Validating pairing...")
         var validateResult = AMDeviceValidatePairing(deviceRef)
-        print("[DeviceManager] AMDeviceValidatePairing result: \(validateResult)")
+        DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] AMDeviceValidatePairing result: \(validateResult)")
         if validateResult != AMDAppLEDETECT_SUCCESS {
-            print("[DeviceManager] First validation failed, retrying...")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] First validation failed, retrying...")
             _ = AMDeviceStopSession(deviceRef)
             validateResult = AMDeviceValidatePairing(deviceRef)
-            print("[DeviceManager] AMDeviceValidatePairing retry result: \(validateResult)")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] AMDeviceValidatePairing retry result: \(validateResult)")
         }
         guard validateResult == AMDAppLEDETECT_SUCCESS else {
-            print("[DeviceManager] AMDeviceValidatePairing failed")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] AMDeviceValidatePairing failed")
             _ = AMDeviceDisconnect(deviceRef)
             return false
         }
 
-        print("[DeviceManager] Starting session...")
+        DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] Starting session...")
         guard AMDeviceStartSession(deviceRef) == AMDAppLEDETECT_SUCCESS else {
-            print("[DeviceManager] AMDeviceStartSession failed")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] AMDeviceStartSession failed")
             _ = AMDeviceDisconnect(deviceRef)
             return false
         }
@@ -310,7 +314,7 @@ final class DeviceManager: ObservableObject {
         connectedDeviceRef = deviceRef
         connectedDevice = device
         isConnected = true
-        print("[DeviceManager] Connected successfully!")
+        DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] Connected successfully!")
         return true
     }
 
@@ -365,9 +369,9 @@ final class DeviceManager: ObservableObject {
         if result == AMDAppLEDETECT_SUCCESS {
             deviceNotificationPort = notifyPort
             wirelessDiscoveryEnabled = true
-            print("[DeviceManager] Wireless discovery enabled")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] Wireless discovery enabled")
         } else {
-            print("[DeviceManager] Failed to enable wireless discovery: \(result)")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager] Failed to enable wireless discovery: \(result)")
         }
     }
 
@@ -442,7 +446,7 @@ final class DeviceManager: ObservableObject {
 
             // Cache miss — do the full read.
             guard let device = readDeviceMetadata(ref: ref, interfaceType: interfaceType) else {
-                print("[DeviceManager]   [\(i)] readDeviceMetadata FAILED (interface=\(interfaceType))")
+                DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager]   [\(i)] readDeviceMetadata FAILED (interface=\(interfaceType))")
                 continue
             }
             if interfaceType == .wireless {
@@ -469,7 +473,7 @@ final class DeviceManager: ObservableObject {
     private func readDeviceMetadata(ref: AMDeviceRef, interfaceType: Device.InterfaceType) -> Device? {
         let connectResult = AMDeviceConnect(ref)
         guard connectResult == AMDAppLEDETECT_SUCCESS else {
-            print("[DeviceManager]     AMDeviceConnect failed: \(connectResult)")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager]     AMDeviceConnect failed: \(connectResult)")
             return nil
         }
         defer { _ = AMDeviceDisconnect(ref) }
@@ -486,7 +490,7 @@ final class DeviceManager: ObservableObject {
 
         guard let udid = udid, !udid.isEmpty,
               let name = name, let model = model, let version = version else {
-            print("[DeviceManager]     incomplete metadata udid=\(udid ?? "nil") name=\(name ?? "nil") model=\(model ?? "nil") version=\(version ?? "nil")")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager]     incomplete metadata udid=\(udid ?? "nil") name=\(name ?? "nil") model=\(model ?? "nil") version=\(version ?? "nil")")
             return nil
         }
 
@@ -509,11 +513,11 @@ final class DeviceManager: ObservableObject {
             pairResult = AMDeviceValidatePairing(ref)
         }
         guard pairResult == AMDAppLEDETECT_SUCCESS else {
-            print("[DeviceManager]     ValidatePairing failed: \(pairResult)")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager]     ValidatePairing failed: \(pairResult)")
             return nil
         }
         guard AMDeviceStartSession(ref) == AMDAppLEDETECT_SUCCESS else {
-            print("[DeviceManager]     StartSession failed")
+            DeviceManager.shared.logger?.log(.debug, tool: "devices", "[DeviceManager]     StartSession failed")
             return nil
         }
         defer { _ = AMDeviceStopSession(ref) }

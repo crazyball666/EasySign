@@ -51,13 +51,7 @@ enum CacheKey: String {
 }
 
 
-class ContentViewModel: ObservableObject, LoggerProtocol {
-    func log(_ level: LegacyLogLevel, _ text: String) {
-        DispatchQueue.main.async {
-            self.logString += "[\(level.rawValue)] \(text)\n"
-        }
-    }
-
+class ContentViewModel: ObservableObject {
     @Published var inputFile = ""
     {
         willSet {
@@ -84,8 +78,6 @@ class ContentViewModel: ObservableObject, LoggerProtocol {
     @Published var outputDir = ""
 
     @Published var isDetailActive = false
-
-    @Published var logString: String = ""
 
     @Published var resignSetting: ResignSetting?
 
@@ -424,29 +416,7 @@ struct InjectedDylibPickerView: View {
     }
 }
 
-struct LegacyLogPanelView: View {
-    let logText: String
-
-    var body: some View {
-        ScrollView(.vertical) {
-            Text(logText.isEmpty ? "暂无日志" : logText)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(logText.isEmpty ? .secondary : .primary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-        }
-        .frame(minHeight: 132, maxHeight: 132)
-        .background(
-            RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
-                .stroke(Color.primary.opacity(0.08))
-        )
-    }
-}
+// 重签日志已并入结构化 LoggerService,面板改用 Core/UI/LogPanelView(toolId: "resign")。
 
 
 
@@ -454,6 +424,11 @@ struct LegacyLogPanelView: View {
 
 struct ResignContentView: View {
     @StateObject var viewModel = ContentViewModel()
+    let hub: ServiceHub
+
+    init(hub: ServiceHub) {
+        self.hub = hub
+    }
     @State var logText = ""
     @State private var validationError: String?
 
@@ -474,49 +449,43 @@ struct ResignContentView: View {
                 ResignPageHeader()
 
                 ResignSectionView(title: "文件与证书", systemImage: "doc.badge.gearshape") {
-                    InputField(
-                        title: "输入文件",
-                        text: $viewModel.inputFile,
-                        placeholder: "选择 IPA、ZIP 或 APP",
-                        selectAction: {
-                            guard let selectedUrl = selectFile() else {
-                                return
-                            }
-                            viewModel.inputFile = selectedUrl.path
-                        },
-                        selectTitle: "选择",
-                        selectIcon: "doc"
-                    ) {
-                        Button(action: onTapPreview) {
-                            Label("预览", systemImage: "eye")
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!canPreviewInput || viewModel.ipaPreviewLoading)
-                        .help("预览 IPA 内容")
+                    FormRow("输入文件") {
+                        HStack(spacing: 8) {
+                            FilePickerField(
+                                title: "选择 IPA、ZIP 或 APP",
+                                path: $viewModel.inputFile,
+                                kind: .ipa,
+                                allowedContentTypes: [],
+                                serviceHub: hub
+                            )
 
-                        Button(action: showIPAInfo) {
-                            Label("编辑", systemImage: "slider.horizontal.3")
-                        }
-                        .buttonStyle(.bordered)
-                        .help("编辑应用信息")
-                        .popover(isPresented: $viewModel.isDetailActive, arrowEdge: .leading) {
-                            IPAContentView(resignSetting: Binding(get: { viewModel.resignSetting ?? ResignSetting() }, set: { newValue in viewModel.resignSetting = newValue }))
+                            Button(action: onTapPreview) {
+                                Label("预览", systemImage: "eye")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(!canPreviewInput || viewModel.ipaPreviewLoading)
+                            .help("预览 IPA 内容")
+
+                            Button(action: showIPAInfo) {
+                                Label("编辑", systemImage: "slider.horizontal.3")
+                            }
+                            .buttonStyle(.bordered)
+                            .help("编辑应用信息")
+                            .popover(isPresented: $viewModel.isDetailActive, arrowEdge: .leading) {
+                                IPAContentView(resignSetting: Binding(get: { viewModel.resignSetting ?? ResignSetting() }, set: { newValue in viewModel.resignSetting = newValue }))
+                            }
                         }
                     }
 
-                    InputField(
-                        title: "P12 证书",
-                        text: $viewModel.p12Path,
-                        placeholder: "选择 .p12 文件",
-                        selectAction: {
-                            guard let selectedUrl = selectFile() else {
-                                return
-                            }
-                            viewModel.p12Path = selectedUrl.path
-                        },
-                        selectTitle: "选择",
-                        selectIcon: "key"
-                    )
+                    FormRow("P12 证书") {
+                        FilePickerField(
+                            title: "选择 .p12 文件",
+                            path: $viewModel.p12Path,
+                            kind: .p12,
+                            allowedContentTypes: [],
+                            serviceHub: hub
+                        )
+                    }
 
                     InputField(
                         title: "证书密码",
@@ -525,19 +494,15 @@ struct ResignContentView: View {
                         isSecure: true
                     )
 
-                    InputField(
-                        title: "描述文件",
-                        text: $viewModel.mobileprovisionPath,
-                        placeholder: "选择 .mobileprovision 文件",
-                        selectAction: {
-                            guard let selectedUrl = selectFile() else {
-                                return
-                            }
-                            viewModel.mobileprovisionPath = selectedUrl.path
-                        },
-                        selectTitle: "选择",
-                        selectIcon: "doc.text"
-                    )
+                    FormRow("描述文件") {
+                        FilePickerField(
+                            title: "选择 .mobileprovision 文件",
+                            path: $viewModel.mobileprovisionPath,
+                            kind: .mobileprovision,
+                            allowedContentTypes: [],
+                            serviceHub: hub
+                        )
+                    }
                 }
 
                 ResignSectionView(title: "签名选项", systemImage: "checkmark.seal") {
@@ -585,7 +550,13 @@ struct ResignContentView: View {
                         selectIcon: "folder"
                     )
 
-                    LegacyLogPanelView(logText: viewModel.logString)
+                    LogPanelView(logger: hub.logger, toolId: "resign")
+                        .frame(minHeight: 132, maxHeight: 132)
+                        .clipShape(RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
+                                .stroke(Color.primary.opacity(0.08))
+                        )
 
                     HStack {
                         Spacer()
@@ -817,18 +788,17 @@ struct ResignContentView: View {
             buildVersion: viewModel.resignSetting?.buildVersion,
             entitlements: viewModel.resignSetting?.entitlements
         )
-        viewModel.logString = ""
         viewModel.loading = true
+        let logger = hub.logger
         DispatchQueue.global().async {
             do {
-                try ResignTask(taskInfo: taskInfo, logger: viewModel).Start()
+                try ResignTask(taskInfo: taskInfo, logger: logger).Start()
                 DispatchQueue.main.async {
                     viewModel.loading = false
                     viewModel.resignSuccessOutputPath = taskInfo.outputPath.path
                 }
             } catch {
-                print("重签错误：", error.localizedDescription)
-                viewModel.log(.ERROR, error.localizedDescription)
+                logger.log(.error, tool: "resign", error.localizedDescription)
                 DispatchQueue.main.async {
                     viewModel.presentError = error
                     viewModel.loading = false
@@ -839,5 +809,5 @@ struct ResignContentView: View {
 }
 
 #Preview {
-    ResignContentView()
+    ResignContentView(hub: .live())
 }
