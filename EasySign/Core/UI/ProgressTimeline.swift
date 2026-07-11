@@ -1,6 +1,7 @@
 import SwiftUI
 
 public struct ProgressTimeline: View {
+    @Environment(\.colorScheme) private var colorScheme
     let stages: [ResignStage]
     let currentIndex: Int
     let failedIndex: Int?
@@ -14,6 +15,7 @@ public struct ProgressTimeline: View {
     }
 
     public var body: some View {
+        let palette = GlassPalette(colorScheme: colorScheme)
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 2) {
                 ForEach(0..<stages.count, id: \.self) { i in
@@ -27,7 +29,7 @@ public struct ProgressTimeline: View {
                 ForEach(0..<stages.count, id: \.self) { i in
                     Text(stages[i].rawValue)
                         .font(.system(size: 9))
-                        .foregroundStyle(i <= currentIndex ? .primary : .secondary)
+                        .foregroundStyle(i <= currentIndex ? Color.primary : palette.mutedText)
                         .frame(maxWidth: .infinity)
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
@@ -37,9 +39,10 @@ public struct ProgressTimeline: View {
     }
 
     private func color(for index: Int) -> Color {
-        if let failed = failedIndex, index == failed { return .red }
-        if index < currentIndex { return .green }
-        if index == currentIndex { return .blue }
-        return Color.gray.opacity(0.25)
+        let palette = GlassPalette(colorScheme: colorScheme)
+        if let failed = failedIndex, index == failed { return palette.danger }
+        if index < currentIndex { return palette.success }
+        if index == currentIndex { return palette.primaryStart }
+        return palette.mutedBorder
     }
 }

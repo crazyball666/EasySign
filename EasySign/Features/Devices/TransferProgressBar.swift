@@ -38,24 +38,16 @@ enum TransferState: Equatable {
 }
 
 struct TransferProgressBar: View {
+    @Environment(\.colorScheme) private var colorScheme
     let state: TransferState
 
     var body: some View {
         content
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            // Opaque background so the content (image preview / file list)
-            // doesn't bleed through. controlBackgroundColor adapts to dark
-            // mode; success state layers a green tint on top.
-            .background(
-                ZStack {
-                    Color(NSColor.controlBackgroundColor)
-                    if case .succeeded = state {
-                        Color.green.opacity(0.18)
-                    }
-                }
+            .glassSurface(
+                state.isInProgress ? .emphasized : .standard,
+                radius: GlassMetric.radiusMedium,
+                padding: GlassMetric.spacingM
             )
-            .overlay(Divider(), alignment: .top)
     }
 
     @ViewBuilder
@@ -66,8 +58,11 @@ struct TransferProgressBar: View {
 
         case .inProgress(let kind, let file, let index, let total, let bytes, let totalBytes):
             HStack(spacing: 10) {
+                ActivityPulse(isActive: true, color: GlassPalette(colorScheme: colorScheme).primaryStart)
                 Image(systemName: kind.iconName)
-                    .foregroundColor(kind.tint)
+                    .foregroundStyle(GlassPalette(colorScheme: colorScheme).primaryStart)
+
+                StatusBadge(.active, title: "传输中")
 
                 // "3/10: filename" when batching, just "filename" when single.
                 Text(batchPrefix(index: index, total: total) + file)
@@ -79,25 +74,25 @@ struct TransferProgressBar: View {
                 if let totalBytes = totalBytes, totalBytes > 0 {
                     ProgressView(value: Double(bytes), total: Double(totalBytes))
                         .progressViewStyle(.linear)
+                        .tint(GlassPalette(colorScheme: colorScheme).primaryStart)
                 } else {
                     ProgressView()
                         .controlSize(.small)
+                        .tint(GlassPalette(colorScheme: colorScheme).primaryStart)
                 }
 
                 Text(progressLabel(bytes: bytes, total: totalBytes))
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
                     .monospacedDigit()
                     .frame(minWidth: 110, alignment: .trailing)
             }
 
         case .succeeded(let kind, let summary):
             HStack(spacing: 10) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(.green)
+                StatusBadge(.success, title: "已完成")
                 Text("\(kind.successPrefix)：\(summary)")
                     .font(.caption)
-                    .foregroundColor(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
@@ -131,16 +126,6 @@ extension TransferKind {
         case .copy:     return "doc.on.doc.fill"
         case .move:     return "arrow.turn.up.right"
         case .delete:   return "trash.fill"
-        }
-    }
-
-    var tint: Color {
-        switch self {
-        case .download: return .blue
-        case .upload:   return .green
-        case .copy:     return .purple
-        case .move:     return .orange
-        case .delete:   return .red
         }
     }
 

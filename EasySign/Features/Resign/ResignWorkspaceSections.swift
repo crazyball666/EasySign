@@ -10,18 +10,20 @@ enum ResignActivitySummary {
 }
 
 struct ResignStageHeader: View {
+    @Environment(\.colorScheme) private var colorScheme
     let index: Int
     let title: String
     let detail: String
 
     var body: some View {
+        let palette = GlassPalette(colorScheme: colorScheme)
         HStack(spacing: GlassMetric.spacingS) {
             Text(String(format: "%02d", index))
                 .font(.caption.weight(.bold).monospacedDigit())
                 .foregroundStyle(.white)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 4)
-                .background(Capsule().fill(GlassPalette(colorScheme: .dark).primaryGradient))
+                .background(Capsule().fill(palette.primaryGradient))
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(.headline.weight(.bold))

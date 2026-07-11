@@ -109,6 +109,7 @@ struct ContextRail<Content: View>: View {
 }
 
 struct GlassSectionTitle: View {
+    @Environment(\.colorScheme) private var colorScheme
     let title: String
     let icon: String
     let detail: String?
@@ -120,10 +121,11 @@ struct GlassSectionTitle: View {
     }
 
     var body: some View {
+        let palette = GlassPalette(colorScheme: colorScheme)
         HStack(spacing: GlassMetric.spacingS) {
             Image(systemName: icon)
                 .font(.subheadline.weight(.bold))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(palette.primaryStart)
                 .frame(width: 18)
             Text(title)
                 .font(.headline.weight(.semibold))

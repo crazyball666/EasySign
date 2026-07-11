@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 
 struct AppListView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let device: Device?
     let onAppSelected: (InstalledApp) -> Void
 
@@ -56,11 +57,11 @@ struct AppListView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: GlassMetric.spacingM) {
             searchBar
-            Divider()
             content
         }
+        .glassSurface(.emphasized, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingM)
         .overlay { if opTitle != nil { operationOverlay } }
         .alert("操作失败", isPresented: Binding(
             get: { opError != nil },
@@ -89,7 +90,7 @@ struct AppListView: View {
     }
 
     private var searchBar: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: GlassMetric.spacingS) {
             HStack {
                 Spacer()
                 Button {
@@ -97,13 +98,13 @@ struct AppListView: View {
                 } label: {
                     Label("安装 IPA…", systemImage: "square.and.arrow.down.on.square")
                 }
-                .controlSize(.small)
+                .buttonStyle(GlassButtonStyle(.primary))
                 .disabled(device == nil || opTitle != nil || isLoading)
             }
 
-            HStack(spacing: 6) {
+            HStack(spacing: GlassMetric.spacingS) {
                 Image(systemName: "magnifyingglass")
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
                     .font(.system(size: 12))
                 TextField("按名称或 Bundle ID 搜索", text: $searchText)
                     .textFieldStyle(.plain)
@@ -111,8 +112,7 @@ struct AppListView: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background(Color.gray.opacity(0.12))
-            .cornerRadius(6)
+            .glassSurface(.inset, radius: GlassMetric.radiusSmall)
 
             Picker("", selection: $selectedFilter) {
                 ForEach(AppFilter.allCases, id: \.self) { f in
@@ -122,28 +122,26 @@ struct AppListView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
     }
 
     @ViewBuilder
     private var content: some View {
         if isLoading {
-            VStack(spacing: 8) {
-                ProgressView()
-                Text("加载 App 列表...")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
+            ActivityCard(
+                title: "正在读取 App 列表",
+                detail: "正在从已连接设备加载应用信息",
+                status: .active
+            )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error = errorMessage {
-            Text(error)
-                .foregroundColor(.red)
-                .padding()
+            ActivityCard(title: "无法读取 App 列表", detail: error, status: .danger)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if filteredApps.isEmpty {
-            Text(apps.isEmpty ? "没有找到 App" : "没有匹配的 App")
-                .foregroundColor(.secondary)
+            ActivityCard(
+                title: apps.isEmpty ? "没有找到 App" : "没有匹配的 App",
+                detail: apps.isEmpty ? "设备中没有可显示的应用" : "尝试调整搜索词或筛选条件",
+                status: .idle
+            )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List(filteredApps) { app in
@@ -152,6 +150,7 @@ struct AppListView: View {
                     .onTapGesture { onAppSelected(app) }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             // Drop the List's default bottom content margin so the very last
             // row is fully visible and clickable.
             .listBottomContentMarginZero()
@@ -160,18 +159,23 @@ struct AppListView: View {
 
     private var operationOverlay: some View {
         ZStack {
-            Color.black.opacity(0.15).ignoresSafeArea()
-            VStack(spacing: 10) {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+            VStack(spacing: GlassMetric.spacingM) {
+                ActivityPulse(isActive: true, color: GlassPalette(colorScheme: colorScheme).primaryStart)
                 Text("\(opTitle ?? "")中…").font(.headline)
-                ProgressView(value: opProgress).frame(width: 220)
+                ProgressView(value: opProgress)
+                    .tint(GlassPalette(colorScheme: colorScheme).primaryStart)
+                    .frame(width: 220)
                 if let m = opMessage {
-                    Text(m).font(.caption).foregroundColor(.secondary).lineLimit(1)
+                    Text(m)
+                        .font(.caption)
+                        .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
+                        .lineLimit(1)
                 }
             }
-            .padding(22)
-            .background(.regularMaterial)
-            .cornerRadius(12)
-            .shadow(radius: 8)
+            .glassSurface(.emphasized, radius: GlassMetric.radiusLarge, padding: 22)
         }
     }
 
@@ -268,6 +272,7 @@ struct AppListView: View {
 // MARK: - AppRow
 
 struct AppRow: View {
+    @Environment(\.colorScheme) private var colorScheme
     let app: InstalledApp
     var onUninstall: ((InstalledApp) -> Void)? = nil
 
@@ -281,7 +286,7 @@ struct AppRow: View {
                     .lineLimit(1)
                 Text(app.bundleID)
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -291,7 +296,7 @@ struct AppRow: View {
             VStack(alignment: .trailing, spacing: 3) {
                 Text(app.version.isEmpty ? "—" : app.version)
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
                 signingBadge
             }
 
@@ -302,8 +307,8 @@ struct AppRow: View {
                 } label: {
                     Image(systemName: "trash")
                 }
-                .buttonStyle(.borderless)
-                .foregroundColor(.red)
+                .buttonStyle(GlassIconButtonStyle())
+                .foregroundStyle(GlassPalette(colorScheme: colorScheme).danger)
                 .help("卸载")
             }
         }
@@ -316,19 +321,19 @@ struct AppRow: View {
             .font(.system(size: 10, weight: .medium))
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
-            .background(color.opacity(0.15))
-            .foregroundColor(color)
-            .cornerRadius(4)
+            .background(Capsule(style: .continuous).fill(color.opacity(0.15)))
+            .foregroundStyle(color)
     }
 
     private var badgeColor: Color {
-        if app.isSystemApp { return .gray }
+        let palette = GlassPalette(colorScheme: colorScheme)
+        if app.isSystemApp { return palette.mutedText }
         switch app.signingInfo {
-        case .development: return .green
-        case .distribution: return .blue
-        case .enterprise: return .orange
-        case .system: return .gray
-        case .unknown: return .secondary
+        case .development: return palette.success
+        case .distribution: return palette.primaryStart
+        case .enterprise: return palette.warning
+        case .system: return palette.mutedText
+        case .unknown: return palette.mutedText
         }
     }
 }
@@ -340,6 +345,7 @@ struct AppRow: View {
 // for App Store apps, etc.), this gives a polished color-coded placeholder
 // keyed off the bundle ID hash.
 struct AppIconPlaceholder: View {
+    @Environment(\.colorScheme) private var colorScheme
     let app: InstalledApp
 
     var body: some View {
@@ -350,7 +356,7 @@ struct AppIconPlaceholder: View {
             .overlay(
                 Text(initial)
                     .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white)
+                    .foregroundStyle(.white)
             )
             .shadow(color: colors.last!.opacity(0.25), radius: 1, y: 1)
     }
@@ -367,15 +373,16 @@ struct AppIconPlaceholder: View {
     }
 
     private func gradient(for key: String) -> [Color] {
+        let palette = GlassPalette(colorScheme: colorScheme)
         let palettes: [[Color]] = [
-            [Color(red: 0.30, green: 0.60, blue: 0.95), Color(red: 0.20, green: 0.40, blue: 0.85)],  // blue
-            [Color(red: 0.40, green: 0.75, blue: 0.50), Color(red: 0.25, green: 0.60, blue: 0.35)],  // green
-            [Color(red: 0.95, green: 0.55, blue: 0.30), Color(red: 0.85, green: 0.40, blue: 0.20)],  // orange
-            [Color(red: 0.75, green: 0.40, blue: 0.85), Color(red: 0.55, green: 0.25, blue: 0.75)],  // purple
-            [Color(red: 0.95, green: 0.40, blue: 0.55), Color(red: 0.80, green: 0.25, blue: 0.45)],  // pink
-            [Color(red: 0.35, green: 0.70, blue: 0.75), Color(red: 0.20, green: 0.55, blue: 0.65)],  // teal
-            [Color(red: 0.55, green: 0.50, blue: 0.85), Color(red: 0.40, green: 0.35, blue: 0.75)],  // indigo
-            [Color(red: 0.95, green: 0.75, blue: 0.30), Color(red: 0.85, green: 0.60, blue: 0.20)],  // amber
+            [palette.primaryStart, palette.primaryEnd],
+            [palette.success, palette.primaryStart],
+            [palette.warning, palette.primaryEnd],
+            [palette.primaryEnd, palette.danger],
+            [palette.danger, palette.primaryEnd],
+            [palette.primaryStart, palette.success],
+            [palette.primaryEnd, palette.primaryStart],
+            [palette.warning, palette.primaryStart],
         ]
         var hash: UInt32 = 5381
         for byte in key.utf8 {

@@ -5,6 +5,7 @@ import SwiftUI
 // filtered out for clarity. The user navigates by tapping folders and
 // confirms with "选择此目录".
 struct DestinationPickerSheet: View {
+    @Environment(\.colorScheme) private var colorScheme
     let source: SandboxBrowserView.Source
     let onSelect: (String?) -> Void   // nil = cancel
 
@@ -15,60 +16,52 @@ struct DestinationPickerSheet: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Title bar
-            HStack {
-                Text("选择目标文件夹")
-                    .font(.headline)
-                Spacer()
+        GlassCanvas {
+            VStack(spacing: GlassMetric.spacingM) {
+                HStack {
+                    GlassSectionTitle("选择目标文件夹", icon: "folder.badge.plus")
+                    Spacer()
+                }
+                .glassSurface(.emphasized, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingM)
+
+                // Toolbar — back + path
+                HStack(spacing: GlassMetric.spacingS) {
+                    BackButton(action: navigateBack, isDisabled: currentPath == "/")
+                        .buttonStyle(GlassButtonStyle())
+                    Text(currentPath)
+                        .font(.caption)
+                        .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                }
+                .glassSurface(.inset, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingS)
+
+                // Folder list
+                content
+
+                // Confirm bar
+                HStack {
+                    Text("当前选中：")
+                        .font(.caption)
+                        .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
+                    Text(currentPath)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Spacer()
+
+                    Button("取消") { onSelect(nil) }
+                        .buttonStyle(GlassButtonStyle())
+                        .keyboardShortcut(.cancelAction)
+                    Button("选择此目录") { onSelect(currentPath) }
+                        .buttonStyle(GlassButtonStyle(.primary))
+                        .keyboardShortcut(.defaultAction)
+                }
+                .glassSurface(.emphasized, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingM)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Color(NSColor.controlBackgroundColor))
-
-            Divider()
-
-            // Toolbar — back + path
-            HStack(spacing: 6) {
-                BackButton(action: navigateBack, isDisabled: currentPath == "/")
-                Text(currentPath)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Color.gray.opacity(0.06))
-
-            Divider()
-
-            // Folder list
-            content
-
-            Divider()
-
-            // Confirm bar
-            HStack {
-                Text("当前选中：")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Text(currentPath)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                Spacer()
-
-                Button("取消") { onSelect(nil) }
-                    .keyboardShortcut(.cancelAction)
-                Button("选择此目录") { onSelect(currentPath) }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(NSColor.controlBackgroundColor))
+            .padding(GlassMetric.spacingL)
         }
         .frame(width: 480, height: 440)
         .onAppear { load() }
@@ -77,23 +70,27 @@ struct DestinationPickerSheet: View {
     @ViewBuilder
     private var content: some View {
         if isLoading {
-            ProgressView()
+            ActivityCard(
+                title: "正在读取文件夹",
+                detail: "正在浏览 \(currentPath)",
+                status: .active
+            )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error = errorMessage {
-            Text(error)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding()
+            ActivityCard(title: "无法读取目标文件夹", detail: error, status: .danger)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if folders.isEmpty {
-            Text("此目录下没有子文件夹")
-                .foregroundColor(.secondary)
+            ActivityCard(
+                title: "此目录下没有子文件夹",
+                detail: "可以直接选择当前目录作为目标位置",
+                status: .idle
+            )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List(folders) { node in
                 HStack {
                     Image(systemName: "folder.fill")
-                        .foregroundColor(.blue)
+                        .foregroundStyle(GlassPalette(colorScheme: colorScheme).primaryStart)
                     Text(node.name)
                     Spacer()
                 }
@@ -105,6 +102,7 @@ struct DestinationPickerSheet: View {
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             .listBottomContentMarginZero()
         }
     }

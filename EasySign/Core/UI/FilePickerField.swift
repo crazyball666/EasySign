@@ -4,6 +4,7 @@ import AppKit
 
 /// 通用文件选择输入框：拖拽 / 点击选 / 清除 / 校验 / 最近使用下拉。
 struct FilePickerField: View {
+    @Environment(\.colorScheme) private var colorScheme
     let title: String
     @Binding var path: String
     let kind: RecentFileKind
@@ -13,6 +14,8 @@ struct FilePickerField: View {
 
     @State private var error: String?
     @State private var isTargeted = false
+
+    private var palette: GlassPalette { GlassPalette(colorScheme: colorScheme) }
 
     init(title: String,
          path: Binding<String>,
@@ -29,10 +32,18 @@ struct FilePickerField: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
-            fileButton
-            if !path.isEmpty { clearButton }
-            recentsMenu
+        VStack(alignment: .leading, spacing: GlassMetric.spacingXS) {
+            HStack(spacing: 6) {
+                fileButton
+                if !path.isEmpty { clearButton }
+                recentsMenu
+            }
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(palette.danger)
+                    .accessibilityLabel("文件校验失败：\(error)")
+            }
         }
     }
 
@@ -40,12 +51,12 @@ struct FilePickerField: View {
         Button(action: pickFile) {
             HStack(spacing: 6) {
                 Image(systemName: iconForKind)
-                    .foregroundStyle(error == nil ? Color.secondary : Color.red)
+                    .foregroundStyle(error == nil ? palette.mutedText : palette.danger)
                 Text(displayText)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .foregroundStyle(path.isEmpty ? Color.secondary : Color.primary)
+                    .foregroundStyle(path.isEmpty ? palette.mutedText : Color.primary)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -61,7 +72,7 @@ struct FilePickerField: View {
 
     private var buttonBackground: some View {
         RoundedRectangle(cornerRadius: 6)
-            .fill(error == nil ? Color(nsColor: .controlBackgroundColor) : Color.red.opacity(0.15))
+            .fill(error == nil ? palette.insetFill : palette.danger.opacity(0.15))
     }
 
     private var buttonBorder: some View {
@@ -75,7 +86,7 @@ struct FilePickerField: View {
             error = nil
         } label: {
             Image(systemName: "xmark.circle.fill")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(palette.mutedText)
         }
         .buttonStyle(.plain)
         .help("清除")
@@ -86,7 +97,7 @@ struct FilePickerField: View {
             recentsContent
         } label: {
             Image(systemName: "clock.arrow.circlepath")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(palette.mutedText)
         }
         .menuStyle(.borderlessButton)
         .frame(width: 24)
@@ -123,9 +134,9 @@ struct FilePickerField: View {
     }
 
     private var borderColor: Color {
-        if isTargeted { return .accentColor }
-        if error != nil { return .red }
-        return Color.gray.opacity(0.3)
+        if isTargeted { return palette.primaryStart }
+        if error != nil { return palette.danger }
+        return palette.mutedBorder
     }
 
     private var iconForKind: String {

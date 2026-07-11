@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SandboxBrowserView: View {
+    @Environment(\.colorScheme) private var colorScheme
     enum Source: Equatable {
         case media(Device)
         case appSandbox(InstalledApp)
@@ -35,16 +36,16 @@ struct SandboxBrowserView: View {
     @State private var deleteRequest: DeleteRequest?
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: GlassMetric.spacingM) {
             if case .appSandbox(let app) = source {
                 appContextHeader(app: app)
-                Divider()
             }
 
             toolbar
-            Divider()
             content
         }
+        .padding(GlassMetric.spacingM)
+        .glassSurface(.emphasized, radius: GlassMetric.radiusLarge)
         .onAppear { connectAndBrowse() }
         // 必须挂在最外层、不随 content 分支销毁的节点上:传输完成时
         // .succeeded 和紧随其后的 connectAndBrowse() 的 isLoading=true 会合并
@@ -127,17 +128,19 @@ struct SandboxBrowserView: View {
     private var toolbar: some View {
         HStack {
             BackButton(action: navigateBack, isDisabled: !canNavigateBack)
+                .buttonStyle(GlassButtonStyle())
 
             Button(action: refresh) {
                 Image(systemName: "arrow.clockwise")
             }
+            .buttonStyle(GlassIconButtonStyle())
             .disabled(transferState.isInProgress)
 
             Spacer()
 
             Text(currentPath)
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
@@ -149,11 +152,10 @@ struct SandboxBrowserView: View {
                     Text("上传").font(.caption)
                 }
             }
+            .buttonStyle(GlassButtonStyle(.primary))
             .disabled(transferState.isInProgress)
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(Color.gray.opacity(0.1))
+        .glassSurface(.inset, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingS)
     }
 
     private var canNavigateBack: Bool {
@@ -168,12 +170,12 @@ struct SandboxBrowserView: View {
     private func appContextHeader(app: InstalledApp) -> some View {
         HStack(spacing: 10) {
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.blue.opacity(0.15))
+                .fill(GlassPalette(colorScheme: colorScheme).primaryGradient)
                 .frame(width: 34, height: 34)
                 .overlay(
                     Text(String(app.name.prefix(1)))
                         .font(.headline)
-                        .foregroundColor(.blue)
+                        .foregroundStyle(.white)
                 )
             VStack(alignment: .leading, spacing: 1) {
                 Text(app.name)
@@ -181,14 +183,13 @@ struct SandboxBrowserView: View {
                     .fontWeight(.semibold)
                 Text(app.bundleID)
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             Spacer()
         }
-        .padding(.horizontal)
-        .padding(.vertical, 6)
+        .glassSurface(.inset, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingS)
     }
 
     // MARK: - Content
@@ -196,18 +197,14 @@ struct SandboxBrowserView: View {
     @ViewBuilder
     private var content: some View {
         if isLoading {
-            ProgressView()
+            ActivityCard(
+                title: "正在读取文件",
+                detail: "正在浏览 \(currentPath)",
+                status: .active
+            )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error = errorMessage {
-            VStack(spacing: 12) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.largeTitle)
-                    .foregroundColor(.orange)
-                Text(error)
-                    .multilineTextAlignment(.center)
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 24)
-            }
+            ActivityCard(title: "无法读取当前目录", detail: error, status: .danger)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             // Mount the progress bar on the List via safeAreaInset(bottom:)
@@ -228,6 +225,7 @@ struct SandboxBrowserView: View {
                     .contextMenu { contextMenu(for: node) }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             // Drop the List's default bottom content margin so the very last
             // row's hit-area isn't swallowed.
             .listBottomContentMarginZero()
@@ -658,13 +656,14 @@ struct DeleteRequest: Identifiable {
 // MARK: - FileNodeRow
 
 struct FileNodeRow: View {
+    @Environment(\.colorScheme) private var colorScheme
     let node: FileNode
     var isSelected: Bool = false
 
     var body: some View {
         HStack {
             Image(systemName: iconName(for: node))
-                .foregroundColor(iconColor(for: node, selected: isSelected))
+                .foregroundStyle(iconColor(for: node, selected: isSelected))
                 .frame(width: 24)
 
             Text(node.name)
@@ -675,7 +674,7 @@ struct FileNodeRow: View {
             if !node.isDirectory {
                 Text(formatSize(node.size))
                     .font(.caption)
-                    .foregroundColor(isSelected ? .white.opacity(0.85) : .secondary)
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.85) : GlassPalette(colorScheme: colorScheme).mutedText)
             }
         }
         .padding(.vertical, 2)
@@ -696,20 +695,21 @@ struct FileNodeRow: View {
     }
 
     private func iconColor(for node: FileNode, selected: Bool) -> Color {
+        let palette = GlassPalette(colorScheme: colorScheme)
         // Selected rows get a blue accent background — colored icons
         // (blue folder, etc.) blend in. Switch to white on selection so
         // the icon stays visible.
         if selected { return .white }
         if node.isDirectory {
-            return .blue
+            return palette.primaryStart
         }
         switch node.fileType {
         case .text, .plist, .json: return .primary
-        case .image: return .green
-        case .video: return .purple
-        case .audio: return .pink
-        case .database: return .orange
-        default: return .secondary
+        case .image: return palette.success
+        case .video: return palette.primaryEnd
+        case .audio: return palette.primaryStart
+        case .database: return palette.warning
+        default: return palette.mutedText
         }
     }
 

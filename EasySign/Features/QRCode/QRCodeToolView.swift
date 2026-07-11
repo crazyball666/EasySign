@@ -243,14 +243,17 @@ struct QRCodeToolView: View {
 }
 
 private struct QRCodePageHeader: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
+        let palette = GlassPalette(colorScheme: colorScheme)
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: qrcodePanelRadius, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.14))
+                    .fill(palette.primaryStart.opacity(0.14))
                 Image(systemName: "qrcode")
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(palette.primaryStart)
             }
             .frame(width: 44, height: 44)
 

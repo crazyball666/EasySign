@@ -11,6 +11,7 @@ enum ConflictResolution {
 // Batch operations can capture the "apply to all" decision so the user isn't
 // prompted again for the remaining files in this batch.
 struct ConflictResolutionSheet: View {
+    @Environment(\.colorScheme) private var colorScheme
     let conflictingName: String
     let remainingCount: Int   // how many MORE files in this batch could conflict
     let onResolve: (ConflictResolution, Bool /* applyToAll */) -> Void
@@ -18,51 +19,56 @@ struct ConflictResolutionSheet: View {
     @State private var applyToAll: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundColor(.orange)
-                    .font(.title2)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("文件冲突")
-                        .font(.headline)
-                    Text("目标位置已存在文件")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+        GlassCanvas {
+            VStack(alignment: .leading, spacing: GlassMetric.spacingL) {
+                HStack(spacing: GlassMetric.spacingM) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(GlassPalette(colorScheme: colorScheme).warning)
+                        .font(.title2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("文件冲突")
+                            .font(.headline)
+                        Text("目标位置已存在文件")
+                            .font(.caption)
+                            .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
+                    }
+                    Spacer()
                 }
-                Spacer()
-            }
 
-            HStack(spacing: 6) {
-                Image(systemName: "doc.fill")
-                    .foregroundColor(.secondary)
-                Text(conflictingName)
-                    .font(.system(.body, design: .monospaced))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .padding(8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.gray.opacity(0.08))
-            .cornerRadius(6)
+                HStack(spacing: GlassMetric.spacingS) {
+                    Image(systemName: "doc.fill")
+                        .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
+                    Text(conflictingName)
+                        .font(.system(.body, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .glassSurface(.inset, radius: GlassMetric.radiusSmall, padding: GlassMetric.spacingS)
 
-            if remainingCount > 0 {
-                Toggle("应用于后续冲突（剩余 \(remainingCount) 个文件）", isOn: $applyToAll)
-                    .toggleStyle(.checkbox)
-                    .font(.caption)
-            }
+                if remainingCount > 0 {
+                    Toggle("应用于后续冲突（剩余 \(remainingCount) 个文件）", isOn: $applyToAll)
+                        .toggleStyle(.checkbox)
+                        .font(.caption)
+                }
 
-            HStack(spacing: 8) {
-                Button("取消") { onResolve(.cancel, false) }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button("跳过") { onResolve(.skip, applyToAll) }
-                Button("重命名") { onResolve(.rename, applyToAll) }
-                Button("覆盖") { onResolve(.overwrite, applyToAll) }
-                    .keyboardShortcut(.defaultAction)
+                HStack(spacing: GlassMetric.spacingS) {
+                    Button("取消") { onResolve(.cancel, false) }
+                        .buttonStyle(GlassButtonStyle())
+                        .keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button("跳过") { onResolve(.skip, applyToAll) }
+                        .buttonStyle(GlassButtonStyle())
+                    Button("重命名") { onResolve(.rename, applyToAll) }
+                        .buttonStyle(GlassButtonStyle())
+                    Button("覆盖") { onResolve(.overwrite, applyToAll) }
+                        .buttonStyle(GlassButtonStyle(.primary))
+                        .keyboardShortcut(.defaultAction)
+                }
             }
+            .glassSurface(.emphasized, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingL)
+            .padding(GlassMetric.spacingL)
         }
-        .padding(18)
         .frame(width: 420)
     }
 }

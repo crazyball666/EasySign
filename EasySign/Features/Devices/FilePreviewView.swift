@@ -25,45 +25,52 @@ struct FilePreviewView: View {
         // regardless of the preview content's sizing. .overlay didn't work
         // reliably here because the inner VStack's intrinsic height depends on
         // what kind of preview is rendered.
-        ZStack(alignment: .bottom) {
-            VStack(spacing: 0) {
+        GlassCanvas {
+            ZStack(alignment: .bottom) {
+                VStack(spacing: GlassMetric.spacingM) {
                 // 工具栏
                 HStack {
                     BackButton(action: onBack)
+                        .buttonStyle(GlassButtonStyle())
 
                     Spacer()
 
                     Text(fileName)
                         .font(.headline)
+                        .lineLimit(1)
 
                     Spacer()
 
                     Button("下载到本地") { downloadToLocal() }
+                        .buttonStyle(GlassButtonStyle(.primary))
                         .disabled(transferState.isInProgress)
                 }
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-                .background(Color.gray.opacity(0.1))
-
-                Divider()
+                .glassSurface(.emphasized, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingM)
 
                 // 预览内容
                 if isLoading {
-                    ProgressView()
+                    ActivityCard(
+                        title: "正在加载预览",
+                        detail: "正在从设备读取 \(fileName)",
+                        status: .active
+                    )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if let error = errorMessage {
-                    Text("Error: \(error)")
-                        .foregroundColor(.red)
+                    ActivityCard(title: "无法预览文件", detail: error, status: .danger)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if let result = previewResult {
                     previewContent(result)
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .padding(GlassMetric.spacingL)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if transferState.isActive {
-                TransferProgressBar(state: transferState)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                if transferState.isActive {
+                    TransferProgressBar(state: transferState)
+                        .padding(.horizontal, GlassMetric.spacingL)
+                        .padding(.bottom, GlassMetric.spacingL)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
         }
         .onAppear { loadPreview() }
@@ -89,43 +96,40 @@ struct FilePreviewView: View {
             ScrollView {
                 Text(content)
                     .font(.system(.body, design: .monospaced))
-                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(GlassMetric.spacingM)
             }
+            .glassSurface(.inset, radius: GlassMetric.radiusMedium)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .image(let nsImage):
             Image(nsImage: nsImage)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .padding()
+                .padding(GlassMetric.spacingM)
+                .glassSurface(.inset, radius: GlassMetric.radiusMedium)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .database:
-            VStack {
-                Image(systemName: "cylinder")
-                    .font(.largeTitle)
-                    .foregroundColor(.secondary)
-                Text("数据库预览暂未实现")
-                    .foregroundColor(.secondary)
-            }
+            ActivityCard(
+                title: "数据库预览暂未实现",
+                detail: "文件已读取，但当前不提供结构化数据库浏览",
+                status: .idle
+            )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .binary(let data):
             ScrollView {
                 Text(formatHex(data))
                     .font(.system(.caption, design: .monospaced))
-                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(GlassMetric.spacingM)
             }
+            .glassSurface(.inset, radius: GlassMetric.radiusMedium)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .unsupported(let reason):
-            VStack {
-                Image(systemName: "doc.questionmark")
-                    .font(.largeTitle)
-                    .foregroundColor(.secondary)
-                Text(reason)
-                    .foregroundColor(.secondary)
-            }
+            ActivityCard(title: "此文件暂不支持预览", detail: reason, status: .idle)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }

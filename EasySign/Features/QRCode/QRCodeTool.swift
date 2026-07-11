@@ -4,7 +4,7 @@ struct QRCodeTool: Tool {
     let displayName = "二维码"
     let subtitle = "生成与扫描二维码"
     let icon = "qrcode"
-    let accentColor = Color.green
+    let accentColor = Color.accentColor
     let category: ToolCategory = .frequent
     let sortOrder = 1
 

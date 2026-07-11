@@ -14,21 +14,19 @@ struct DeviceListPanel: View {
     let onDeviceSelected: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: GlassMetric.spacingM) {
             HStack {
-                Text("设备")
-                    .font(.headline)
+                GlassSectionTitle("设备", icon: "iphone.gen3")
                 Spacer()
                 Button(action: onRefresh) {
                     Image(systemName: "arrow.clockwise")
                 }
+                .buttonStyle(GlassIconButtonStyle())
             }
-            .padding()
-
-            Divider()
+            .glassSurface(.inset, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingS)
 
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: GlassMetric.spacingXS) {
                     ForEach(devices) { device in
                         DeviceRow(
                             device: device,
@@ -41,38 +39,45 @@ struct DeviceListPanel: View {
                 }
             }
         }
-        .background(Color.gray.opacity(0.05))
+        .glassSurface(.emphasized, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingM)
     }
 }
 
 struct DeviceRow: View {
+    @Environment(\.colorScheme) private var colorScheme
     let device: Device
     let isSelected: Bool
     let onTap: () -> Void
 
     var body: some View {
+        let palette = GlassPalette(colorScheme: colorScheme)
         Button(action: onTap) {
             HStack {
                 Image(systemName: device.deviceClass == .iPhone ? "iphone" : "ipad")
-                    .foregroundColor(.primary)
+                    .foregroundStyle(isSelected ? palette.onAccentText : palette.primaryStart)
                 VStack(alignment: .leading) {
                     Text(device.name)
                         .font(.subheadline)
-                        .foregroundColor(.primary)
+                        .foregroundStyle(isSelected ? palette.onAccentText : Color.primary)
                     Text(device.systemVersion)
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(isSelected ? palette.onAccentText.opacity(0.82) : palette.mutedText)
                 }
                 Spacer()
                 if device.interfaceType == .wireless {
                     Image(systemName: "wifi")
                         .font(.caption)
-                        .foregroundColor(.blue)
+                        .foregroundStyle(isSelected ? palette.onAccentText : palette.primaryStart)
                 }
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
-            .background(isSelected ? Color.blue.opacity(0.1) : Color.clear)
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: GlassMetric.radiusSmall, style: .continuous)
+                        .fill(palette.primaryGradient)
+                }
+            }
         }
         .buttonStyle(.plain)
     }

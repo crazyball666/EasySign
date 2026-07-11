@@ -22,13 +22,16 @@ extension Binding where Value == Bool {
 }
 
 struct CustomLoadingView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let text: String
+
+    private var palette: GlassPalette { GlassPalette(colorScheme: colorScheme) }
 
     var body: some View {
         GlassCanvas {
             VStack(spacing: GlassMetric.spacingL) {
                 ZStack {
-                    ActivityPulse(isActive: true, color: Color.accentColor)
+                    ActivityPulse(isActive: true, color: palette.primaryStart)
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -119,14 +122,17 @@ private let resignLabelWidth: CGFloat = 104
 private let resignPanelRadius: CGFloat = GlassMetric.radiusMedium
 
 struct ResignPageHeader: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
+        let palette = GlassPalette(colorScheme: colorScheme)
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: resignPanelRadius, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.14))
+                    .fill(palette.primaryStart.opacity(0.14))
                 Image(systemName: "signature")
                     .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(palette.primaryStart)
             }
             .frame(width: 44, height: 44)
 
@@ -267,6 +273,7 @@ struct InputField<TailView: View>: View {
 }
 
 struct DropdownPickerRow<SelectionValue: Hashable>: View {
+    @Environment(\.colorScheme) private var colorScheme
     let title: String
     @Binding var selection: SelectionValue
     let options: [SelectionValue]
@@ -285,6 +292,7 @@ struct DropdownPickerRow<SelectionValue: Hashable>: View {
     }
 
     var body: some View {
+        let palette = GlassPalette(colorScheme: colorScheme)
         FormRow(title) {
             Menu {
                 ForEach(options, id: \.self) { option in
@@ -314,11 +322,11 @@ struct DropdownPickerRow<SelectionValue: Hashable>: View {
                 .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(Color(nsColor: .textBackgroundColor))
+                        .fill(palette.insetFill)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                        .stroke(palette.mutedBorder, lineWidth: 1)
                 )
                 .contentShape(Rectangle())
             }
@@ -329,10 +337,13 @@ struct DropdownPickerRow<SelectionValue: Hashable>: View {
 }
 
 struct InjectedDylibPickerView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Binding var isEnabled: Bool
     @Binding var paths: [String]
     @Binding var text: String
     var addAction: () -> Void
+
+    private var palette: GlassPalette { GlassPalette(colorScheme: colorScheme) }
 
     var body: some View {
         FormRow("动态库注入") {
@@ -387,7 +398,7 @@ struct InjectedDylibPickerView: View {
                                 .frame(height: 30)
                                 .background(
                                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(Color.primary.opacity(0.04))
+                                        .fill(palette.insetFill)
                                 )
                             }
 

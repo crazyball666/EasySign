@@ -17,12 +17,15 @@ enum BrowseMode: String, CaseIterable, Hashable {
 // MARK: - DeviceView
 
 struct DeviceView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject private var deviceManager = DeviceManager.shared
     @State private var selectedDevice: Device?
     @State private var mode: BrowseMode = .apps
     @State private var selectedApp: InstalledApp?      // non-nil → showing app's sandbox
     @State private var previewFile: FileNode?          // non-nil → showing file preview
     @State private var appListRefreshTrigger: Int = 0
+
+    private var palette: GlassPalette { GlassPalette(colorScheme: colorScheme) }
 
     var body: some View {
         GlassCanvas {
@@ -94,7 +97,7 @@ struct DeviceView: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(Color.gray.opacity(0.06))
+        .glassSurface(.inset, radius: GlassMetric.radiusMedium, padding: 0)
         .onChange(of: mode) { _, _ in
             // Switching mode collapses any deeper navigation in the previous mode.
             selectedApp = nil
@@ -116,7 +119,7 @@ struct DeviceView: View {
                     path: file.path,
                     onBack: { previewFile = nil }
                 )
-                .background(Color(NSColor.windowBackgroundColor))
+                .background(palette.canvas)
             }
         }
     }
@@ -160,12 +163,15 @@ struct DeviceView: View {
 
     @ViewBuilder
     private func placeholder(_ text: String) -> some View {
-        VStack {
-            Spacer()
+        VStack(spacing: GlassMetric.spacingM) {
+            Image(systemName: "iphone.slash")
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(palette.mutedText)
             Text(text)
-                .foregroundColor(.secondary)
-            Spacer()
+                .font(.callout.weight(.medium))
+                .foregroundStyle(palette.mutedText)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .glassSurface(.inset, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingXL)
     }
 }

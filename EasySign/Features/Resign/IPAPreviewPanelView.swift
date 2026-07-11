@@ -7,8 +7,11 @@ import SwiftUI
 import PreviewKit
 
 struct IPAPreviewPanelView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let info: IPAPreviewInfo
     @State private var selectedTab: PreviewTab = .info
+
+    private var palette: GlassPalette { GlassPalette(colorScheme: colorScheme) }
 
     enum PreviewTab: String, CaseIterable, Identifiable {
         case info = "应用信息"
@@ -76,29 +79,29 @@ struct IPAPreviewPanelView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                        .stroke(palette.mutedBorder, lineWidth: 1)
                 }
                 .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
         } else {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.accentColor.opacity(0.12))
+                .fill(palette.primaryStart.opacity(0.12))
                 .frame(width: 72, height: 72)
                 .overlay {
                     Image(systemName: "app.dashed")
                         .font(.system(size: 32, weight: .medium))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(palette.primaryStart)
                 }
         }
     }
 
     private var heroBadges: some View {
         HStack(spacing: 6) {
-            badge(info.versionDescription, tint: .blue, icon: "tag")
+            badge(info.versionDescription, tint: palette.primaryStart, icon: "tag")
             if let teamId = info.provisioningProfile?.teamIdentifier, !teamId.isEmpty {
-                badge("Team \(teamId)", tint: .green, icon: "person.3")
+                badge("Team \(teamId)", tint: palette.success, icon: "person.3")
             }
             if let profileType = info.provisioningProfile?.profileType, !profileType.isEmpty {
-                badge(profileType, tint: .indigo, icon: "doc.badge.gearshape")
+                badge(profileType, tint: palette.primaryEnd, icon: "doc.badge.gearshape")
             }
         }
     }
@@ -134,18 +137,18 @@ struct IPAPreviewPanelView: View {
                                 .font(.caption2)
                                 .padding(.horizontal, 5)
                                 .padding(.vertical, 1)
-                                .background(Color.secondary.opacity(0.2), in: Capsule())
+                                .background(palette.mutedText.opacity(0.2), in: Capsule())
                         }
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .background(
                         Rectangle()
-                            .fill(selectedTab == tab ? Color.accentColor.opacity(0.12) : Color.clear)
+                            .fill(selectedTab == tab ? palette.primaryStart.opacity(0.12) : Color.clear)
                     )
                     .overlay(alignment: .bottom) {
                         Rectangle()
-                            .fill(selectedTab == tab ? Color.accentColor : Color.clear)
+                            .fill(selectedTab == tab ? palette.primaryStart : Color.clear)
                             .frame(height: 2)
                     }
                 }
@@ -231,7 +234,7 @@ struct IPAPreviewPanelView: View {
                                     .font(.system(.caption, design: .monospaced))
                                     .textSelection(.enabled)
                                     .padding(.horizontal, 8).padding(.vertical, 3)
-                                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 4))
+                                    .background(palette.insetFill, in: RoundedRectangle(cornerRadius: 4))
                             }
                         }
                     }
@@ -247,7 +250,7 @@ struct IPAPreviewPanelView: View {
             HStack(alignment: .center, spacing: 12) {
                 Image(systemName: "doc.badge.gearshape.fill")
                     .font(.system(size: 36))
-                    .foregroundStyle(Color.indigo)
+                    .foregroundStyle(palette.primaryEnd)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(profile.name)
                         .font(.headline)
@@ -295,7 +298,7 @@ struct IPAPreviewPanelView: View {
         let text = allValid
             ? "所有 \(certs.count) 张证书均在有效期内"
             : (anyExpired ? "存在已过期的证书" : "部分证书即将过期")
-        let tint: Color = allValid ? .green : (anyExpired ? .red : .orange)
+        let tint: Color = allValid ? palette.success : (anyExpired ? palette.danger : palette.warning)
         return HStack(spacing: 10) {
             Image(systemName: icon)
                 .font(.system(size: 22))
@@ -339,7 +342,7 @@ struct IPAPreviewPanelView: View {
                             .font(.system(.subheadline, design: .monospaced))
                             .textSelection(.enabled)
                             .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                            .background(palette.insetFill, in: RoundedRectangle(cornerRadius: 6))
                     }
                 }
             }
@@ -365,13 +368,13 @@ struct IPAPreviewPanelView: View {
 
     private func cardBackground(tint: Color = Color.clear) -> some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color(nsColor: .textBackgroundColor))
+            .fill(palette.surfaceOverlay)
             .overlay(tint)
     }
 
     private func cardBorder(tint: Color = Color.clear) -> some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .stroke(Color(nsColor: .separatorColor).opacity(0.5))
+            .stroke(palette.border)
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(tint))
     }
 
@@ -420,9 +423,9 @@ struct IPAPreviewPanelView: View {
 
     private func validityColor(_ status: ValidityStatus) -> Color {
         switch status {
-        case .notYetValid, .expiringSoon: return .orange
-        case .valid: return .green
-        case .expired: return .red
+        case .notYetValid, .expiringSoon: return palette.warning
+        case .valid: return palette.success
+        case .expired: return palette.danger
         }
     }
 
@@ -437,6 +440,7 @@ struct IPAPreviewPanelView: View {
 // MARK: - Validity badge
 
 private struct ValidityBadge: View {
+    @Environment(\.colorScheme) private var colorScheme
     let status: ValidityStatus
     let daysLeft: Int?
 
@@ -470,11 +474,12 @@ private struct ValidityBadge: View {
     }
 
     private var tint: Color {
+        let palette = GlassPalette(colorScheme: colorScheme)
         switch status {
-        case .valid: return .green
-        case .expiringSoon: return .orange
-        case .expired: return .red
-        case .notYetValid: return .yellow
+        case .valid: return palette.success
+        case .expiringSoon: return palette.warning
+        case .expired: return palette.danger
+        case .notYetValid: return palette.warning
         }
     }
 
@@ -488,6 +493,7 @@ private struct ValidityBadge: View {
 // MARK: - Certificate card
 
 private struct CertificateCard: View {
+    @Environment(\.colorScheme) private var colorScheme
     let cert: IPAPreviewCertificate
     let index: Int
 
@@ -562,7 +568,7 @@ private struct CertificateCard: View {
 
     private var cardBackground: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color(nsColor: .textBackgroundColor))
+            .fill(GlassPalette(colorScheme: colorScheme).surfaceOverlay)
     }
 
     private var cardBorder: some View {
@@ -571,11 +577,12 @@ private struct CertificateCard: View {
     }
 
     private var validityColor: Color {
+        let palette = GlassPalette(colorScheme: colorScheme)
         switch cert.validityStatus {
-        case .valid: return .green
-        case .expiringSoon: return .orange
-        case .expired: return .red
-        case .notYetValid: return .yellow
+        case .valid: return palette.success
+        case .expiringSoon: return palette.warning
+        case .expired: return palette.danger
+        case .notYetValid: return palette.warning
         }
     }
 

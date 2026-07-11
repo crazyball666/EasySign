@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 /// 历史与排查日志收进底部折叠区。目的是去掉一长串同质卡片、让当前该做的事一眼可见。
 struct TransferToolView: View {
     @ObservedObject var service: TransferService
+    @Environment(\.colorScheme) private var colorScheme
     @State private var host = ""
     @State private var portText = ""
     @State private var codeInput = ""                       // 手动 IP 连接用
@@ -17,6 +18,9 @@ struct TransferToolView: View {
     @State private var showManualConnect = false            // 手动 IP(默认折叠)
     @State private var showHistory = false                  // 传输历史(默认折叠)
     @State private var showLog = false                      // 排查日志(默认折叠)
+    @StateObject private var networkPath = TransferNetworkPathObserver()
+
+    private var palette: GlassPalette { GlassPalette(colorScheme: colorScheme) }
 
     private var isConnected: Bool {
         if case .connected = service.connectionState { return true }
@@ -52,8 +56,12 @@ struct TransferToolView: View {
                 }
             }
         }
-        .onAppear { localIP = LocalNetwork.lanIPv4() }
+        .onAppear {
+            localIP = LocalNetwork.lanIPv4()
+            networkPath.start()
+        }
         .onChange(of: service.listenPort) { _, _ in localIP = LocalNetwork.lanIPv4() }
+        .onDisappear { networkPath.stop() }
     }
 
     @ViewBuilder
@@ -78,7 +86,8 @@ struct TransferToolView: View {
     private var transferContextRail: some View {
         ContextRail(title: "会话信息", subtitle: "当前连接与信任状态") {
             ResignSummaryRow(label: "本机", value: service.deviceName, icon: "laptopcomputer")
-            ResignSummaryRow(label: "网络", value: localIP ?? "正在检测", icon: "network")
+            ResignSummaryRow(label: "本机网络路径", value: networkPath.summary.title, icon: networkPath.summary.symbol)
+            ResignSummaryRow(label: "本机地址", value: localIP ?? "正在检测", icon: "number")
             ResignSummaryRow(label: "端口", value: service.listenPort.map(String.init) ?? "未监听", icon: "point.3.connected.trianglepath.dotted")
             ResignSummaryRow(label: "信任设备", value: "\(service.pairedPeers.count) 台", icon: "checkmark.shield")
             ResignSummaryRow(label: "进行中", value: service.activeTransfers.isEmpty ? "无" : "\(service.activeTransfers.count) 项", icon: "arrow.up.arrow.down.circle")
@@ -99,6 +108,7 @@ struct TransferToolView: View {
 
     private var statusHeader: some View {
         let s = statusStyle
+        let tint = palette.color(for: s.status)
         return HStack(alignment: .center, spacing: 12) {
             if s.spinner {
                 ProgressView().controlSize(.small)
@@ -106,13 +116,13 @@ struct TransferToolView: View {
             } else {
                 Image(systemName: s.icon)
                     .font(.title2)
-                    .foregroundStyle(s.color)
+                    .foregroundStyle(tint)
                     .frame(width: 22, height: 22)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(s.title)
                     .font(.headline)
-                    .foregroundStyle(s.color)
+                    .foregroundStyle(tint)
                     .lineLimit(2)
                 Text(subtitle)
                     .font(.caption)
@@ -131,11 +141,13 @@ struct TransferToolView: View {
     private var statusAction: some View {
         switch service.connectionState {
         case .connected:
-            Button("断开") { service.disconnect() }.controlSize(.large)
+            Button("断开") { service.disconnect() }
+                .buttonStyle(GlassButtonStyle())
+                .controlSize(.large)
         case .failed:
             if service.canRetry {
                 Button("重试") { service.retry() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(GlassButtonStyle(.primary))
                     .controlSize(.large)
             }
         default:
@@ -144,13 +156,13 @@ struct TransferToolView: View {
     }
 
     /// 状态条的图标 / 配色 / 文案 / 是否转圈。
-    private var statusStyle: (icon: String, color: Color, title: String, spinner: Bool) {
+    private var statusStyle: (icon: String, status: GlassStatus, title: String, spinner: Bool) {
         switch service.connectionState {
-        case .idle:                return ("wifi.slash", .gray, "未连接", false)
-        case .connecting:          return ("",           .blue, "连接中…", true)
-        case .pairing:             return ("",           .blue, "配对中…", true)
-        case let .connected(name): return ("checkmark.circle.fill", .green, "已连接 · \(name)", false)
-        case let .failed(msg):     return ("exclamationmark.triangle.fill", .red, msg, false)
+        case .idle:                return ("wifi.slash", .idle, "未连接", false)
+        case .connecting:          return ("", .active, "连接中…", true)
+        case .pairing:             return ("", .active, "配对中…", true)
+        case let .connected(name): return ("checkmark.circle.fill", .success, "已连接 · \(name)", false)
+        case let .failed(msg):     return ("exclamationmark.triangle.fill", .danger, msg, false)
         }
     }
 
@@ -224,12 +236,12 @@ struct TransferToolView: View {
                     .font(.caption)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(isPaired ? Color.green.opacity(0.2) : Color.orange.opacity(0.2))
-                    .foregroundStyle(isPaired ? .green : .orange)
+                    .background(isPaired ? palette.success.opacity(0.16) : palette.warning.opacity(0.16))
+                    .foregroundStyle(isPaired ? palette.success : palette.warning)
                     .cornerRadius(4)
                 if isPaired {
                     Button("连接") { service.connect(to: peer, pairingCode: nil) }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(GlassButtonStyle(.primary))
                         .controlSize(.small)
                 }
             }
@@ -239,7 +251,7 @@ struct TransferToolView: View {
                     TextField("输入「\(peer.name)」屏幕上的配对码", text: codeBinding)
                         .textFieldStyle(.roundedBorder)
                     Button("配对并连接") { service.connect(to: peer, pairingCode: codeBinding.wrappedValue) }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(GlassButtonStyle(.primary))
                         .controlSize(.small)
                         .disabled(codeBinding.wrappedValue.count < 6)
                 }
@@ -289,12 +301,12 @@ struct TransferToolView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(
-                        isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
+                        isDropTargeted ? palette.primaryStart : palette.mutedBorder,
                         style: StrokeStyle(lineWidth: 2, dash: [6])
                     )
                     .background(
                         RoundedRectangle(cornerRadius: 8)
-                            .fill(isDropTargeted ? Color.accentColor.opacity(0.08) : Color.clear)
+                            .fill(isDropTargeted ? palette.primaryStart.opacity(0.08) : Color.clear)
                     )
                 Text("拖文件到此发送").padding(24)
             }
@@ -341,7 +353,10 @@ struct TransferToolView: View {
 
     private var activeTransfersCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("进行中传输", systemImage: "arrow.up.arrow.down.circle").font(.headline)
+            HStack(spacing: GlassMetric.spacingS) {
+                ActivityPulse(isActive: true, color: palette.primaryStart)
+                Label("进行中传输", systemImage: "arrow.up.arrow.down.circle").font(.headline)
+            }
             ForEach(service.activeTransfers) { p in
                 activeTransferRow(p)
             }
@@ -355,7 +370,7 @@ struct TransferToolView: View {
         return VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Image(systemName: p.direction == .incoming ? "arrow.down.circle" : "arrow.up.circle")
-                    .foregroundStyle(p.direction == .incoming ? .green : .blue)
+                    .foregroundStyle(p.direction == .incoming ? palette.success : palette.primaryStart)
                 Text(p.name).lineLimit(1)
                 Spacer()
                 Text("\(pct)%")
@@ -397,12 +412,12 @@ struct TransferToolView: View {
                     Text("\(service.history.count)")
                         .font(.caption2).monospacedDigit()
                         .padding(.horizontal, 6).padding(.vertical, 1)
-                        .background(.quaternary).cornerRadius(8)
+                        .background(palette.insetFill, in: Capsule())
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
+        .glassSurface(.inset, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingM)
         .confirmationDialog("清理传输历史?", isPresented: $showClearHistoryConfirm, titleVisibility: .visible) {
             Button("清理历史和收到的文件", role: .destructive) { service.clearHistory() }
             Button("取消", role: .cancel) {}
@@ -423,7 +438,7 @@ struct TransferToolView: View {
     private func historyRow(_ item: TransferItem) -> some View {
         HStack(spacing: 8) {
             Image(systemName: item.direction == .incoming ? "arrow.down.circle" : "arrow.up.circle")
-                .foregroundStyle(item.direction == .incoming ? .green : .blue)
+                .foregroundStyle(item.direction == .incoming ? palette.success : palette.primaryStart)
 
             historyRowContent(item)
 
@@ -504,15 +519,12 @@ struct TransferToolView: View {
                 Text("连接/配对失败后,点面板右上「复制全文」把日志发给开发者").font(.caption).foregroundStyle(.secondary)
                 LogPanelView(logger: service.logger, toolId: "transfer")
                     .frame(height: 240)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .cornerRadius(8)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
             }
             .padding(.top, 6)
         } label: {
             Label("排查日志", systemImage: "doc.plaintext").font(.headline)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12).background(.quaternary.opacity(0.4)).cornerRadius(10)
+        .glassSurface(.inset, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingM)
     }
 }

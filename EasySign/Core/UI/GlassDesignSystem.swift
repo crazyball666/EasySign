@@ -117,6 +117,7 @@ struct GlassPalette {
 
     var primaryStart: Color { Color(red: 0.30, green: 0.91, blue: 0.76) }
     var primaryEnd: Color { Color(red: 0.55, green: 0.43, blue: 0.96) }
+    var onAccentText: Color { .white }
     var success: Color { colorScheme == .dark ? Color(red: 0.34, green: 0.94, blue: 0.69) : Color(red: 0.05, green: 0.48, blue: 0.33) }
     var warning: Color { Color(red: 0.96, green: 0.61, blue: 0.16) }
     var danger: Color { Color(red: 0.94, green: 0.34, blue: 0.36) }
@@ -316,7 +317,7 @@ struct ActivityPulse: View {
     let isActive: Bool
     let color: Color
 
-    init(isActive: Bool, color: Color = Color.accentColor) {
+    init(isActive: Bool, color: Color) {
         self.isActive = isActive
         self.color = color
     }

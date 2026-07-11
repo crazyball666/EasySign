@@ -5,22 +5,16 @@ struct UpdateView: View {
     let update: UpdateInfo
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Image(systemName: "arrow.down.circle.fill").font(.system(size: 28)).foregroundStyle(.blue)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("发现新版本 \(update.version)").font(.headline)
-                    Text("当前 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
-                        .font(.caption).foregroundStyle(.secondary)
+        GlassCanvas {
+            VStack(alignment: .leading, spacing: GlassMetric.spacingL) {
+                WorkspaceHeader(icon: "arrow.down.circle.fill", title: "发现新版本 \(update.version)", subtitle: "当前 \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")", status: updateStatus, statusTitle: updateStatusTitle)
+                ScrollView {
+                    Text(update.releaseNotes.isEmpty ? "(无更新说明)" : update.releaseNotes)
+                        .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
                 }
-            }
-            Divider()
-            ScrollView {
-                Text(update.releaseNotes.isEmpty ? "(无更新说明)" : update.releaseNotes)
-                    .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(height: 160)
-            .padding(8).background(.quaternary.opacity(0.4)).cornerRadius(8)
+                .frame(height: 160)
+                .glassSurface(.inset, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingM)
 
             if service.readyToInstall {
                 Text("已下载完成。点「安装并重启」自动覆盖更新并重新打开 EasySign。")
@@ -46,8 +40,12 @@ struct UpdateView: View {
                     Button("下载更新") { service.startDownload() }.keyboardShortcut(.defaultAction)
                 }
             }
+            }
+            .padding(GlassMetric.spacingXL)
         }
-        .padding(20)
         .frame(width: 460)
     }
+
+    private var updateStatus: GlassStatus { service.readyToInstall ? .success : (service.downloadProgress == nil ? .idle : .active) }
+    private var updateStatusTitle: String { service.readyToInstall ? "准备安装" : (service.downloadProgress == nil ? "等待下载" : "下载中") }
 }

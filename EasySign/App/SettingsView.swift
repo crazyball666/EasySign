@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 
 struct SettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var settings: SettingsStore
     @ObservedObject var transfer: TransferService
     @ObservedObject var update: UpdateService
@@ -10,18 +11,20 @@ struct SettingsView: View {
     @State private var launchAtLogin = LaunchAtLogin.isEnabled
 
     var body: some View {
-        TabView {
-            generalTab.tabItem { Label("常规", systemImage: "gear") }
-            filesTab.tabItem { Label("文件", systemImage: "doc") }
-            transferTab.tabItem { Label("互传", systemImage: "arrow.left.arrow.right") }
-            aboutTab.tabItem { Label("关于", systemImage: "info.circle") }
+        GlassCanvas {
+            TabView {
+                generalTab.tabItem { Label("常规", systemImage: "gear") }
+                filesTab.tabItem { Label("文件", systemImage: "doc") }
+                transferTab.tabItem { Label("互传", systemImage: "arrow.left.arrow.right") }
+                aboutTab.tabItem { Label("关于", systemImage: "info.circle") }
+            }
+            .padding(GlassMetric.spacingS)
         }
         .frame(width: 500, height: 380)
     }
 
     private var generalTab: some View {
-        GlassCanvas {
-            Form {
+        Form {
                 Section("工作台") {
                     Picker("外观", selection: interfaceThemeBinding) {
                         ForEach(GlassThemePreference.allCases) { preference in
@@ -45,11 +48,9 @@ struct SettingsView: View {
                         update.checkForUpdates(silent: false)
                     }
                 }
-            }
-            .scrollContentBackground(.hidden)
-            .formStyle(.grouped)
-            .padding(GlassMetric.spacingS)
         }
+        .scrollContentBackground(.hidden)
+        .formStyle(.grouped)
     }
 
     private var filesTab: some View {
@@ -66,6 +67,7 @@ struct SettingsView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
         .formStyle(.grouped)
     }
 
@@ -88,21 +90,24 @@ struct SettingsView: View {
                 Button("清空已配对设备", role: .destructive) { transfer.clearPairedDevices() }
             }
         }
+        .scrollContentBackground(.hidden)
         .formStyle(.grouped)
     }
 
     private var aboutTab: some View {
-        VStack(spacing: 8) {
+        let palette = GlassPalette(colorScheme: colorScheme)
+        return VStack(spacing: GlassMetric.spacingM) {
             Image(systemName: "signature")
                 .font(.system(size: 48))
-                .foregroundStyle(.blue)
-            Text("EasySign").font(.title)
+                .foregroundStyle(palette.primaryStart)
+            Text("EasySign").font(.title.weight(.bold))
             Text("iOS/macOS 重签 + 工具集")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
         }
-        .padding()
+        .glassSurface(.standard, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingXL)
+        .padding(GlassMetric.spacingL)
     }
 
     private var launchRestoresBinding: Binding<Bool> {
