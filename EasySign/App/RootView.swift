@@ -16,9 +16,6 @@ struct RootView: View {
             detailView
                 .frame(minWidth: 600, minHeight: 400)
         }
-        .safeAreaInset(edge: .bottom) {
-            StatusBar(currentTool: currentTool, artifactStore: hub.artifact)
-        }
         .frame(minWidth: 750, minHeight: 670)  // 保持原有固定窗口尺寸
         .onChange(of: selection) { _, newValue in
             // 记住最后选中的工具,供下次启动按「启动时恢复上次工具」恢复

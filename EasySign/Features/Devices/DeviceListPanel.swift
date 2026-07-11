@@ -16,7 +16,7 @@ struct DeviceListPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Devices")
+                Text("设备")
                     .font(.headline)
                 Spacer()
                 Button(action: onRefresh) {

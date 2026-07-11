@@ -7,14 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		FACE00000000000000000005 /* PreviewKit in Frameworks */ = {isa = PBXBuildFile; productRef = FACE00000000000000000002 /* PreviewKit */; };
-		FACE00000000000000000006 /* PreviewKit in Frameworks */ = {isa = PBXBuildFile; productRef = FACE00000000000000000003 /* PreviewKit */; };
-		FACE00000000000000000007 /* PreviewKit in Frameworks */ = {isa = PBXBuildFile; productRef = FACE00000000000000000004 /* PreviewKit */; };
 		7C0000010000000100000001 /* MobileDevice.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C0000010000000100000002 /* MobileDevice.framework */; };
 		7C047AFF2DFE61D30063989A /* CryptoSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 7C047AFE2DFE61D30063989A /* CryptoSwift */; };
 		89101DE4E299978AEB7F8BBA /* Quartz.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E0DF986375702FE59B3232BD /* Quartz.framework */; };
 		CCF9D857907B66510FC637BF /* EasySignQuickLook.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 8C95EA07F8B625C31232873C /* EasySignQuickLook.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E5A0000000000000000000A8 /* EasySignThumbnail.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E5A0000000000000000000A3 /* EasySignThumbnail.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		FACE00000000000000000005 /* PreviewKit in Frameworks */ = {isa = PBXBuildFile; productRef = FACE00000000000000000002 /* PreviewKit */; };
+		FACE00000000000000000006 /* PreviewKit in Frameworks */ = {isa = PBXBuildFile; productRef = FACE00000000000000000003 /* PreviewKit */; };
+		FACE00000000000000000007 /* PreviewKit in Frameworks */ = {isa = PBXBuildFile; productRef = FACE00000000000000000004 /* PreviewKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -64,8 +64,8 @@
 		7C0000010000000100000002 /* MobileDevice.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MobileDevice.framework; path = /System/Library/PrivateFrameworks/MobileDevice.framework; sourceTree = "<absolute>"; };
 		7CD6C1A72C4197E900C1DB7F /* EasySign.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EasySign.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8C95EA07F8B625C31232873C /* EasySignQuickLook.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EasySignQuickLook.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		E5A0000000000000000000A3 /* EasySignThumbnail.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EasySignThumbnail.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E0DF986375702FE59B3232BD /* Quartz.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Quartz.framework; path = System/Library/Frameworks/Quartz.framework; sourceTree = SDKROOT; };
+		E5A0000000000000000000A3 /* EasySignThumbnail.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EasySignThumbnail.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -110,8 +110,8 @@
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		78EAA4D98DE053A4CE8787E1 /* EasySignQuickLook */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (27C1F8A295BDE502C5719CC6 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = EasySignQuickLook; sourceTree = "<group>"; };
-		E5A0000000000000000000A1 /* EasySignThumbnail */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (E5A0000000000000000000AE /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = EasySignThumbnail; sourceTree = "<group>"; };
 		7C9878C22DEC2D1100C9789C /* EasySign */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (7C9A00012DF4D00000AA0001 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, 7C9878EE2DF4CF9900C9789C /* PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (Resources, ); path = EasySign; sourceTree = "<group>"; };
+		E5A0000000000000000000A1 /* EasySignThumbnail */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (E5A0000000000000000000AE /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = EasySignThumbnail; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -124,14 +124,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		E5A0000000000000000000A5 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				FACE00000000000000000007 /* PreviewKit in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		7CD6C1A42C4197E900C1DB7F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -139,6 +131,14 @@
 				7C047AFF2DFE61D30063989A /* CryptoSwift in Frameworks */,
 				FACE00000000000000000005 /* PreviewKit in Frameworks */,
 				7C0000010000000100000001 /* MobileDevice.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E5A0000000000000000000A5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FACE00000000000000000007 /* PreviewKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -297,14 +297,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		E5A0000000000000000000A6 /* Resources */ = {
+		7CD6C1A52C4197E900C1DB7F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		7CD6C1A52C4197E900C1DB7F /* Resources */ = {
+		E5A0000000000000000000A6 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -498,9 +498,9 @@
 					"$(SRCROOT)/EasySign/Vendor/ZSign/src/third-party/zlib",
 					"$(SRCROOT)/EasySign/Vendor/OpenSSL/OpenSSL.xcframework/macos-arm64_x86_64/OpenSSL.framework/Headers",
 				);
+				INFOPLIST_FILE = EasySign/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = EasySign;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_FILE = EasySign/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -548,9 +548,9 @@
 					"$(SRCROOT)/EasySign/Vendor/ZSign/src/third-party/zlib",
 					"$(SRCROOT)/EasySign/Vendor/OpenSSL/OpenSSL.xcframework/macos-arm64_x86_64/OpenSSL.framework/Headers",
 				);
+				INFOPLIST_FILE = EasySign/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = EasySign;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_FILE = EasySign/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -762,6 +762,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		7C047AFE2DFE61D30063989A /* CryptoSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7C047AFD2DFE61D30063989A /* XCRemoteSwiftPackageReference "CryptoSwift" */;
+			productName = CryptoSwift;
+		};
 		FACE00000000000000000002 /* PreviewKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = FACE00000000000000000001 /* XCLocalSwiftPackageReference "Packages/PreviewKit" */;
@@ -776,11 +781,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = FACE00000000000000000001 /* XCLocalSwiftPackageReference "Packages/PreviewKit" */;
 			productName = PreviewKit;
-		};
-		7C047AFE2DFE61D30063989A /* CryptoSwift */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 7C047AFD2DFE61D30063989A /* XCRemoteSwiftPackageReference "CryptoSwift" */;
-			productName = CryptoSwift;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
