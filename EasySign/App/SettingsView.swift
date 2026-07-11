@@ -20,24 +20,36 @@ struct SettingsView: View {
     }
 
     private var generalTab: some View {
-        Form {
-            Section {
-                Toggle("启动时恢复上次工具", isOn: launchRestoresBinding)
-                Toggle("启用实验性功能", isOn: experimentalBinding)
-            }
-            Section("更新") {
-                Toggle("启动时自动检查更新", isOn: Binding(
-                    get: { update.autoCheckEnabled },
-                    set: { update.autoCheckEnabled = $0 }
-                ))
-                Button("检查更新…") {
-                    openWindow(id: "main")
-                    NSApp.activate(ignoringOtherApps: true)
-                    update.checkForUpdates(silent: false)
+        GlassCanvas {
+            Form {
+                Section("工作台") {
+                    Picker("外观", selection: interfaceThemeBinding) {
+                        ForEach(GlassThemePreference.allCases) { preference in
+                            Text(preference.title).tag(preference.rawValue)
+                        }
+                    }
+                    Text("外观变更会立即应用到主窗口与设置。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle("启动时恢复上次工具", isOn: launchRestoresBinding)
+                    Toggle("启用实验性功能", isOn: experimentalBinding)
+                }
+                Section("更新") {
+                    Toggle("启动时自动检查更新", isOn: Binding(
+                        get: { update.autoCheckEnabled },
+                        set: { update.autoCheckEnabled = $0 }
+                    ))
+                    Button("检查更新…") {
+                        openWindow(id: "main")
+                        NSApp.activate(ignoringOtherApps: true)
+                        update.checkForUpdates(silent: false)
+                    }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .formStyle(.grouped)
+            .padding(GlassMetric.spacingS)
         }
-        .formStyle(.grouped)
     }
 
     private var filesTab: some View {
@@ -104,6 +116,13 @@ struct SettingsView: View {
         Binding(
             get: { settings.bool(.enableExperimental) },
             set: { settings.set($0, for: .enableExperimental) }
+        )
+    }
+
+    private var interfaceThemeBinding: Binding<String> {
+        Binding(
+            get: { settings.string(.interfaceTheme) ?? GlassThemePreference.system.rawValue },
+            set: { settings.set($0, for: .interfaceTheme) }
         )
     }
 

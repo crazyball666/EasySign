@@ -3,6 +3,7 @@ import SwiftUI
 struct RootView: View {
     @State private var selection: String?
     @State private var hub: ServiceHub
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(hub: ServiceHub) {
         _hub = State(initialValue: hub)
@@ -10,17 +11,40 @@ struct RootView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView(selection: $selection, tools: ToolRegistry.allTools)
-        } detail: {
-            detailView
-                .frame(minWidth: 600, minHeight: 400)
+        GlassCanvas {
+            GeometryReader { proxy in
+                let sidebarMode = GlassLayout.sidebarMode(for: proxy.size.width)
+                NavigationSplitView {
+                    SidebarView(
+                        selection: $selection,
+                        tools: ToolRegistry.allTools,
+                        mode: sidebarMode
+                    )
+                } detail: {
+                    detailView
+                        .id(selection ?? "empty-tool")
+                        .transition(detailTransition)
+                        .frame(minWidth: 500, minHeight: 400)
+                }
+                .animation(detailAnimation, value: selection)
+            }
         }
-        .frame(minWidth: 750, minHeight: 670)  // 保持原有固定窗口尺寸
+        .frame(minWidth: 620, minHeight: 620)
         .onChange(of: selection) { _, newValue in
             // 记住最后选中的工具,供下次启动按「启动时恢复上次工具」恢复
             if let id = newValue { hub.settings.set(id, for: .lastActiveTool) }
         }
+    }
+
+    private var detailTransition: AnyTransition {
+        if reduceMotion {
+            return .opacity
+        }
+        return .opacity.combined(with: .offset(x: 24))
+    }
+
+    private var detailAnimation: Animation {
+        reduceMotion ? .easeOut(duration: 0.18) : .easeOut(duration: 0.38)
     }
 
     @ViewBuilder

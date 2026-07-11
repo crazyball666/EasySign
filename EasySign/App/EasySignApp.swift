@@ -12,6 +12,7 @@ import AppKit
 struct EasySignApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var hub: ServiceHub
+    @AppStorage(SettingsKey.interfaceTheme.rawValue) private var interfaceThemeRaw = GlassThemePreference.system.rawValue
 
     init() {
         // 互传历史/收到文件的默认保留期 = 7 天。注册为默认值:未显式设置时即生效;
@@ -30,17 +31,23 @@ struct EasySignApp: App {
         Window("EasySign", id: "main") {
             RootView(hub: hub)
                 .modifier(UpdateSheet(service: hub.update))
+                .preferredColorScheme(interfaceTheme.resolvedColorScheme)
         }
         .windowResizability(.contentSize)
         .commands { UpdateCommands(update: hub.update) }
 
         Settings {
             SettingsView(settings: hub.settings, transfer: hub.transfer, update: hub.update)
+                .preferredColorScheme(interfaceTheme.resolvedColorScheme)
         }
 
         MenuBarExtra("互传", systemImage: "arrow.left.arrow.right") {
             TransferMenuBar(service: hub.transfer)
         }
+    }
+
+    private var interfaceTheme: GlassThemePreference {
+        GlassThemePreference(rawValue: interfaceThemeRaw) ?? .system
     }
 }
 
