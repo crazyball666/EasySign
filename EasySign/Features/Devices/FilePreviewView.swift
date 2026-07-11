@@ -216,9 +216,9 @@ struct FilePreviewView: View {
     private func makeClient(for source: SandboxBrowserView.Source) throws -> AFCClient {
         switch source {
         case .media(let device):
-            return try AFCClient(device: device)
+            return try DeviceService.shared.afcClient(for: device)
         case .appSandbox(let app):
-            return try AFCClient(device: app.device, bundleID: app.bundleID)
+            return try DeviceService.shared.afcClient(forApp: app)
         }
     }
 

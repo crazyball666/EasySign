@@ -130,9 +130,9 @@ struct DestinationPickerSheet: View {
                 let client: AFCClient
                 switch snapshotSource {
                 case .media(let device):
-                    client = try AFCClient(device: device)
+                    client = try DeviceService.shared.afcClient(for: device)
                 case .appSandbox(let app):
-                    client = try AFCClient(device: app.device, bundleID: app.bundleID)
+                    client = try DeviceService.shared.afcClient(forApp: app)
                 }
                 let nodes = try client.listDirectory(at: snapshotPath)
                     .filter { $0.isDirectory }

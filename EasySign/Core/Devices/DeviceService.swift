@@ -7,7 +7,8 @@ protocol DeviceServiceProtocol {
     var devices: AnyPublisher<[PairedDevice], Never> { get }
     func connect(_ device: PairedDevice) -> Bool
     func disconnect()
-    func afcClient(for device: PairedDevice) -> AFCClient?
+    func afcClient(for device: Device) throws -> AFCClient
+    func afcClient(forApp app: InstalledApp) throws -> AFCClient
     func installIPA(_ ipa: URL, on device: PairedDevice) -> AsyncThrowingStream<InstallEvent, Error>
     func uninstallApp(bundleID: String, on device: PairedDevice) -> AsyncThrowingStream<InstallEvent, Error>
 }
@@ -41,10 +42,14 @@ final class DeviceService: DeviceServiceProtocol {
         manager.disconnect()
     }
 
-    func afcClient(for device: PairedDevice) -> AFCClient? {
-        // 阶段 4 占位：现有 DeviceManager 没有按 device 拿 afcClient 的方法。
-        // Devices 工具通过 DeviceManager 内部连接状态访问。
-        return nil
+    /// 按内部 Device 建 AFC 客户端(媒体分区 /var/mobile/Media)。
+    func afcClient(for device: Device) throws -> AFCClient {
+        try AFCClient(device: device)
+    }
+
+    /// 按已安装 App 建 AFC 客户端(house_arrest 沙盒)。
+    func afcClient(forApp app: InstalledApp) throws -> AFCClient {
+        try AFCClient(device: app.device, bundleID: app.bundleID)
     }
 
     /// 安装 IPA:AFC 上传到 PublicStaging(占进度前 50%)→ installation_proxy 安装(后 50%)。

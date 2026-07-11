@@ -312,9 +312,9 @@ struct SandboxBrowserView: View {
     private func makeClient(for source: Source) throws -> AFCClient {
         switch source {
         case .media(let device):
-            return try AFCClient(device: device)
+            return try DeviceService.shared.afcClient(for: device)
         case .appSandbox(let app):
-            return try AFCClient(device: app.device, bundleID: app.bundleID)
+            return try DeviceService.shared.afcClient(forApp: app)
         }
     }
 
@@ -410,36 +410,8 @@ struct SandboxBrowserView: View {
     }
 
     private func performDownload(files: [(FileNode, URL)]) {
-        let total = files.count
-        let capturedSource = source
-
-        startTransfer(kind: .download, name: files[0].0.name, index: 1, total: total)
         errorMessage = nil
-
-        DispatchQueue.global().async {
-            var currentName = files[0].0.name
-            do {
-                let client = try makeClient(for: capturedSource)
-                for (i, (node, url)) in files.enumerated() {
-                    currentName = node.name
-                    let throttle = TransferProgressThrottle()
-                    updateTransfer(
-                        kind: .download, name: node.name,
-                        index: i + 1, total: total, bytes: 0, total64: nil
-                    )
-                    try client.streamFile(at: node.path, to: url) { written, t in
-                        guard throttle.shouldFire(written: written, total: t) else { return }
-                        updateTransfer(
-                            kind: .download, name: node.name,
-                            index: i + 1, total: total, bytes: written, total64: t
-                        )
-                    }
-                }
-                finishTransfer(kind: .download, summary: summary(files.count, files[0].0.name))
-            } catch {
-                failTransfer(error: error, file: total > 1 ? currentName : nil)
-            }
-        }
+        SandboxFileOperations.download(files: files, callbacks: transferCallbacks)
     }
 
     // MARK: - Upload
@@ -479,71 +451,8 @@ struct SandboxBrowserView: View {
 
     private func performUpload(localURLs: [URL]) {
         guard !transferState.isInProgress else { return }
-
-        let capturedSource = source
-        let capturedDestDir = currentPath
-        let total = localURLs.count
-        let firstName = localURLs[0].lastPathComponent
-
-        startTransfer(kind: .upload, name: firstName, index: 1, total: total)
         errorMessage = nil
-
-        DispatchQueue.global().async {
-            var currentName = firstName
-            do {
-                let client = try makeClient(for: capturedSource)
-                var rememberedChoice: ConflictResolution?
-                var processed = 0
-
-                for (i, url) in localURLs.enumerated() {
-                    let name = url.lastPathComponent
-                    currentName = name
-                    let initialDest = (capturedDestDir as NSString).appendingPathComponent(name)
-                    var destPath = initialDest
-
-                    if client.exists(at: initialDest) {
-                        let resolution = self.resolveConflictBlocking(
-                            name: name,
-                            remaining: localURLs.count - i - 1,
-                            remembered: &rememberedChoice
-                        )
-                        switch resolution {
-                        case .cancel:
-                            self.cancelTransfer()
-                            return
-                        case .skip:
-                            continue
-                        case .overwrite:
-                            break    // keep destPath as the original
-                        case .rename:
-                            destPath = ConflictRenamer.renamedPath(
-                                directory: capturedDestDir,
-                                originalName: name,
-                                existsCheck: { client.exists(at: $0) }
-                            )
-                        }
-                    }
-
-                    let throttle = TransferProgressThrottle()
-                    self.updateTransfer(
-                        kind: .upload, name: name,
-                        index: i + 1, total: total, bytes: 0, total64: nil
-                    )
-                    try client.uploadFile(localURL: url, to: destPath) { written, t in
-                        guard throttle.shouldFire(written: written, total: t) else { return }
-                        self.updateTransfer(
-                            kind: .upload, name: name,
-                            index: i + 1, total: total, bytes: written, total64: t
-                        )
-                    }
-                    processed += 1
-                }
-                self.completeTransfer(kind: .upload, processed: processed, firstName: firstName)
-                DispatchQueue.main.async { self.connectAndBrowse() }
-            } catch {
-                self.failTransfer(error: error, file: total > 1 ? currentName : nil)
-            }
-        }
+        SandboxFileOperations.upload(localURLs: localURLs, destDir: currentPath, callbacks: transferCallbacks)
     }
 
     // MARK: - Copy / Move
@@ -565,8 +474,7 @@ struct SandboxBrowserView: View {
         }
     }
 
-    // Shared loop for copy/move: pre-checks conflicts per file, runs the
-    // per-file operation closure, reports progress, refreshes when done.
+    // Copy/move 的共享入口:守卫后委托给 SandboxFileOperations.runBatch。
     private func runDeviceSideBatch(
         kind: TransferKind,
         nodes: [FileNode],
@@ -576,77 +484,9 @@ struct SandboxBrowserView: View {
     ) {
         guard !transferState.isInProgress else { return }
         guard !nodes.isEmpty else { return }
-
-        let capturedSource = source
-        let total = nodes.count
-        let firstName = nodes[0].name
-
-        startTransfer(kind: kind, name: firstName, index: 1, total: total)
         errorMessage = nil
-
-        DispatchQueue.global().async {
-            var currentName = firstName
-            do {
-                let client = try makeClient(for: capturedSource)
-                var rememberedChoice: ConflictResolution?
-                var processed = 0
-
-                for (i, node) in nodes.enumerated() {
-                    currentName = node.name
-                    let initialDest = (destDir as NSString).appendingPathComponent(node.name)
-                    var destPath = initialDest
-
-                    // Same dir + same name = noop (no-prompt for move, harmless for copy too)
-                    if initialDest == node.path && kind == .move {
-                        continue
-                    }
-
-                    if client.exists(at: initialDest) {
-                        let resolution = self.resolveConflictBlocking(
-                            name: node.name,
-                            remaining: nodes.count - i - 1,
-                            remembered: &rememberedChoice
-                        )
-                        switch resolution {
-                        case .cancel:
-                            self.cancelTransfer()
-                            return
-                        case .skip:
-                            continue
-                        case .overwrite:
-                            break
-                        case .rename:
-                            destPath = ConflictRenamer.renamedPath(
-                                directory: destDir,
-                                originalName: node.name,
-                                existsCheck: { client.exists(at: $0) }
-                            )
-                        }
-                    }
-
-                    let throttle = TransferProgressThrottle()
-                    self.updateTransfer(
-                        kind: kind, name: node.name,
-                        index: i + 1, total: total, bytes: 0, total64: nil
-                    )
-
-                    let progressClosure: ((UInt64, UInt64?) -> Void)? = (kind == .copy) ? { written, t in
-                        guard throttle.shouldFire(written: written, total: t) else { return }
-                        self.updateTransfer(
-                            kind: kind, name: node.name,
-                            index: i + 1, total: total, bytes: written, total64: t
-                        )
-                    } : nil
-
-                    try operation(client, node, destPath, progressClosure)
-                    processed += 1
-                }
-                self.completeTransfer(kind: kind, processed: processed, firstName: firstName)
-                DispatchQueue.main.async { self.connectAndBrowse() }
-            } catch {
-                self.failTransfer(error: error, file: total > 1 ? currentName : nil)
-            }
-        }
+        SandboxFileOperations.runBatch(kind: kind, nodes: nodes, destDir: destDir,
+                                       operation: operation, callbacks: transferCallbacks)
     }
 
     // MARK: - Delete
@@ -654,35 +494,8 @@ struct SandboxBrowserView: View {
     private func performDelete(nodes: [FileNode]) {
         guard !transferState.isInProgress else { return }
         guard !nodes.isEmpty else { return }
-
-        let capturedSource = source
-        let total = nodes.count
-        let firstName = nodes[0].name
-
-        startTransfer(kind: .delete, name: firstName, index: 1, total: total)
         errorMessage = nil
-
-        DispatchQueue.global().async {
-            var currentName = firstName
-            do {
-                let client = try makeClient(for: capturedSource)
-                var processed = 0
-                for (i, node) in nodes.enumerated() {
-                    currentName = node.name
-                    self.updateTransfer(
-                        kind: .delete, name: node.name,
-                        index: i + 1, total: total, bytes: 0, total64: nil
-                    )
-                    // Recursive walker: dirs get drained first, then removed.
-                    try client.deleteRecursive(at: node.path, isDirectory: node.isDirectory)
-                    processed += 1
-                }
-                self.completeTransfer(kind: .delete, processed: processed, firstName: firstName)
-                DispatchQueue.main.async { self.connectAndBrowse() }
-            } catch {
-                self.failTransfer(error: error, file: total > 1 ? currentName : nil)
-            }
-        }
+        SandboxFileOperations.delete(nodes: nodes, callbacks: transferCallbacks)
     }
 
     // MARK: - Conflict prompt bridge (background → main → background)
@@ -723,6 +536,32 @@ struct SandboxBrowserView: View {
     }
 
     // MARK: - Transfer state helpers
+
+    // 把 View 的 UI 交互(建 client / 进度 @State / 冲突 sheet / 刷新)打包给
+    // SandboxFileOperations。闭包捕获 self(struct),@State 变更经其反射到共享存储,
+    // 与原先在 View 内联 DispatchQueue.global 捕获 self 的值语义一致。
+    private var transferCallbacks: SandboxTransferCallbacks {
+        SandboxTransferCallbacks(
+            makeClient: { try self.makeClient(for: self.source) },
+            start: { kind, name, index, total in
+                self.startTransfer(kind: kind, name: name, index: index, total: total)
+            },
+            update: { kind, name, index, total, bytes, total64 in
+                self.updateTransfer(kind: kind, name: name, index: index, total: total, bytes: bytes, total64: total64)
+            },
+            complete: { kind, processed, firstName in
+                self.completeTransfer(kind: kind, processed: processed, firstName: firstName)
+            },
+            fail: { error, file in
+                self.failTransfer(error: error, file: file)
+            },
+            cancel: { self.cancelTransfer() },
+            resolveConflict: { name, remaining, remembered in
+                self.resolveConflictBlocking(name: name, remaining: remaining, remembered: &remembered)
+            },
+            reload: { DispatchQueue.main.async { self.connectAndBrowse() } }
+        )
+    }
 
     private func startTransfer(kind: TransferKind, name: String, index: Int, total: Int) {
         withAnimation(.easeInOut(duration: 0.2)) {
