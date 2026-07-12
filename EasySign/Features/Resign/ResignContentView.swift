@@ -21,29 +21,23 @@ extension Binding where Value == Bool {
     }
 }
 
+/// 重签进行中的 sheet HUD。注意不要再包 GlassCanvas/glassSurface ——
+/// sheet 自带材质背景,再画一层画布会变成「盒中盒」。
 struct CustomLoadingView: View {
-    @Environment(\.colorScheme) private var colorScheme
     let text: String
 
-    private var palette: GlassPalette { GlassPalette(colorScheme: colorScheme) }
-
     var body: some View {
-        GlassCanvas {
-            VStack(spacing: GlassMetric.spacingL) {
-                ZStack {
-                    ActivityPulse(isActive: true, color: palette.primaryStart)
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Text(text)
-                    .font(.title3.weight(.bold))
-                Text("正在安全地处理签名与描述文件")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(minWidth: 260)
-            .glassSurface(.standard, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingXL)
+        VStack(spacing: GlassMetric.spacingM) {
+            ProgressView()
+                .controlSize(.large)
+            Text(text)
+                .font(.headline)
+            Text("正在安全地处理签名与描述文件")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
+        .padding(GlassMetric.spacingXL * 2)
+        .frame(minWidth: 280)
     }
 }
 
