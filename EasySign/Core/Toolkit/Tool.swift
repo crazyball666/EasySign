@@ -5,7 +5,6 @@ protocol Tool: Identifiable {
     var displayName: String { get }
     var subtitle: String { get }
     var icon: String { get }
-    var accentColor: Color { get }
     var category: ToolCategory { get }
     var sortOrder: Int { get }
     var requiredServices: Set<ServiceKey> { get }

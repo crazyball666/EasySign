@@ -17,12 +17,6 @@ struct SidebarView: View {
                         .sorted { $0.sortOrder < $1.sortOrder }
                     if !categoryTools.isEmpty {
                         VStack(alignment: .leading, spacing: 3) {
-                            if mode == .labelledRail {
-                                Text(category.rawValue)
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, GlassMetric.spacingS)
-                            }
                             ForEach(categoryTools, id: \.id) { tool in
                                 Button {
                                     select(tool.id)
@@ -75,31 +69,28 @@ struct SidebarView: View {
     private var brandHeader: some View {
         if mode == .labelledRail {
             HStack(spacing: GlassMetric.spacingS) {
-                Image(systemName: "signature")
+                appIconImage
+                Text("EasySign")
                     .font(.headline.weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 30, height: 30)
-                    .background(Circle().fill(GlassPalette(colorScheme: .dark).primaryGradient))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("EasySign")
-                        .font(.headline.weight(.bold))
-                    Text("Signal Glass")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
                 Spacer()
             }
             .padding(.horizontal, GlassMetric.spacingS)
             .padding(.top, GlassMetric.spacingS)
+            .padding(.bottom, GlassMetric.spacingM)
         } else {
-            Image(systemName: "signature")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(.white)
-                .frame(width: 30, height: 30)
-                .background(Circle().fill(GlassPalette(colorScheme: .dark).primaryGradient))
+            appIconImage
                 .padding(.top, GlassMetric.spacingS)
+                .padding(.bottom, GlassMetric.spacingM)
                 .accessibilityLabel("EasySign")
         }
+    }
+
+    private var appIconImage: some View {
+        // App 图标资源自带 ~10% 透明边距,44pt 框内可见部分约 35pt,
+        // 与工作台头部 44pt 图标视觉对齐。
+        Image(nsImage: NSApp.applicationIconImage)
+            .resizable()
+            .frame(width: 44, height: 44)
     }
 
     private var navigationTools: [any Tool] {
@@ -138,7 +129,7 @@ private struct SidebarRow: View {
         HStack(spacing: GlassMetric.spacingS) {
             Image(systemName: tool.icon)
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(tool.accentColor)
+                .foregroundStyle(GlassPalette(colorScheme: colorScheme).primaryGradient)
                 .frame(width: 22, height: 22)
 
             if mode == .labelledRail {
