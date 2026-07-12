@@ -141,7 +141,10 @@ struct SettingsView: View {
     private var interfaceThemeBinding: Binding<String> {
         Binding(
             get: { settings.string(.interfaceTheme) ?? GlassThemePreference.system.rawValue },
-            set: { settings.set($0, for: .interfaceTheme) }
+            set: {
+                settings.set($0, for: .interfaceTheme)
+                (GlassThemePreference(rawValue: $0) ?? .system).applyToApp()
+            }
         )
     }
 

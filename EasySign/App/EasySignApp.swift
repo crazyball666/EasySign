@@ -12,7 +12,6 @@ import AppKit
 struct EasySignApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var hub: ServiceHub
-    @AppStorage(SettingsKey.interfaceTheme.rawValue) private var interfaceThemeRaw = GlassThemePreference.system.rawValue
 
     init() {
         // 互传历史/收到文件的默认保留期 = 7 天。注册为默认值:未显式设置时即生效;
@@ -31,23 +30,34 @@ struct EasySignApp: App {
         Window("EasySign", id: "main") {
             RootView(hub: hub)
                 .modifier(UpdateSheet(service: hub.update))
-                .preferredColorScheme(interfaceTheme.resolvedColorScheme)
         }
         .windowResizability(.contentSize)
         .commands { UpdateCommands(update: hub.update) }
 
         Settings {
             SettingsView(settings: hub.settings, transfer: hub.transfer, update: hub.update)
-                .preferredColorScheme(interfaceTheme.resolvedColorScheme)
         }
 
         MenuBarExtra("互传", systemImage: "arrow.left.arrow.right") {
             TransferMenuBar(service: hub.transfer)
         }
     }
+}
 
-    private var interfaceTheme: GlassThemePreference {
-        GlassThemePreference(rawValue: interfaceThemeRaw) ?? .system
+// 外观统一走 NSApp.appearance:SwiftUI 的 preferredColorScheme(nil) 在 macOS
+// 上不会清除窗口残留的强制外观(深色 → 跟随系统会卡在中间态),而
+// NSApp.appearance = nil 可靠地恢复跟随系统,且一次作用于所有窗口。
+extension GlassThemePreference {
+    static var stored: GlassThemePreference {
+        GlassThemePreference(rawValue: UserDefaults.standard.string(forKey: SettingsKey.interfaceTheme.rawValue) ?? "") ?? .system
+    }
+
+    func applyToApp() {
+        NSApp.appearance = switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
     }
 }
 
@@ -86,5 +96,9 @@ struct UpdateSheet: ViewModifier {
 /// 关闭最后一个窗口时不退出 App —— 互传/剪贴板同步需要常驻后台。
 /// 保留 Dock 图标(不设置 LSUIElement),窗口可从菜单栏重新打开。
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        GlassThemePreference.stored.applyToApp()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
