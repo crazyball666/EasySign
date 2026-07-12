@@ -1,29 +1,5 @@
 import SwiftUI
 
-struct DevicePickerStrip: View {
-    let devices: [Device]
-    @Binding var selectedDevice: Device?
-    let onSelect: () -> Void
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: GlassMetric.spacingS) {
-                ForEach(devices) { device in
-                    Button {
-                        selectedDevice = device
-                        onSelect()
-                    } label: {
-                        Label(device.name, systemImage: device.deviceClass == .iPhone ? "iphone" : "ipad")
-                    }
-                    .buttonStyle(GlassButtonStyle(selectedDevice?.id == device.id ? .primary : .secondary))
-                }
-            }
-            .padding(.horizontal, GlassMetric.spacingS)
-        }
-        .glassSurface(.inset, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingS)
-    }
-}
-
 struct DeviceConnectionRail: View {
     let device: Device?
     let mode: BrowseMode

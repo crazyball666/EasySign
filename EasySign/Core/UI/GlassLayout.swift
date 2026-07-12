@@ -26,11 +26,6 @@ enum GlassContextPresentation: Equatable {
     }
 }
 
-enum GlassDeviceSelectorPresentation: Equatable {
-    case rail
-    case topPicker
-}
-
 enum GlassSidebarMoveDirection {
     case up
     case down
@@ -65,9 +60,5 @@ enum GlassLayout {
 
     static func contextPresentation(for width: CGFloat) -> GlassContextPresentation {
         width < 1180 ? .inspector : .rail
-    }
-
-    static func deviceSelectorPresentation(forDetailWidth width: CGFloat) -> GlassDeviceSelectorPresentation {
-        width < 980 ? .topPicker : .rail
     }
 }

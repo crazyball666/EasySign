@@ -13,15 +13,6 @@ struct GlassLayoutTests {
         )
 
         expect(
-            GlassLayout.deviceSelectorPresentation(forDetailWidth: 980) == .rail,
-            "980pt keeps the device rail"
-        )
-        expect(
-            GlassLayout.deviceSelectorPresentation(forDetailWidth: 979) == .topPicker,
-            "below 980pt uses the top device picker"
-        )
-
-        expect(
             GlassLayout.sidebarMode(for: 820) == .labelledRail,
             "820pt keeps sidebar labels"
         )

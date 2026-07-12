@@ -30,7 +30,6 @@ struct DeviceView: View {
     var body: some View {
         GlassCanvas {
             GeometryReader { proxy in
-                let selector = GlassLayout.deviceSelectorPresentation(forDetailWidth: proxy.size.width)
                 let usesInspector = GlassLayout.contextPresentation(for: proxy.size.width) == .inspector
                 VStack(alignment: .leading, spacing: GlassMetric.spacingL) {
                     WorkspaceHeader(icon: "iphone", title: "设备工作台", subtitle: "浏览 iOS 应用沙盒与媒体文件", status: selectedDevice == nil ? .idle : .success, statusTitle: selectedDevice == nil ? "等待设备" : "设备已连接") {
@@ -38,14 +37,9 @@ struct DeviceView: View {
                             GlassInspectorButton(title: "设备信息") { DeviceConnectionRail(device: selectedDevice, mode: mode).padding(GlassMetric.spacingS) }
                         } else { EmptyView() }
                     }
-                    if selector == .topPicker {
-                        DevicePickerStrip(devices: deviceManager.devices, selectedDevice: $selectedDevice, onSelect: resetSelection)
-                    }
                     HStack(spacing: GlassMetric.spacingL) {
-                        if selector == .rail {
-                            DeviceListPanel(devices: deviceManager.devices, selectedDevice: $selectedDevice, onRefresh: { deviceManager.refreshDevices() }, onDeviceSelected: resetSelection)
-                                .frame(width: 180)
-                        }
+                        DeviceListPanel(devices: deviceManager.devices, selectedDevice: $selectedDevice, onRefresh: { deviceManager.refreshDevices() }, onDeviceSelected: resetSelection)
+                            .frame(width: 180)
                         mainContent.frame(maxWidth: .infinity, maxHeight: .infinity)
                         if !usesInspector { DeviceConnectionRail(device: selectedDevice, mode: mode).frame(width: 270) }
                     }
