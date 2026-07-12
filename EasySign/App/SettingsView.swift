@@ -2,7 +2,6 @@ import SwiftUI
 import AppKit
 
 struct SettingsView: View {
-    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var settings: SettingsStore
     @ObservedObject var transfer: TransferService
     @ObservedObject var update: UpdateService
@@ -56,15 +55,9 @@ struct SettingsView: View {
     private var filesTab: some View {
         Form {
             Section("保留策略") {
-                LabeledContent("最近文件保留数量") {
-                    Stepper("\(recentFilesCapBinding.wrappedValue) 个", value: recentFilesCapBinding, in: 1...50)
-                }
-                LabeledContent("日志保留天数") {
-                    Stepper("\(logRetentionBinding.wrappedValue) 天", value: logRetentionBinding, in: 7...90)
-                }
-                LabeledContent("工作区保留天数") {
-                    Stepper("\(workspaceRetentionBinding.wrappedValue) 天", value: workspaceRetentionBinding, in: 1...90)
-                }
+                stepperRow("最近文件保留数量", text: "\(recentFilesCapBinding.wrappedValue) 个", value: recentFilesCapBinding, in: 1...50)
+                stepperRow("日志保留天数", text: "\(logRetentionBinding.wrappedValue) 天", value: logRetentionBinding, in: 7...90)
+                stepperRow("工作区保留天数", text: "\(workspaceRetentionBinding.wrappedValue) 天", value: workspaceRetentionBinding, in: 1...90)
             }
         }
         .scrollContentBackground(.hidden)
@@ -80,10 +73,9 @@ struct SettingsView: View {
                         LaunchAtLogin.setEnabled(newValue)
                     }
                 Toggle("隐身模式(不广播 Bonjour)", isOn: stealthBinding)
-                LabeledContent("历史保留天数") {
-                    Stepper(retentionBinding.wrappedValue == 0 ? "永久" : "\(retentionBinding.wrappedValue) 天",
-                            value: retentionBinding, in: 0...365)
-                }
+                stepperRow("历史保留天数",
+                           text: retentionBinding.wrappedValue == 0 ? "永久" : "\(retentionBinding.wrappedValue) 天",
+                           value: retentionBinding, in: 0...365)
             }
             Section {
                 Button("清空传输历史", role: .destructive) { transfer.clearHistory() }
@@ -94,20 +86,42 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
+    /// macOS 惯例:数值在前、箭头贴右;Stepper 自带 label 在 LabeledContent
+    /// 里会渲染成「箭头在前」,故显式拆开。
+    private func stepperRow(_ title: String, text: String, value: Binding<Int>, in range: ClosedRange<Int>) -> some View {
+        LabeledContent(title) {
+            HStack(spacing: 6) {
+                Text(text).monospacedDigit()
+                Stepper("", value: value, in: range)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
+        }
+    }
+
     private var aboutTab: some View {
-        let palette = GlassPalette(colorScheme: colorScheme)
-        return VStack(spacing: GlassMetric.spacingM) {
-            Image(systemName: "signature")
-                .font(.system(size: 48))
-                .foregroundStyle(palette.primaryStart)
-            Text("EasySign").font(.title.weight(.bold))
+        VStack(spacing: GlassMetric.spacingS) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 96, height: 96)
+            Text("EasySign").font(.title2.weight(.bold))
+            Text("版本 \(appVersionText)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Text("iOS/macOS 重签 + 工具集")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Spacer()
+            Link("GitHub 项目主页", destination: URL(string: "https://github.com/crazyball666/EasySign")!)
+                .font(.caption)
+                .padding(.top, GlassMetric.spacingS)
         }
-        .glassSurface(.standard, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingXL)
-        .padding(GlassMetric.spacingL)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var appVersionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        return build.map { "\(version) (\($0))" } ?? version
     }
 
     private var launchRestoresBinding: Binding<Bool> {
