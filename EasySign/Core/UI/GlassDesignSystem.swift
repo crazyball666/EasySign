@@ -62,15 +62,17 @@ enum GlassSurfaceTone {
     case inset
 }
 
-/// Material values stay intentionally below opaque white so the canvas remains
-/// visible through every workbench surface in the light appearance.
+/// 深色:低透明度白叠加,让画布透出来制造层次。
+/// 浅色:叠加必须足够实 —— 卡片颜色若主要来自透出的画布渐变,
+/// 同一页面不同位置的卡片会各偏一色(画布是对角渐变),观感失调;
+/// 但仍留在不透明白之下,保住毛玻璃质感。
 enum GlassMaterialRecipe {
     static func overlayOpacity(for tone: GlassSurfaceTone, colorScheme: ColorScheme) -> Double {
         switch (tone, colorScheme) {
         case (.standard, .dark): 0.08
-        case (.standard, .light): 0.28
+        case (.standard, .light): 0.58
         case (.emphasized, .dark): 0.06
-        case (.emphasized, .light): 0.16
+        case (.emphasized, .light): 0.55
         case (.inset, .dark): 0.13
         case (.inset, .light): 0.08
         default: 0.16
@@ -101,11 +103,36 @@ enum GlassMaterialRecipe {
         }
     }
 
-    static func material(for tone: GlassSurfaceTone) -> Material {
-        switch tone {
+    /// 浅色统一用 ultraThin:thinMaterial 自带的灰底和 ultraThin 卡片
+    /// 色相不一致,并排摆放会一块发灰一块偏蓝。深色维持原映射。
+    static func material(for tone: GlassSurfaceTone, colorScheme: ColorScheme) -> Material {
+        if colorScheme != .dark { return .ultraThinMaterial }
+        return switch tone {
         case .standard, .inset: .ultraThinMaterial
         case .emphasized: .thinMaterial
         }
+    }
+
+    /// 浅色画布近白,白基描边在其上不可见 —— 浅色下描边一律转黑基;
+    /// 深色维持白基提亮的原配方。
+    static func borderColor(for tone: GlassSurfaceTone, colorScheme: ColorScheme) -> Color {
+        colorScheme == .dark
+            ? Color.white.opacity(borderOpacity(for: tone, colorScheme: .dark))
+            : Color.black.opacity(lightBorderOpacity(for: tone))
+    }
+
+    static func lightBorderOpacity(for tone: GlassSurfaceTone) -> Double {
+        switch tone {
+        case .standard: 0.10
+        case .emphasized: 0.07
+        case .inset: 0.11
+        }
+    }
+
+    /// 输入控件/次级按钮的底填充:深色用白 13% 提亮;浅色下对齐系统
+    /// .roundedBorder 输入框的实白,玻璃控件与系统控件混排时才是一个白。
+    static func controlFillOpacity(for colorScheme: ColorScheme) -> Double {
+        colorScheme == .dark ? 0.13 : 0.85
     }
 }
 
@@ -171,15 +198,15 @@ struct GlassPalette {
     }
 
     var insetFill: Color {
-        colorScheme == .dark ? Color.white.opacity(0.13) : Color.white.opacity(0.08)
+        Color.white.opacity(GlassMaterialRecipe.controlFillOpacity(for: colorScheme))
     }
 
     var border: Color {
-        Color.white.opacity(GlassMaterialRecipe.borderOpacity(for: .standard, colorScheme: colorScheme))
+        GlassMaterialRecipe.borderColor(for: .standard, colorScheme: colorScheme)
     }
 
     var mutedBorder: Color {
-        Color.white.opacity(GlassMaterialRecipe.borderOpacity(for: .inset, colorScheme: colorScheme))
+        GlassMaterialRecipe.borderColor(for: .inset, colorScheme: colorScheme)
     }
 
     var railDivider: Color {
@@ -245,14 +272,14 @@ private struct GlassSurfaceModifier: ViewModifier {
         case .emphasized: palette.railOverlay
         case .inset: palette.insetFill
         }
-        let border = Color.white.opacity(GlassMaterialRecipe.borderOpacity(for: tone, colorScheme: colorScheme))
+        let border = GlassMaterialRecipe.borderColor(for: tone, colorScheme: colorScheme)
         let highlight = Color.white.opacity(GlassMaterialRecipe.highlightOpacity(for: tone, colorScheme: colorScheme))
 
         content
             .padding(padding ?? 0)
             .background {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(GlassMaterialRecipe.material(for: tone))
+                    .fill(GlassMaterialRecipe.material(for: tone, colorScheme: colorScheme))
                     .overlay {
                         RoundedRectangle(cornerRadius: radius, style: .continuous)
                             .fill(fill)
@@ -356,7 +383,8 @@ struct GlassButtonStyle: ButtonStyle {
                     case .primary:
                         Capsule(style: .continuous).fill(palette.primaryGradient)
                     case .secondary:
-                        Capsule(style: .continuous).fill(palette.surfaceOverlay)
+                        // 浅色下 surfaceOverlay 与卡片同为淡白,按钮会隐形,改用控件实白底
+                        Capsule(style: .continuous).fill(colorScheme == .dark ? palette.surfaceOverlay : palette.insetFill)
                     case .destructive:
                         Capsule(style: .continuous).fill(palette.danger.opacity(0.16))
                     }
@@ -402,7 +430,7 @@ struct GlassIconButtonStyle: ButtonStyle {
             configuration.label
                 .frame(width: 30, height: 30)
                 .background {
-                    Circle().fill(palette.surfaceOverlay)
+                    Circle().fill(colorScheme == .dark ? palette.surfaceOverlay : palette.insetFill)
                 }
                 .overlay {
                     Circle().stroke(palette.border, lineWidth: 1)

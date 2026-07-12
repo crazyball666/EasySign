@@ -5,8 +5,12 @@ import SwiftUI
 struct GlassMaterialRecipeTests {
     static func main() {
         expect(
-            GlassMaterialRecipe.overlayOpacity(for: .standard, colorScheme: .light) < 0.5,
-            "standard light surfaces leave the canvas visible"
+            GlassMaterialRecipe.overlayOpacity(for: .standard, colorScheme: .light) >= 0.5,
+            "light cards are solid enough not to inherit the canvas hue by position"
+        )
+        expect(
+            GlassMaterialRecipe.overlayOpacity(for: .standard, colorScheme: .light) < 0.9,
+            "light cards stay translucent, short of opaque white"
         )
         expect(
             GlassMaterialRecipe.overlayOpacity(for: .emphasized, colorScheme: .light)
@@ -20,6 +24,20 @@ struct GlassMaterialRecipeTests {
         expect(
             GlassMaterialRecipe.highlightOpacity(for: .standard, colorScheme: .light) > 0,
             "glass surfaces retain a subtle highlight"
+        )
+
+        expect(
+            GlassMaterialRecipe.controlFillOpacity(for: .light)
+                > GlassMaterialRecipe.overlayOpacity(for: .standard, colorScheme: .light),
+            "light controls read more solid than the card they sit on"
+        )
+        expect(
+            GlassMaterialRecipe.controlFillOpacity(for: .dark) < 0.2,
+            "dark controls stay glassy"
+        )
+        expect(
+            GlassMaterialRecipe.lightBorderOpacity(for: .inset) >= 0.1,
+            "light control borders are visible on a near-white canvas"
         )
 
         print("ALL PASS")
