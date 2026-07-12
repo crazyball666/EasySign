@@ -36,6 +36,17 @@ struct RootView: View {
         .onChange(of: selection) { _, newValue in
             // 记住最后选中的工具,供下次启动按「启动时恢复上次工具」恢复
             if let id = newValue { hub.settings.set(id, for: .lastActiveTool) }
+            clearInitialFocus()
+        }
+        .onAppear { clearInitialFocus() }
+    }
+
+    /// AppKit 会在窗口成 key / 内容重建时把第一个文本控件设为第一响应者
+    /// (重签页会自动聚焦「证书密码」),启动与切换工具后主动清掉。
+    private func clearInitialFocus() {
+        DispatchQueue.main.async {
+            let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first(where: \.isVisible)
+            window?.makeFirstResponder(nil)
         }
     }
 
