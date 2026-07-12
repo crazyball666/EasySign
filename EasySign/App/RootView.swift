@@ -24,12 +24,14 @@ struct RootView: View {
                     detailView
                         .id(selection ?? "empty-tool")
                         .transition(detailTransition)
-                        .frame(minWidth: 500, minHeight: 400)
+                        // 680 = 各工具固定横排的最大需求(二维码:预览 340 + 操作列 220
+                        // + 间距/边距 100 = 660)+ 缓冲;同时顶住侧栏分隔条把内容挤窄。
+                        .frame(minWidth: 680, minHeight: 400)
                 }
                 .animation(detailAnimation, value: selection)
             }
         }
-        .frame(minWidth: 620, minHeight: 620)
+        .frame(minWidth: 900, minHeight: 620)
         .modifier(GlassWindowToolbarStyle())
         .onChange(of: selection) { _, newValue in
             // 记住最后选中的工具,供下次启动按「启动时恢复上次工具」恢复
