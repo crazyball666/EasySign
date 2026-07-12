@@ -210,6 +210,11 @@ private extension MachOCodeSignatureInspector {
            CFGetTypeID(left) == CFBooleanGetTypeID(), CFGetTypeID(right) == CFBooleanGetTypeID() {
             return left.boolValue == right.boolValue
         }
+        // Numeric values: XML plist decodes to NSNumber, the DER decoder yields Int.
+        if let left = lhs as? NSNumber, let right = rhs as? NSNumber,
+           CFGetTypeID(left) != CFBooleanGetTypeID(), CFGetTypeID(right) != CFBooleanGetTypeID() {
+            return left == right
+        }
         if let left = lhs as? String, let right = rhs as? String { return left == right }
         return false
     }
@@ -272,6 +277,13 @@ private struct DEREntitlementsDecoder {
         case 0x01:
             guard length == 1, [UInt8(0), UInt8(1), UInt8(0xff)].contains(bytes[payloadStart]) else { throw derError("DER Boolean is invalid") }
             return bytes[payloadStart] != 0
+        case 0x02:
+            // INTEGER, big-endian. Used by the Apple-canonical entitlements
+            // version header and by any integer-valued entitlement.
+            guard length >= 1 else { throw derError("DER Integer is empty") }
+            var value = 0
+            for i in payloadStart..<payloadEnd { value = value << 8 | Int(bytes[i]) }
+            return value
         case 0x0c:
             guard let string = String(bytes: bytes[payloadStart..<payloadEnd], encoding: .utf8) else { throw derError("DER UTF8String is invalid") }
             return string
@@ -280,13 +292,24 @@ private struct DEREntitlementsDecoder {
             var array: [Any] = []
             while nested.position < nested.bytes.count { array.append(try nested.decodeValue(depth: depth + 1)) }
             return array
-        case 0x31:
+        case 0x31, 0xb0:
+            // Dictionary container. Apple-canonical DER (zsign fe1750d+) tags the
+            // entitlements dictionary 0xb0; older zsign output used 0x31.
             var nested = DEREntitlementsDecoder(bytes: Array(bytes[payloadStart..<payloadEnd]))
             var dictionary: [String: Any] = [:]
             while nested.position < nested.bytes.count {
                 let entry = try nested.decodeSequenceEntry(depth: depth + 1)
                 guard dictionary[entry.0] == nil else { throw derError("DER dictionary contains duplicate key") }
                 dictionary[entry.0] = entry.1
+            }
+            return dictionary
+        case 0x70:
+            // Apple-canonical entitlements wrapper: [0x70] { INTEGER version, dict }.
+            var nested = DEREntitlementsDecoder(bytes: Array(bytes[payloadStart..<payloadEnd]))
+            _ = try nested.decodeValue(depth: depth + 1)            // version, discarded
+            let inner = try nested.decodeValue(depth: depth + 1)
+            guard nested.position == nested.bytes.count, let dictionary = inner as? [String: Any] else {
+                throw derError("DER entitlements wrapper is malformed")
             }
             return dictionary
         default:

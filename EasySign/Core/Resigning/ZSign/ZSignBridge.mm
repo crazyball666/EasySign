@@ -187,13 +187,16 @@ static BOOL ZSignBridgeCopyAppIntoPayload(NSString *inputPath, NSString *archive
         }
 
         ZSignAsset signAsset;
+        // 第 6/7/8 参数：bAdhoc / bSHA256Only / bSingleBinary。
+        // SHA256-only 为 upstream 对现代 iOS / Apple Silicon 的默认与推荐值：
+        // dual(SHA1+SHA256)在 M4+ 上 codesign --strict 会拒签；SHA1 仅 iOS≤10 需要。
         if (!signAsset.Init("",
                             ZSignBridgeString(options.p12Path),
                             ZSignBridgeString(options.mobileProvisionPath),
                             ZSignBridgeString(options.entitlementsPath ?: @""),
                             ZSignBridgeString(options.p12Password),
                             false,
-                            false,
+                            true,
                             false)) {
             localError = ZSignBridgeMakeError(@"zsign 初始化签名资产失败，请检查 p12、密码和描述文件是否匹配");
             goto cleanup;
