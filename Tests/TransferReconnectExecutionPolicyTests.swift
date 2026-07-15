@@ -314,6 +314,192 @@ struct TransferReconnectExecutionPolicyTests {
                    "discovery invalidation ordering \(ordering) 均不得复活旧 A 或刷新预算")
         }
 
+        func blockerReleaseDecision(
+            _ coordinator: Coordinator,
+            servicesRunning: Bool = true,
+            userStopped: Bool = false,
+            hasUserAttempt: Bool = false,
+            busy: Bool = false,
+            hasActiveConnection: Bool = false,
+            hasActivePairing: Bool = false,
+            hasActivePairingConnection: Bool = false,
+            hasBoundConnection: Bool = false
+        ) -> Policy.InboundPairingBlockerReleaseDecision {
+            let deferred = coordinator.deferredToken
+            return Policy.inboundPairingBlockerReleaseDecision(
+                deferredToken: deferred,
+                deferredTokenAccepted: deferred.map(coordinator.accepts) ?? false,
+                servicesRunning: servicesRunning,
+                userStopped: userStopped,
+                hasUserAttempt: hasUserAttempt,
+                busy: busy,
+                hasActiveConnection: hasActiveConnection,
+                hasActivePairing: hasActivePairing,
+                hasActivePairingConnection: hasActivePairingConnection,
+                hasBoundConnection: hasBoundConnection
+            )
+        }
+
+        let blockerB = ConnectionProbe()
+        let staleBlockerB = ConnectionProbe()
+        let blockerLifecycle = Policy.InboundPairingBlockerLifecycle(connection: blockerB)
+        expect(!blockerLifecycle.consumeRelease(staleBlockerB),
+               "stale B terminal 不得释放当前 blocker")
+        expect(blockerLifecycle.consumeRelease(blockerB),
+               "exact B terminal 应恰好释放一次 blocker")
+        expect(!blockerLifecycle.consumeRelease(blockerB),
+               "B duplicate terminal 不得重复触发 recovery")
+
+        var preservedDeferredCoordinator = Coordinator()
+        preservedDeferredCoordinator.connected(to: peerA, endpointKey: "ep-A")
+        guard case let .dial(preservedAttempt0) = preservedDeferredCoordinator.unexpectedDrop(
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-A"
+        ), case let .schedule(preservedToken, _) = preservedDeferredCoordinator.attemptFailed(
+            preservedAttempt0
+        ) else { fail("original deferred release 需要未耗尽的 attempt 1") }
+        preservedDeferredCoordinator.blockAutomaticRecoveryForInboundPairing()
+        guard case let .resumeDeferred(deferredReleaseToken) = blockerReleaseDecision(
+            preservedDeferredCoordinator
+        ), case let .dial(preservedResumedToken) = preservedDeferredCoordinator.resumeDeferredRecovery(
+            deferredReleaseToken,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-A"
+        ) else { fail("有效 original deferred 应优先原 token 恢复") }
+        expect(deferredReleaseToken == preservedToken
+               && preservedToken.attempt == 1
+               && preservedResumedToken.attempt == preservedToken.attempt,
+               "same endpoint blocker release 必须保留 original attempt budget")
+
+        var changedEndpointCoordinator = Coordinator()
+        changedEndpointCoordinator.connected(to: peerA, endpointKey: "ep-A")
+        guard case let .dial(changedEndpointAttempt0) = changedEndpointCoordinator.unexpectedDrop(
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-A"
+        ), case let .schedule(changedEndpointDeferred, _) = changedEndpointCoordinator.attemptFailed(
+            changedEndpointAttempt0
+        ) else { fail("endpoint changed 需要 deferred attempt 1") }
+        changedEndpointCoordinator.blockAutomaticRecoveryForInboundPairing()
+        guard case let .resumeDeferred(changedEndpointReleaseToken) = blockerReleaseDecision(
+            changedEndpointCoordinator
+        ), case let .dial(changedEndpointReplacement) = changedEndpointCoordinator.resumeDeferredRecovery(
+            changedEndpointReleaseToken,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-A2"
+        ) else { fail("endpoint changed release 应优先消费 exact deferred 再切 latest endpoint") }
+        expect(changedEndpointReleaseToken == changedEndpointDeferred
+               && changedEndpointReplacement.endpointKey == "ep-A2"
+               && changedEndpointReplacement.attempt == 0,
+               "endpoint changed during B 必须用 latest endpoint 开新 attempt 0")
+
+        for (event, latestEndpoint) in [
+            ("disappear then reappear", "ep-A"),
+            ("browser failure then rediscover", "ep-A"),
+        ] {
+            var releaseCoordinator = Coordinator()
+            releaseCoordinator.connected(to: peerA, endpointKey: "ep-A")
+            guard case let .dial(preBlockerToken) = releaseCoordinator.unexpectedDrop(
+                pathSatisfied: true,
+                canDial: true,
+                endpointKey: "ep-A"
+            ) else { fail("\(event) 需要 pre-blocker automatic token") }
+            releaseCoordinator.blockAutomaticRecoveryForInboundPairing()
+            releaseCoordinator.peerBecameUnavailable()
+            expect(!releaseCoordinator.accepts(preBlockerToken)
+                   && releaseCoordinator.deferredToken == nil,
+                   "\(event) 必须先失效旧 deferred")
+
+            let eventBlocker = ConnectionProbe()
+            let eventLifecycle = Policy.InboundPairingBlockerLifecycle(connection: eventBlocker)
+            guard eventLifecycle.consumeRelease(eventBlocker) else {
+                fail("\(event) exact B release 应被接受")
+            }
+            expect(blockerReleaseDecision(releaseCoordinator) == .requestRecoveryEvent,
+                   "\(event) 无有效 deferred 时必须把 blocker release 当作 recovery event")
+            guard case let .dial(replacementToken) = releaseCoordinator.recoveryEvent(
+                pathSatisfied: true,
+                canDial: true,
+                busy: false,
+                endpointKey: latestEndpoint
+            ) else { fail("\(event) blocker release 应拨最新 endpoint") }
+            expect(replacementToken.endpointKey == latestEndpoint
+                   && replacementToken.attempt == 0
+                   && replacementToken.generation != preBlockerToken.generation,
+                   "\(event) 必须使用 latest recoveryToken/endpoint 的新 attempt 0")
+            expect(!eventLifecycle.consumeRelease(eventBlocker),
+                   "\(event) duplicate release 不得产生第二个 recovery event")
+        }
+
+        for unavailableCase in ["peer missing", "path down"] {
+            var waitingCoordinator = Coordinator()
+            waitingCoordinator.connected(to: peerA, endpointKey: "ep-A")
+            guard case .dial = waitingCoordinator.unexpectedDrop(
+                pathSatisfied: true,
+                canDial: true,
+                endpointKey: "ep-A"
+            ) else { fail("\(unavailableCase) 需要 pre-blocker automatic token") }
+            waitingCoordinator.blockAutomaticRecoveryForInboundPairing()
+            if unavailableCase == "peer missing" {
+                waitingCoordinator.peerBecameUnavailable()
+            } else {
+                waitingCoordinator.networkUnavailable()
+            }
+            expect(blockerReleaseDecision(waitingCoordinator) == .requestRecoveryEvent,
+                   "\(unavailableCase) release 仍需统一 re-evaluate")
+            expect(waitingCoordinator.recoveryEvent(
+                pathSatisfied: unavailableCase != "path down",
+                canDial: unavailableCase != "peer missing",
+                busy: false,
+                endpointKey: unavailableCase == "peer missing" ? nil : "ep-A"
+            ) == .waitForEvent,
+            "\(unavailableCase) blocker release 必须保持 waiting 且不启动 timer")
+            expect(waitingCoordinator.phase == .waitingForEvent,
+                   "\(unavailableCase) blocker release 后 phase 必须等待真实事件")
+        }
+
+        let ignoredReleaseCoordinator = preservedDeferredCoordinator
+        expect(blockerReleaseDecision(
+            ignoredReleaseCoordinator,
+            servicesRunning: false
+        ) == .ignore, "stop 后 B release 不得恢复")
+        expect(blockerReleaseDecision(
+            ignoredReleaseCoordinator,
+            userStopped: true
+        ) == .ignore, "disconnect suppression 后 B release 不得恢复")
+        expect(blockerReleaseDecision(
+            ignoredReleaseCoordinator,
+            hasUserAttempt: true
+        ) == .ignore, "user attempt 活动时 B release 不得恢复")
+        expect(blockerReleaseDecision(
+            ignoredReleaseCoordinator,
+            busy: true,
+            hasActivePairing: true,
+            hasActivePairingConnection: true
+        ) == .ignore, "B 尚未 exact cleanup 时不得提前 release")
+        expect(blockerReleaseDecision(
+            ignoredReleaseCoordinator,
+            hasActiveConnection: true,
+            hasBoundConnection: true
+        ) == .ignore, "B success bind 后不得触发 automatic recovery")
+
+        let successfulBlocker = ConnectionProbe()
+        let successfulLifecycle = Policy.InboundPairingBlockerLifecycle(
+            connection: successfulBlocker
+        )
+        expect(successfulLifecycle.consumeWithoutRecovery(successfulBlocker),
+               "B success bind 应消费 exact blocker")
+        expect(!successfulLifecycle.consumeRelease(successfulBlocker),
+               "B success bind 后迟到 terminal 不得触发 recovery")
+        let stoppedBlocker = ConnectionProbe()
+        let stoppedLifecycle = Policy.InboundPairingBlockerLifecycle(connection: stoppedBlocker)
+        stoppedLifecycle.invalidate()
+        expect(!stoppedLifecycle.consumeRelease(stoppedBlocker),
+               "stop/disconnect/user attempt 应使 blocker lifecycle 静默失效")
+
         let userConnecting = Policy.discoverySessionDisposition(
             connectionState: .connecting,
             hasBoundConnection: false,

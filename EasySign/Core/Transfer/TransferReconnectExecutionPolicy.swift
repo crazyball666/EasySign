@@ -73,6 +73,45 @@ enum TransferReconnectExecutionPolicy {
         case invalidateAndCancelAutomaticAttempt
     }
 
+    enum InboundPairingBlockerReleaseDecision: Equatable {
+        case ignore
+        case resumeDeferred(TransferReconnectCoordinator.Token)
+        case requestRecoveryEvent
+    }
+
+    /// Tracks the exact inbound connection which temporarily blocked automatic recovery.
+    /// Production confines mutations to main; identity matching also makes terminal delivery
+    /// idempotent and prevents a superseded inbound connection from releasing a newer blocker.
+    final class InboundPairingBlockerLifecycle: @unchecked Sendable {
+        private let connectionID: ObjectIdentifier
+        private var active = true
+
+        init(connection: AnyObject) {
+            connectionID = ObjectIdentifier(connection)
+        }
+
+        @discardableResult
+        func consumeRelease(_ connection: AnyObject) -> Bool {
+            consume(connection)
+        }
+
+        @discardableResult
+        func consumeWithoutRecovery(_ connection: AnyObject) -> Bool {
+            consume(connection)
+        }
+
+        func invalidate() {
+            active = false
+        }
+
+        private func consume(_ connection: AnyObject) -> Bool {
+            guard active,
+                  ObjectIdentifier(connection) == connectionID else { return false }
+            active = false
+            return true
+        }
+    }
+
     enum AutomaticReadyDecision: Equatable {
         case bind
         case cleanupStale
@@ -252,6 +291,32 @@ enum TransferReconnectExecutionPolicy {
             return .invalidateAndCancelAutomaticAttempt
         }
         return .invalidateRecoveryOnly
+    }
+
+    static func inboundPairingBlockerReleaseDecision(
+        deferredToken: TransferReconnectCoordinator.Token?,
+        deferredTokenAccepted: Bool,
+        servicesRunning: Bool,
+        userStopped: Bool,
+        hasUserAttempt: Bool,
+        busy: Bool,
+        hasActiveConnection: Bool,
+        hasActivePairing: Bool,
+        hasActivePairingConnection: Bool,
+        hasBoundConnection: Bool
+    ) -> InboundPairingBlockerReleaseDecision {
+        guard servicesRunning,
+              !userStopped,
+              !hasUserAttempt,
+              !busy,
+              !hasActiveConnection,
+              !hasActivePairing,
+              !hasActivePairingConnection,
+              !hasBoundConnection else { return .ignore }
+        if let deferredToken, deferredTokenAccepted {
+            return .resumeDeferred(deferredToken)
+        }
+        return .requestRecoveryEvent
     }
 
     static func automaticReadyDecision(

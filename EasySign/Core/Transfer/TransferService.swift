@@ -115,6 +115,8 @@ final class TransferService: ObservableObject {
     private var reconnectWork: DispatchWorkItem?
     private var reconnectScheduledToken: TransferReconnectCoordinator.Token?
     private var activeOutboundAttempt: ActiveOutboundAttempt?
+    private var inboundPairingBlockerLifecycle:
+        TransferReconnectExecutionPolicy.InboundPairingBlockerLifecycle?
     private var manualRetryRequest: TransferManualRetryRequest?
     private var lastBonjourRepairAt: TimeInterval?
     private var serviceGeneration = TransferReconnectExecutionPolicy.ServiceGeneration()
@@ -379,6 +381,7 @@ final class TransferService: ObservableObject {
     }
 
     private func prepareExplicitConnection(to peer: TransferAutoReconnect.PeerRef?) {
+        invalidateInboundPairingBlocker()
         cancelReconnectScheduling()
         reconnectCoordinator.cancelAutomaticRecovery()
         if let peer {
@@ -867,11 +870,12 @@ final class TransferService: ObservableObject {
             activePairingConn = nil
             conn.cancel()
             connectionState = .failed(failure)
-            resumeDeferredAutomaticRecoveryIfPossible()
+            releaseInboundPairingBlockerIfNeeded(conn)
         case .publishFailure:
             logger.log(.warn, tool: "transfer", failure)
             conn.cancel()
             connectionState = .failed(failure)
+            releaseInboundPairingBlockerIfNeeded(conn)
         }
     }
 
@@ -944,17 +948,26 @@ final class TransferService: ObservableObject {
             // 常驻配对码:启动时已生成并持续显示给对端读取,此处不轮换,
             // 否则对端正照着屏幕输入时码却变了,必然配对失败。仅作 nil 兜底。
             if pendingPairingCode == nil { pendingPairingCode = PairingCrypto.makeCode(); pairingCodeIssuedAt = Date() }
-            enterInboundPairingBlocker(inboundPairingBlockerDecision)
+            enterInboundPairingBlocker(
+                inboundPairingBlockerDecision,
+                connection: conn
+            )
             logger.log(.info, tool: "transfer", "④ 入站配对开始,本机码 \(pendingPairingCode!),发 hello/pairOffer 给对端")
             startPairing(conn: conn, code: pendingPairingCode!, peerFingerprint: fp)
         }
     }
 
     private func enterInboundPairingBlocker(
-        _ decision: TransferReconnectExecutionPolicy.InboundPairingBlockerDecision
+        _ decision: TransferReconnectExecutionPolicy.InboundPairingBlockerDecision,
+        connection: TransferConnection
     ) {
         guard decision == .invalidateRecoveryOnly
                 || decision == .invalidateAndCancelAutomaticAttempt else { return }
+        invalidateInboundPairingBlocker()
+        inboundPairingBlockerLifecycle =
+            TransferReconnectExecutionPolicy.InboundPairingBlockerLifecycle(
+                connection: connection
+            )
         cancelReconnectScheduling()
         reconnectCoordinator.blockAutomaticRecoveryForInboundPairing()
 
@@ -1006,7 +1019,7 @@ final class TransferService: ObservableObject {
             } else {
                 conn.cancel()
                 connectionState = .failed("身份加载失败")
-                resumeDeferredAutomaticRecoveryIfPossible()
+                releaseInboundPairingBlockerIfNeeded(conn)
             }
             return
         }
@@ -1043,6 +1056,7 @@ final class TransferService: ObservableObject {
         activePairingConn = nil    // 释放配对期的强持有;成功时由 bindConnected 接管 activeConn
         switch outcome {
         case let .success(peer):
+            consumeInboundPairingBlockerWithoutRecovery(conn)
             failureCounts[fp] = 0
             peerStore.upsert(peer)
             pairedPeers = peerStore.all()
@@ -1067,7 +1081,7 @@ final class TransferService: ObservableObject {
                 conn.cancel()
                 if activeConn === conn { activeConn = nil }
                 connectionState = .failed(reason)
-                resumeDeferredAutomaticRecoveryIfPossible()
+                releaseInboundPairingBlockerIfNeeded(conn)
             }
             logger.log(.warn, tool: "transfer", "配对失败: \(reason)")
         }
@@ -1090,6 +1104,7 @@ final class TransferService: ObservableObject {
                   activeOutboundAttempt?.origin == outboundAttempt.origin,
                   conn === activeConn else { return }
         }
+        invalidateInboundPairingBlocker()
         cancelReconnectScheduling()
         connectTimeoutWork?.cancel()
         connectTimeoutWork = nil
@@ -1369,6 +1384,9 @@ final class TransferService: ObservableObject {
     private func executeLifecycleActions(
         _ actions: [TransferReconnectExecutionPolicy.LifecycleAction]
     ) {
+        // stop/disconnect/user intent owns teardown; no cancelled inbound callback may
+        // subsequently reinterpret that teardown as an automatic recovery event.
+        invalidateInboundPairingBlocker()
         for action in actions {
             switch action {
             case .invalidateRecovery:
@@ -1438,6 +1456,7 @@ final class TransferService: ObservableObject {
     }
 
     private func stopServicesNow() {
+        invalidateInboundPairingBlocker()
         serviceGeneration.stop()
         cancelReconnectScheduling()
         reconnectCoordinator.stop()
@@ -1644,13 +1663,20 @@ final class TransferService: ObservableObject {
             fileManager.reset()
             conn.cancel()
         }
+        let pairingConnection = activePairingConn
         activePairing = nil
-        if let pairingConn = activePairingConn {
-            activePairingConn = nil
-            if pairingConn !== activeConn { pairingConn.cancel() }
+        activePairingConn = nil
+        if let pairingConnection, pairingConnection !== activeConn {
+            pairingConnection.cancel()
         }
         connectTimeoutWork?.cancel()
         connectTimeoutWork = nil
+        if let pairingConnection {
+            if connectionState == .pairing {
+                connectionState = .failed("网络连接已中断")
+            }
+            releaseInboundPairingBlockerIfNeeded(pairingConnection)
+        }
     }
 
     private func cleanupUnboundAutomaticAttempt() {
@@ -1695,6 +1721,61 @@ final class TransferService: ObservableObject {
             )
         }
         executeReconnect(command)
+    }
+
+    private func invalidateInboundPairingBlocker() {
+        inboundPairingBlockerLifecycle?.invalidate()
+        inboundPairingBlockerLifecycle = nil
+    }
+
+    private func consumeInboundPairingBlockerWithoutRecovery(
+        _ connection: TransferConnection
+    ) {
+        guard let lifecycle = inboundPairingBlockerLifecycle,
+              lifecycle.consumeWithoutRecovery(connection) else { return }
+        inboundPairingBlockerLifecycle = nil
+    }
+
+    /// An accepted inbound pairing connection is the sole owner of its blocker release.
+    /// Exact cleanup happens before this method; the lifecycle then makes every terminal source
+    /// idempotent. A still-valid deferred token retains its attempt, otherwise this release is one
+    /// fresh recovery event evaluated against the latest discovery/path/arbitration snapshot.
+    private func releaseInboundPairingBlockerIfNeeded(
+        _ connection: TransferConnection
+    ) {
+        guard let lifecycle = inboundPairingBlockerLifecycle,
+              lifecycle.consumeRelease(connection) else { return }
+        inboundPairingBlockerLifecycle = nil
+
+        let deferredToken = reconnectCoordinator.deferredToken
+        let decision = TransferReconnectExecutionPolicy.inboundPairingBlockerReleaseDecision(
+            deferredToken: deferredToken,
+            deferredTokenAccepted: deferredToken.map(reconnectCoordinator.accepts) ?? false,
+            servicesRunning: servicesRunning,
+            userStopped: stopRequested,
+            hasUserAttempt: activeOutboundAttempt?.origin == .user,
+            busy: connectionState.isBusy,
+            hasActiveConnection: activeConn != nil,
+            hasActivePairing: activePairing != nil,
+            hasActivePairingConnection: activePairingConn != nil,
+            hasBoundConnection: hasBoundConnection
+        )
+        switch decision {
+        case .ignore:
+            return
+        case let .resumeDeferred(token):
+            let target = currentAutomaticTarget()
+            executeReconnect(
+                reconnectCoordinator.resumeDeferredRecovery(
+                    token,
+                    pathSatisfied: networkPathSatisfied == true,
+                    canDial: target != nil,
+                    endpointKey: target?.reconnectEndpointKey
+                )
+            )
+        case .requestRecoveryEvent:
+            requestAutomaticRecovery()
+        }
     }
 
     private func resumeDeferredAutomaticRecoveryIfPossible() {
