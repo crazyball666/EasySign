@@ -108,7 +108,7 @@ final class TransferService: ObservableObject {
     private var connectTimeoutWork: DispatchWorkItem?
     private var cleanupTimer: DispatchSourceTimer?   // 定时按保留天数回收历史/inbox 文件
     private var lastManualConnect: (() -> Void)?     // 仅供 UI 显式「重试」，自动恢复绝不读取
-    private var userStopped = false
+    private var stopRequested = false
     private var lastConnectedPeer: TransferAutoReconnect.PeerRef?
     private var networkPathSatisfied: Bool?
     private var reconnectCoordinator = TransferReconnectCoordinator()
@@ -117,7 +117,8 @@ final class TransferService: ObservableObject {
     private var activeOutboundAttempt: ActiveOutboundAttempt?
     private var manualRetryRequest: TransferManualRetryRequest?
     private var lastBonjourRepairAt: TimeInterval?
-    private var servicesRunning = false
+    private var serviceGeneration = TransferReconnectExecutionPolicy.ServiceGeneration()
+    private var servicesRunning: Bool { serviceGeneration.isRunning }
     private let networkPathBridge = TransferServiceNetworkPathBridge()
     private lazy var networkMonitor = TransferNetworkMonitor { [networkPathBridge] isSatisfied, transition in
         networkPathBridge.deliver(isSatisfied, transition: transition)
@@ -196,7 +197,7 @@ final class TransferService: ObservableObject {
     // MARK: - 生命周期
 
     func start() {
-        userStopped = false
+        stopRequested = false
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             do {
@@ -217,7 +218,8 @@ final class TransferService: ObservableObject {
     /// 故后续 `identity()` 即便被 server 的 `{ try self.identity().identity }` 闭包在 transfer.server 队列上
     /// (listener 自愈/重建时)调用,也只是读取这份「初始化后即不变」的缓存引用,无写竞态,无需加锁。
     private func startServices() {
-        guard !userStopped, !servicesRunning else { return }
+        guard !stopRequested, !servicesRunning else { return }
+        let generation = serviceGeneration.begin()
         // 与 SettingsStore(.transferStealthMode) 共用同一 UserDefaults 裸键;
         // 此处直接读以免把 SettingsStore 注入 TransferService(默认 false = 广播开)。
         stealthMode = UserDefaults.standard.bool(forKey: "transferStealthMode")
@@ -231,15 +233,19 @@ final class TransferService: ObservableObject {
             }
             let server = TransferServer(identity: { try self.identity().identity })
             server.onConnection = { [weak self] conn in
-                DispatchQueue.main.async { self?.acceptInbound(conn) }
+                DispatchQueue.main.async {
+                    self?.acceptInbound(conn, generation: generation)
+                }
             }
             // listener 重建(.failed 自愈 / 睡醒)会换端口:.ready 时把新端口同步到 @Published 显示;
             // 掉线置 nil,避免「本机」卡片继续展示一个已失效的端口。
             server.onStateChange = { [weak self] st, port in
                 DispatchQueue.main.async {
+                    guard let self,
+                          self.serviceGeneration.accepts(generation) else { return }
                     switch st {
-                    case .ready:                 self?.listenPort = port
-                    case .failed, .cancelled:    self?.listenPort = nil
+                    case .ready:                 self.listenPort = port
+                    case .failed, .cancelled:    self.listenPort = nil
                     default:                     break
                     }
                 }
@@ -257,7 +263,10 @@ final class TransferService: ObservableObject {
             discovery.onFailure = { [weak self] error in
                 self?.handleDiscoveryFailure(error)
             }
-            servicesRunning = true
+            guard serviceGeneration.activate(generation) else {
+                server.stop()
+                return
+            }
             discovery.start()
             installLifecycleObservers()
             monitor.start()
@@ -266,6 +275,7 @@ final class TransferService: ObservableObject {
             // 监听端口由 server.onStateChange 的 .ready 同步到 listenPort(见上),无需再轮询 server.port(跨线程读)。
             logger.log(.info, tool: "transfer", "互传服务已启动,本机指纹 \(id.fingerprint.prefix(8))…")
         } catch {
+            serviceGeneration.stop()
             logger.log(.error, tool: "transfer", "启动失败: \(error)")
             connectionState = .failed("启动失败: \(error.localizedDescription)")
         }
@@ -274,7 +284,7 @@ final class TransferService: ObservableObject {
     }
 
     func stop() {
-        userStopped = true
+        stopRequested = true
         executeLifecycleActions(
             TransferReconnectExecutionPolicy.lifecycleActions(
                 for: .stop,
@@ -286,7 +296,6 @@ final class TransferService: ObservableObject {
     /// 断开当前连接但不停服务、不解除配对:回到"未连接",对端仍在已配对列表,可一键重连。
     /// 与 stop() 不同——监听/发现/剪贴板继续运行,本机仍可被发现、可主动或被动重新连接。
     func disconnect() {
-        userStopped = true
         executeLifecycleActions(
             TransferReconnectExecutionPolicy.lifecycleActions(
                 for: .disconnect,
@@ -370,7 +379,6 @@ final class TransferService: ObservableObject {
     }
 
     private func prepareExplicitConnection(to peer: TransferAutoReconnect.PeerRef?) {
-        userStopped = false
         cancelReconnectScheduling()
         reconnectCoordinator.cancelAutomaticRecovery()
         if let peer {
@@ -741,7 +749,14 @@ final class TransferService: ObservableObject {
 
     // MARK: - 被动接受
 
-    private func acceptInbound(_ conn: TransferConnection) {
+    private func acceptInbound(
+        _ conn: TransferConnection,
+        generation: UInt
+    ) {
+        guard serviceGeneration.accepts(generation) else {
+            conn.cancel()
+            return
+        }
         let lifecycle = TransferReconnectExecutionPolicy.InboundConnectionLifecycle(
             connection: conn
         )
@@ -752,13 +767,18 @@ final class TransferService: ObservableObject {
             case .ready:
                 self.logger.log(.info, tool: "transfer", "② 入站连接已 .ready,转入 inboundReady")
                 DispatchQueue.main.async {
-                    self.inboundReady(conn: conn, lifecycle: lifecycle)
+                    self.inboundReady(
+                        conn: conn,
+                        lifecycle: lifecycle,
+                        generation: generation
+                    )
                 }
             case .failed(let e):
                 DispatchQueue.main.async {
                     self.finishUnboundInboundConnection(
                         conn,
                         lifecycle: lifecycle,
+                        generation: generation,
                         event: .failed,
                         failure: "连接失败: \(e)"
                     )
@@ -768,6 +788,7 @@ final class TransferService: ObservableObject {
                     self.finishUnboundInboundConnection(
                         conn,
                         lifecycle: lifecycle,
+                        generation: generation,
                         event: .cancelled,
                         failure: "入站配对连接已关闭"
                     )
@@ -786,6 +807,7 @@ final class TransferService: ObservableObject {
             self.finishUnboundInboundConnection(
                 conn,
                 lifecycle: lifecycle,
+                generation: generation,
                 event: .timeout,
                 failure: "入站连接超时"
             )
@@ -795,9 +817,14 @@ final class TransferService: ObservableObject {
     private func finishUnboundInboundConnection(
         _ conn: TransferConnection,
         lifecycle: TransferReconnectExecutionPolicy.InboundConnectionLifecycle,
+        generation: UInt,
         event: TransferReconnectExecutionPolicy.InboundTerminalEvent,
         failure: String
     ) {
+        guard serviceGeneration.accepts(generation) else {
+            conn.cancel()
+            return
+        }
         let decision = lifecycle.terminalDecision(
             for: event,
             source: conn,
@@ -822,8 +849,13 @@ final class TransferService: ObservableObject {
 
     private func inboundReady(
         conn: TransferConnection,
-        lifecycle: TransferReconnectExecutionPolicy.InboundConnectionLifecycle
+        lifecycle: TransferReconnectExecutionPolicy.InboundConnectionLifecycle,
+        generation: UInt
     ) {
+        guard serviceGeneration.accepts(generation) else {
+            conn.cancel()
+            return
+        }
         guard let fp = conn.peerFingerprint else {
             logger.log(.warn, tool: "transfer", "③✗ 入站 .ready 但读不到对端证书指纹(就卡这里,静默返回)")
             return
@@ -980,6 +1012,13 @@ final class TransferService: ObservableObject {
         peer: PairedPeer,
         outboundAttempt: ActiveOutboundAttempt? = nil
     ) {
+        guard TransferReconnectExecutionPolicy.allowsSessionActivity(
+            servicesRunning: servicesRunning,
+            stopRequested: stopRequested
+        ) else {
+            conn.cancel()
+            return
+        }
         if let outboundAttempt {
             guard activeOutboundAttempt?.id == outboundAttempt.id,
                   activeOutboundAttempt?.origin == outboundAttempt.origin,
@@ -1087,7 +1126,10 @@ final class TransferService: ObservableObject {
         conn.cancel()
         connectionState = failure.map(ConnectionState.failed) ?? .idle
 
-        guard !userStopped, reconnectCoordinator.target != nil else { return }
+        guard TransferReconnectExecutionPolicy.allowsSessionActivity(
+            servicesRunning: servicesRunning,
+            stopRequested: stopRequested
+        ), reconnectCoordinator.target != nil else { return }
         requestAutomaticRecovery(unexpectedDrop: true)
     }
 
@@ -1249,6 +1291,15 @@ final class TransferService: ObservableObject {
         return false
     }
 
+    private var discoverySessionDisposition: TransferReconnectExecutionPolicy.DiscoverySessionDisposition {
+        TransferReconnectExecutionPolicy.discoverySessionDisposition(
+            connectionState: connectionState,
+            hasBoundConnection: hasBoundConnection,
+            activeOrigin: activeOutboundAttempt?.origin,
+            hasActivePairingConnection: activePairingConn != nil
+        )
+    }
+
     private func executeLifecycleActions(
         _ actions: [TransferReconnectExecutionPolicy.LifecycleAction]
     ) {
@@ -1321,7 +1372,7 @@ final class TransferService: ObservableObject {
     }
 
     private func stopServicesNow() {
-        servicesRunning = false
+        serviceGeneration.stop()
         cancelReconnectScheduling()
         reconnectCoordinator.stop()
         lastConnectedPeer = nil
@@ -1373,6 +1424,7 @@ final class TransferService: ObservableObject {
 
     private func handleDiscoveredPeers(_ peers: [DiscoveredPeer]) {
         guard servicesRunning else { return }
+        let sessionDisposition = discoverySessionDisposition
         let target = reconnectCoordinator.target
         let oldPeer = target.flatMap { discoveredPeer(matching: $0) }
         let newPeer = target.flatMap { discoveredPeer(matching: $0, in: peers) }
@@ -1382,8 +1434,10 @@ final class TransferService: ObservableObject {
         if oldPeer != nil, newPeer == nil {
             cancelReconnectScheduling()
             reconnectCoordinator.peerBecameUnavailable()
-            cleanupUnboundAutomaticAttempt()
-            if !hasBoundConnection {
+            if sessionDisposition == .automatic {
+                cleanupUnboundAutomaticAttempt()
+            }
+            if !sessionDisposition.preservesPresentation {
                 showWaitingForRecovery("等待设备重新出现")
             }
             return
@@ -1397,7 +1451,8 @@ final class TransferService: ObservableObject {
                     hasActiveAutomaticAttempt: hasActiveAutomaticAttempt
                 ),
                 target: target,
-                newEndpointKey: newPeer.reconnectEndpointKey
+                newEndpointKey: newPeer.reconnectEndpointKey,
+                sessionDisposition: sessionDisposition
             )
         }
     }
@@ -1405,7 +1460,8 @@ final class TransferService: ObservableObject {
     private func executeDiscoveryEndpointActions(
         _ actions: [TransferReconnectExecutionPolicy.DiscoveryEndpointAction],
         target: TransferAutoReconnect.PeerRef,
-        newEndpointKey: String
+        newEndpointKey: String,
+        sessionDisposition: TransferReconnectExecutionPolicy.DiscoverySessionDisposition
     ) {
         for action in actions {
             switch action {
@@ -1420,21 +1476,26 @@ final class TransferService: ObservableObject {
                     endpointKey: newEndpointKey
                 )
             case .requestRecovery:
-                requestAutomaticRecovery()
+                if sessionDisposition.allowsAutomaticRecovery {
+                    requestAutomaticRecovery()
+                }
             }
         }
     }
 
     private func handleDiscoveryFailure(_ error: Error) {
         guard servicesRunning else { return }
+        let sessionDisposition = discoverySessionDisposition
         cancelReconnectScheduling()
         if reconnectCoordinator.target != nil {
             reconnectCoordinator.peerBecameUnavailable()
         }
-        cleanupUnboundAutomaticAttempt()
+        if sessionDisposition == .automatic {
+            cleanupUnboundAutomaticAttempt()
+        }
         discoveredPeers = []
         logger.log(.warn, tool: "transfer", "Bonjour 浏览失败: \(error.localizedDescription)")
-        if !hasBoundConnection {
+        if !sessionDisposition.preservesPresentation {
             showWaitingForRecovery("等待设备重新出现")
         }
     }
@@ -1533,7 +1594,7 @@ final class TransferService: ObservableObject {
     private func currentAutomaticTarget() -> DiscoveredPeer? {
         TransferAutoReconnect.target(
             busy: connectionState.isBusy,
-            userStopped: userStopped,
+            userStopped: stopRequested,
             selfDeviceId: identityStore.deviceId,
             last: lastConnectedPeer,
             discovered: discoveredPeers,
@@ -1567,7 +1628,7 @@ final class TransferService: ObservableObject {
               TransferReconnectExecutionPolicy.mayResumeDeferredRecovery(
                   tokenAccepted: reconnectCoordinator.accepts(token),
                   servicesRunning: servicesRunning,
-                  userStopped: userStopped,
+                  userStopped: stopRequested,
                   busy: connectionState.isBusy,
                   hasActiveConnection: activeConn != nil,
                   hasActivePairing: activePairing != nil,

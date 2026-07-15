@@ -45,6 +45,150 @@ struct TransferReconnectExecutionPolicyTests {
         expect(TransferConnectionOrigin.user.expectedFingerprint == nil,
                "user 不得隐式固定自动 token 指纹")
 
+        var serviceGeneration = Policy.ServiceGeneration()
+        let firstServiceGeneration = serviceGeneration.begin()
+        expect(!serviceGeneration.accepts(firstServiceGeneration),
+               "server setup 尚未完成时不得接受 inbound callback")
+        expect(serviceGeneration.activate(firstServiceGeneration),
+               "当前 setup generation 完成后应可激活")
+        expect(serviceGeneration.isRunning
+               && serviceGeneration.accepts(firstServiceGeneration),
+               "运行中的 exact generation 应接受 inbound callback")
+        serviceGeneration.stop()
+        expect(!serviceGeneration.isRunning
+               && !serviceGeneration.accepts(firstServiceGeneration),
+               "stop 必须推进代次并拒绝已投递的旧 inbound callback")
+        var staleInboundCancelled = false
+        var staleInboundPresentation = ConnectionState.idle
+        var staleInboundRecoveryRequests = 0
+        if serviceGeneration.accepts(firstServiceGeneration) {
+            staleInboundPresentation = .failed("stale inbound")
+            staleInboundRecoveryRequests += 1
+        } else {
+            staleInboundCancelled = true
+        }
+        expect(staleInboundCancelled
+               && staleInboundPresentation == .idle
+               && staleInboundRecoveryRequests == 0,
+               "stale inbound 必须只 cancel，不得污染 UI 或触发 recovery")
+        let restartedServiceGeneration = serviceGeneration.begin()
+        expect(restartedServiceGeneration != firstServiceGeneration,
+               "restart 必须使用新 generation")
+        expect(serviceGeneration.activate(restartedServiceGeneration),
+               "restart setup 应能激活新 generation")
+        expect(serviceGeneration.accepts(restartedServiceGeneration)
+               && !serviceGeneration.accepts(firstServiceGeneration),
+               "restart 只能接受新 generation，旧 server callback 必须静默失效")
+        expect(!serviceGeneration.activate(firstServiceGeneration),
+               "迟到旧 setup completion 不得覆盖当前 running generation")
+
+        let peerA = TransferAutoReconnect.PeerRef(deviceId: "peer-A", fingerprint: "fp-A")
+        let peerB = TransferAutoReconnect.PeerRef(deviceId: "peer-B", fingerprint: "fp-B")
+        var crossPeerCoordinator = Coordinator()
+        crossPeerCoordinator.connected(to: peerA, endpointKey: "ep-A")
+        crossPeerCoordinator.userDisconnected(from: peerA)
+        expect(Policy.inboundDecision(
+            isPairedCodeless: true,
+            locallyAllowed: crossPeerCoordinator.allowsInbound(peerA)
+        ) == .rejectAndCancel,
+        "用户断开 A 后，A 的免码入站必须继续按 peer 抑制")
+        expect(Policy.inboundDecision(
+            isPairedCodeless: true,
+            locallyAllowed: crossPeerCoordinator.allowsInbound(peerB)
+        ) == .acceptCodeless,
+        "用户断开 A 不得污染 B 的免码入站")
+        expect(Policy.allowsSessionActivity(
+            servicesRunning: serviceGeneration.isRunning,
+            stopRequested: false
+        ), "运行中的服务应允许未被抑制的 B 绑定及恢复")
+        crossPeerCoordinator.connected(to: peerB, endpointKey: "ep-B")
+        expect(!crossPeerCoordinator.allowsInbound(peerA),
+               "B 合法绑定后仍不得解除 A 的按 peer suppression")
+        guard case .dial = crossPeerCoordinator.unexpectedDrop(
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-B"
+        ) else { fail("A 断开后合法绑定 B，B 意外掉线仍必须恢复") }
+        serviceGeneration.stop()
+        crossPeerCoordinator.stop()
+        expect(!Policy.allowsSessionActivity(
+            servicesRunning: serviceGeneration.isRunning,
+            stopRequested: true
+        ), "完整 stop 必须阻止迟到 bind 与掉线恢复")
+        var acceptedBindAfterStop = false
+        var recoveryAfterStop = Coordinator.Command.none
+        if Policy.allowsSessionActivity(
+            servicesRunning: serviceGeneration.isRunning,
+            stopRequested: true
+        ) {
+            acceptedBindAfterStop = true
+            crossPeerCoordinator.connected(to: peerB, endpointKey: "ep-B")
+            recoveryAfterStop = crossPeerCoordinator.unexpectedDrop(
+                pathSatisfied: true,
+                canDial: true,
+                endpointKey: "ep-B"
+            )
+        }
+        expect(!acceptedBindAfterStop && recoveryAfterStop == .none,
+               "stop 后不得绑定 B，也不得为 B 创建掉线恢复命令")
+
+        let userConnecting = Policy.discoverySessionDisposition(
+            connectionState: .connecting,
+            hasBoundConnection: false,
+            activeOrigin: .user,
+            hasActivePairingConnection: false
+        )
+        let userPairing = Policy.discoverySessionDisposition(
+            connectionState: .pairing,
+            hasBoundConnection: false,
+            activeOrigin: .user,
+            hasActivePairingConnection: true
+        )
+        let inboundPairing = Policy.discoverySessionDisposition(
+            connectionState: .pairing,
+            hasBoundConnection: false,
+            activeOrigin: nil,
+            hasActivePairingConnection: true
+        )
+        let boundSession = Policy.discoverySessionDisposition(
+            connectionState: .connected(peerName: "B"),
+            hasBoundConnection: true,
+            activeOrigin: nil,
+            hasActivePairingConnection: false
+        )
+        let idleSession = Policy.discoverySessionDisposition(
+            connectionState: .idle,
+            hasBoundConnection: false,
+            activeOrigin: nil,
+            hasActivePairingConnection: false
+        )
+        let automaticConnecting = Policy.discoverySessionDisposition(
+            connectionState: .connecting,
+            hasBoundConnection: false,
+            activeOrigin: automatic,
+            hasActivePairingConnection: false
+        )
+        expect(userConnecting == .manual && userPairing == .manual,
+               "手动 connecting/pairing 必须归为 manual session")
+        expect(inboundPairing == .transientBusy,
+               "无 outbound origin 的 inbound pairing 必须归为 transient busy")
+        expect(boundSession == .bound, "已绑定连接必须归为 bound session")
+        expect(idleSession == .idle, "空闲状态必须归为 idle session")
+        expect(automaticConnecting == .automatic,
+               "automatic connecting 必须归为 automatic session，而非通用 busy")
+        for disposition in [userConnecting, userPairing, inboundPairing, boundSession] {
+            expect(disposition.preservesPresentation,
+                   "manual/pairing/bound 遇到 peer 消失或 browser failure 必须保留 UI")
+            expect(!disposition.allowsAutomaticRecovery,
+                   "manual/pairing/bound 不得由 discovery 事件创建 automatic token")
+        }
+        for disposition in [idleSession, automaticConnecting] {
+            expect(!disposition.preservesPresentation,
+                   "idle/automatic discovery failure 应可呈现等待状态")
+            expect(disposition.allowsAutomaticRecovery,
+                   "idle/automatic session 应允许 discovery 驱动恢复")
+        }
+
         let validStart = Policy.mayStartAutomatic(
             token: token,
             tokenAccepted: true,

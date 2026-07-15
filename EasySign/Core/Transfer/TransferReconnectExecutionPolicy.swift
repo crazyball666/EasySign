@@ -24,6 +24,37 @@ enum TransferConnectionOrigin: Equatable {
 }
 
 enum TransferReconnectExecutionPolicy {
+    struct ServiceGeneration {
+        private(set) var current: UInt = 0
+        private(set) var runningGeneration: UInt?
+
+        var isRunning: Bool {
+            runningGeneration != nil
+        }
+
+        mutating func begin() -> UInt {
+            current &+= 1
+            runningGeneration = nil
+            return current
+        }
+
+        @discardableResult
+        mutating func activate(_ generation: UInt) -> Bool {
+            guard generation == current else { return false }
+            runningGeneration = generation
+            return true
+        }
+
+        mutating func stop() {
+            current &+= 1
+            runningGeneration = nil
+        }
+
+        func accepts(_ generation: UInt) -> Bool {
+            runningGeneration == generation
+        }
+    }
+
     enum BoundMessageDecision: Equatable {
         case handle
         case ignoreStale
@@ -151,6 +182,32 @@ enum TransferReconnectExecutionPolicy {
         case requestRecovery
     }
 
+    enum DiscoverySessionDisposition: Equatable {
+        case manual
+        case transientBusy
+        case bound
+        case automatic
+        case idle
+
+        var preservesPresentation: Bool {
+            switch self {
+            case .manual, .transientBusy, .bound:
+                true
+            case .automatic, .idle:
+                false
+            }
+        }
+
+        var allowsAutomaticRecovery: Bool {
+            switch self {
+            case .automatic, .idle:
+                true
+            case .manual, .transientBusy, .bound:
+                false
+            }
+        }
+    }
+
     enum AutomaticDialDecision: Equatable {
         case start
         case ignore
@@ -158,6 +215,34 @@ enum TransferReconnectExecutionPolicy {
         case targetChanged
         case targetUnavailable
         case waitForEvent
+    }
+
+    static func allowsSessionActivity(
+        servicesRunning: Bool,
+        stopRequested: Bool
+    ) -> Bool {
+        servicesRunning && !stopRequested
+    }
+
+    static func discoverySessionDisposition(
+        connectionState: ConnectionState,
+        hasBoundConnection: Bool,
+        activeOrigin: TransferConnectionOrigin?,
+        hasActivePairingConnection: Bool
+    ) -> DiscoverySessionDisposition {
+        if hasBoundConnection { return .bound }
+        switch activeOrigin {
+        case .user:
+            return .manual
+        case .automatic:
+            return .automatic
+        case nil:
+            break
+        }
+        if hasActivePairingConnection || connectionState.isBusy {
+            return .transientBusy
+        }
+        return .idle
     }
 
     static func mayStartAutomatic(
