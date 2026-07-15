@@ -160,6 +160,160 @@ struct TransferReconnectExecutionPolicyTests {
         expect(!acceptedBindAfterStop && recoveryAfterStop == .none,
                "stop 后不得绑定 B，也不得为 B 创建掉线恢复命令")
 
+        var inboundBlockerCoordinator = Coordinator()
+        inboundBlockerCoordinator.connected(to: peerA, endpointKey: "ep-A")
+        guard case let .dial(blockedAutomaticToken) = inboundBlockerCoordinator.unexpectedDrop(
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-A"
+        ) else { fail("inbound pairing blocker 需要一个 accepted automatic token") }
+        let blockedAutomaticOrigin = TransferConnectionOrigin.automatic(blockedAutomaticToken)
+        expect(Policy.inboundPairingBlockerDecision(
+            requiresPairing: true,
+            activeOrigin: blockedAutomaticOrigin
+        ) == .invalidateAndCancelAutomaticAttempt,
+        "未知 inbound pairing 必须失效 recovery 并精确取消 active automatic")
+        expect(Policy.inboundPairingBlockerDecision(
+            requiresPairing: true,
+            activeOrigin: .user
+        ) == .rejectInboundPreserveUserAttempt,
+        "inbound pairing blocker 必须拒绝 B 而非错误取消 user outbound")
+        expect(Policy.inboundPairingBlockerDecision(
+            requiresPairing: false,
+            activeOrigin: blockedAutomaticOrigin
+        ) == .none,
+        "paired codeless inbound glare 不得误入首次配对 blocker")
+
+        let blockerGeneration = inboundBlockerCoordinator.generation
+        inboundBlockerCoordinator.blockAutomaticRecoveryForInboundPairing()
+        expect(inboundBlockerCoordinator.generation == blockerGeneration
+               && inboundBlockerCoordinator.accepts(blockedAutomaticToken)
+               && inboundBlockerCoordinator.deferredToken == blockedAutomaticToken
+               && inboundBlockerCoordinator.target == peerA
+               && inboundBlockerCoordinator.phase == .deferred(blockedAutomaticToken),
+               "blocker 必须把当前 automatic token 原 attempt 转为 deferred")
+
+        var blockerPresentation = ConnectionState.pairing
+        var blockerRetryCommands = 0
+        for event in Policy.InboundTerminalEvent.allCases {
+            let lateDecision = Policy.completionDecision(
+                attemptMatches: false,
+                connectionMatches: true,
+                tokenAccepted: inboundBlockerCoordinator.accepts(blockedAutomaticToken)
+            )
+            if lateDecision == .cleanupAndRetry {
+                blockerRetryCommands += 1
+            } else if lateDecision == .cleanupOnly,
+                      Policy.shouldPublishAutomaticCompletion(
+                          hasConcurrentPairingConnection: true
+                      ) {
+                blockerPresentation = .failed("late \(event)")
+            }
+            expect(lateDecision == .ignore,
+                   "A \(event) 迟到回调在 exact silent cleanup 后必须幂等忽略")
+        }
+        let uncancelledFallback = Policy.completionDecision(
+            attemptMatches: true,
+            connectionMatches: true,
+            tokenAccepted: Policy.automaticReadyDecision(
+                tokenAccepted: inboundBlockerCoordinator.accepts(blockedAutomaticToken),
+                hasConcurrentPairingConnection: true
+            ) == .bind
+        )
+        expect(uncancelledFallback == .cleanupOnly
+               && !Policy.shouldPublishAutomaticCompletion(
+                   hasConcurrentPairingConnection: true
+               ), "即使 A 未立即取消，terminal fallback 也只能静默 cleanup")
+        let acceptedButPairingBlockedFallback = Policy.completionDecision(
+            attemptMatches: true,
+            connectionMatches: true,
+            tokenAccepted: Policy.automaticReadyDecision(
+                tokenAccepted: true,
+                hasConcurrentPairingConnection: true
+            ) == .bind
+        )
+        expect(acceptedButPairingBlockedFallback == .cleanupOnly,
+               "即使 token 仍 accepted，concurrent pairing 也必须阻止 terminal retry")
+        expect(blockerPresentation == .pairing && blockerRetryCommands == 0,
+               "A failed/cancelled/timeout 均不得 retry 或覆盖 B pairing UI")
+
+        expect(Policy.automaticReadyDecision(
+            tokenAccepted: false,
+            hasConcurrentPairingConnection: true
+        ) == .cleanupStale,
+        "失效 A 的 late ready 不得 bind")
+        expect(Policy.automaticReadyDecision(
+            tokenAccepted: true,
+            hasConcurrentPairingConnection: true
+        ) == .cleanupStale,
+        "即使 token 尚未失效，并发 pairing 也必须阻止 automatic bind")
+        expect(Policy.automaticReadyDecision(
+            tokenAccepted: true,
+            hasConcurrentPairingConnection: false
+        ) == .bind,
+        "accepted automatic 且无 pairing blocker 时仍可正常 bind")
+
+        expect(inboundBlockerCoordinator.recoveryEvent(
+            pathSatisfied: true,
+            canDial: true,
+            busy: true,
+            endpointKey: "ep-A"
+        ) == .none,
+        "B pairing 活动期间 recovery event 不得创建 token")
+        expect(inboundBlockerCoordinator.phase == .deferred(blockedAutomaticToken),
+               "B pairing 期间必须保留同一 deferred attempt，不能启动 timer")
+        guard case let .dial(releasedBlockerToken) = inboundBlockerCoordinator.resumeDeferredRecovery(
+            blockedAutomaticToken,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-A"
+        ) else { fail("B 释放应恢复同一 deferred attempt") }
+        expect(releasedBlockerToken.attempt == blockedAutomaticToken.attempt
+               && releasedBlockerToken.generation != blockedAutomaticToken.generation,
+               "blocker release 不得消耗或刷新 attempt，只换执行 generation")
+
+        for event in Policy.InboundTerminalEvent.allCases {
+            var terminalFirstCoordinator = Coordinator()
+            terminalFirstCoordinator.connected(to: peerA, endpointKey: "ep-A")
+            guard case let .dial(terminalToken) = terminalFirstCoordinator.unexpectedDrop(
+                pathSatisfied: true,
+                canDial: true,
+                endpointKey: "ep-A"
+            ), case let .schedule(nextToken, _) = terminalFirstCoordinator.attemptFailed(
+                terminalToken
+            ) else { fail("A \(event) 先到时应先产生 finite next attempt") }
+            terminalFirstCoordinator.blockAutomaticRecoveryForInboundPairing()
+            expect(terminalFirstCoordinator.deferredToken == nextToken
+                   && terminalFirstCoordinator.delayElapsed(nextToken) == .none,
+                   "A \(event) 先排出的 timer 必须被 B blocker 转 deferred，不能继续 dial")
+        }
+
+        for ordering in 0..<3 {
+            var orderedCoordinator = Coordinator()
+            orderedCoordinator.connected(to: peerA, endpointKey: "ep-A")
+            guard case let .dial(orderedToken) = orderedCoordinator.unexpectedDrop(
+                pathSatisfied: true,
+                canDial: true,
+                endpointKey: "ep-A"
+            ) else { fail("discovery ordering \(ordering) 需要 automatic token") }
+            switch ordering {
+            case 0:
+                orderedCoordinator.peerBecameUnavailable()
+                orderedCoordinator.blockAutomaticRecoveryForInboundPairing()
+            case 1:
+                orderedCoordinator.blockAutomaticRecoveryForInboundPairing()
+                orderedCoordinator.peerBecameUnavailable()
+            default:
+                orderedCoordinator.blockAutomaticRecoveryForInboundPairing()
+                _ = orderedCoordinator.attemptFailed(orderedToken)
+                orderedCoordinator.peerBecameUnavailable()
+            }
+            expect(!orderedCoordinator.accepts(orderedToken)
+                   && orderedCoordinator.attemptFailed(orderedToken) == .none
+                   && orderedCoordinator.phase == .waitingForEvent,
+                   "discovery invalidation ordering \(ordering) 均不得复活旧 A 或刷新预算")
+        }
+
         let userConnecting = Policy.discoverySessionDisposition(
             connectionState: .connecting,
             hasBoundConnection: false,

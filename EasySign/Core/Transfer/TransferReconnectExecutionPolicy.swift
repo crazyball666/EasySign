@@ -66,6 +66,18 @@ enum TransferReconnectExecutionPolicy {
         case continuePairing
     }
 
+    enum InboundPairingBlockerDecision: Equatable {
+        case none
+        case rejectInboundPreserveUserAttempt
+        case invalidateRecoveryOnly
+        case invalidateAndCancelAutomaticAttempt
+    }
+
+    enum AutomaticReadyDecision: Equatable {
+        case bind
+        case cleanupStale
+    }
+
     enum InboundTerminalEvent: CaseIterable, Equatable {
         case failed
         case cancelled
@@ -226,6 +238,27 @@ enum TransferReconnectExecutionPolicy {
         stopRequested: Bool
     ) -> Bool {
         servicesRunning && !stopRequested
+    }
+
+    static func inboundPairingBlockerDecision(
+        requiresPairing: Bool,
+        activeOrigin: TransferConnectionOrigin?
+    ) -> InboundPairingBlockerDecision {
+        guard requiresPairing else { return .none }
+        if activeOrigin == .user {
+            return .rejectInboundPreserveUserAttempt
+        }
+        if case .automatic = activeOrigin {
+            return .invalidateAndCancelAutomaticAttempt
+        }
+        return .invalidateRecoveryOnly
+    }
+
+    static func automaticReadyDecision(
+        tokenAccepted: Bool,
+        hasConcurrentPairingConnection: Bool
+    ) -> AutomaticReadyDecision {
+        tokenAccepted && !hasConcurrentPairingConnection ? .bind : .cleanupStale
     }
 
     static func shouldPublishAutomaticCompletion(

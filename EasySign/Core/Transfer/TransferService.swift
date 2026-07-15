@@ -597,7 +597,10 @@ final class TransferService: ObservableObject {
         origin: TransferConnectionOrigin
     ) {
         guard activeOutboundAttempt?.id == attemptID,
-              conn === activeConn else { return }
+              conn === activeConn else {
+            conn.cancel()
+            return
+        }
         guard let fp = conn.peerFingerprint else {
             logger.log(.warn, tool: "transfer", "出站:.ready 但读不到对端证书指纹")
             finishOutboundAttempt(
@@ -611,6 +614,18 @@ final class TransferService: ObservableObject {
         logger.log(.info, tool: "transfer", "出站:已读到对端指纹 \(fp.prefix(8))…(\(pairingCode == nil ? "查已配对" : "开始配对"))")
 
         if case let .automatic(token) = origin {
+            guard TransferReconnectExecutionPolicy.automaticReadyDecision(
+                tokenAccepted: reconnectCoordinator.accepts(token),
+                hasConcurrentPairingConnection: activePairingConn != nil
+            ) == .bind else {
+                finishOutboundAttempt(
+                    id: attemptID,
+                    conn: conn,
+                    origin: origin,
+                    failure: nil
+                )
+                return
+            }
             guard let paired = peerStore.peer(forFingerprint: fp),
                   TransferReconnectExecutionPolicy.readyPeerMatches(
                       token: token,
@@ -693,9 +708,18 @@ final class TransferService: ObservableObject {
         let attemptMatches = activeOutboundAttempt?.id == id
             && activeOutboundAttempt?.origin == origin
         let connectionMatches = conn.map { $0 === activeConn } ?? true
+        let hasConcurrentPairingConnection: Bool
+        if let pairingConn = activePairingConn {
+            hasConcurrentPairingConnection = conn.map { pairingConn !== $0 } ?? true
+        } else {
+            hasConcurrentPairingConnection = false
+        }
         let tokenAccepted: Bool
         if case let .automatic(token) = origin {
-            tokenAccepted = reconnectCoordinator.accepts(token)
+            tokenAccepted = TransferReconnectExecutionPolicy.automaticReadyDecision(
+                tokenAccepted: reconnectCoordinator.accepts(token),
+                hasConcurrentPairingConnection: hasConcurrentPairingConnection
+            ) == .bind
         } else {
             tokenAccepted = false
         }
@@ -706,13 +730,6 @@ final class TransferService: ObservableObject {
             tokenAccepted: tokenAccepted
         )
         guard decision != .ignore else { return }
-
-        let hasConcurrentPairingConnection: Bool
-        if let pairingConn = activePairingConn {
-            hasConcurrentPairingConnection = conn.map { pairingConn !== $0 } ?? true
-        } else {
-            hasConcurrentPairingConnection = false
-        }
 
         connectTimeoutWork?.cancel()
         connectTimeoutWork = nil
@@ -878,7 +895,12 @@ final class TransferService: ObservableObject {
             }
             // 同一对端重连:继续往下走(会在 bindConnected 里替换旧连接)
         }
-        if let paired = peerStore.peer(forFingerprint: fp) {
+        let pairedPeer = peerStore.peer(forFingerprint: fp)
+        let inboundPairingBlockerDecision = TransferReconnectExecutionPolicy.inboundPairingBlockerDecision(
+            requiresPairing: pairedPeer == nil,
+            activeOrigin: activeOutboundAttempt?.origin
+        )
+        if let paired = pairedPeer {
             let peerRef = TransferAutoReconnect.PeerRef(
                 deviceId: paired.deviceId,
                 fingerprint: paired.fingerprint
@@ -914,12 +936,45 @@ final class TransferService: ObservableObject {
                 logger.log(.warn, tool: "transfer", "该对端配对失败过多,冷却中,拒绝入站 \(fp.prefix(8))…")
                 conn.cancel(); return
             }
+            if inboundPairingBlockerDecision == .rejectInboundPreserveUserAttempt {
+                _ = lifecycle.rejectSilently(conn)
+                conn.cancel()
+                return
+            }
             // 常驻配对码:启动时已生成并持续显示给对端读取,此处不轮换,
             // 否则对端正照着屏幕输入时码却变了,必然配对失败。仅作 nil 兜底。
             if pendingPairingCode == nil { pendingPairingCode = PairingCrypto.makeCode(); pairingCodeIssuedAt = Date() }
+            enterInboundPairingBlocker(inboundPairingBlockerDecision)
             logger.log(.info, tool: "transfer", "④ 入站配对开始,本机码 \(pendingPairingCode!),发 hello/pairOffer 给对端")
             startPairing(conn: conn, code: pendingPairingCode!, peerFingerprint: fp)
         }
+    }
+
+    private func enterInboundPairingBlocker(
+        _ decision: TransferReconnectExecutionPolicy.InboundPairingBlockerDecision
+    ) {
+        guard decision == .invalidateRecoveryOnly
+                || decision == .invalidateAndCancelAutomaticAttempt else { return }
+        cancelReconnectScheduling()
+        reconnectCoordinator.blockAutomaticRecoveryForInboundPairing()
+
+        guard decision == .invalidateAndCancelAutomaticAttempt,
+              let attempt = activeOutboundAttempt,
+              case .automatic = attempt.origin else { return }
+
+        connectTimeoutWork?.cancel()
+        connectTimeoutWork = nil
+        activeOutboundAttempt = nil
+        let automaticConnection = activeConn
+        activeConn = nil
+        activePeerFingerprint = nil
+        fileManager.reset()
+        automaticConnection?.cancel()
+        logger.log(
+            .info,
+            tool: "transfer",
+            "inbound pairing 已静默收口 active automatic attempt"
+        )
     }
 
     // MARK: - 配对

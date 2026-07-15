@@ -158,6 +158,17 @@ struct TransferReconnectCoordinator {
         invalidateAutomaticRecovery(phase: .inactive)
     }
 
+    mutating func blockAutomaticRecoveryForInboundPairing() {
+        switch phase {
+        case let .dialing(token), let .waiting(token):
+            phase = .deferred(token)
+        case .deferred, .waitingForEvent:
+            break
+        case .inactive:
+            phase = target == nil ? .inactive : .waitingForEvent
+        }
+    }
+
     mutating func clearPeer(_ peer: TransferAutoReconnect.PeerRef) {
         suppressed.remove(peer)
         stopTarget(peer)
