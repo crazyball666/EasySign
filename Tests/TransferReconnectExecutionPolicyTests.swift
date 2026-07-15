@@ -9,6 +9,8 @@ struct TransferReconnectExecutionPolicyTests {
     typealias Coordinator = TransferReconnectCoordinator
     typealias Policy = TransferReconnectExecutionPolicy
 
+    final class ConnectionProbe {}
+
     static let peerRef = TransferAutoReconnect.PeerRef(deviceId: "peer-B", fingerprint: "fp-B")
     static let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: 5000)
 
@@ -438,6 +440,101 @@ struct TransferReconnectExecutionPolicyTests {
             locallyAllowed: false
         ) == .continuePairing,
         "未知设备首次配对不能被已配对 suppression 误伤")
+
+        let staleBoundConnection = ConnectionProbe()
+        let currentBoundConnection = ConnectionProbe()
+        var staleByeCoordinator = Coordinator()
+        staleByeCoordinator.connected(to: peerRef, endpointKey: "ep-new")
+        let staleByeDecision = Policy.boundMessageDecision(
+            source: staleBoundConnection,
+            active: currentBoundConnection
+        )
+        expect(staleByeDecision == .ignoreStale,
+               "superseded 旧连接的迟到 bye 必须按 exact identity 忽略")
+        if staleByeDecision == .handle {
+            staleByeCoordinator.peerSaidBye(peerRef)
+        }
+        expect(staleByeCoordinator.target == peerRef,
+               "旧连接 bye 不得清除新会话 coordinator target")
+        expect(Policy.boundMessageDecision(
+            source: currentBoundConnection,
+            active: currentBoundConnection
+        ) == .handle, "当前 bound 连接的 bye 应正常处理")
+        var currentByeCoordinator = Coordinator()
+        currentByeCoordinator.connected(to: peerRef, endpointKey: "ep-current")
+        if Policy.boundMessageDecision(
+            source: currentBoundConnection,
+            active: currentBoundConnection
+        ) == .handle {
+            currentByeCoordinator.peerSaidBye(peerRef)
+        }
+        expect(currentByeCoordinator.target == nil && currentByeCoordinator.allowsInbound(peerRef),
+               "当前连接 bye 应停止恢复但不得加入本机 suppression")
+
+        let rejectedConnection = ConnectionProbe()
+        let rejectedLifecycle = Policy.InboundConnectionLifecycle(
+            connection: rejectedConnection
+        )
+        expect(!rejectedLifecycle.rejectSilently(staleBoundConnection),
+               "suppression 静默标记不得应用到其他 connection identity")
+        expect(rejectedLifecycle.rejectSilently(rejectedConnection),
+               "suppression reject 必须为 exact inbound connection 建立静默终态")
+        var rejectedPresentation = ConnectionState.idle
+        var rejectedFailurePublications = 0
+        var rejectedRecoveryResumes = 0
+        for event in Policy.InboundTerminalEvent.allCases {
+            let decision = rejectedLifecycle.terminalDecision(
+                for: event,
+                source: rejectedConnection,
+                activePairing: nil,
+                activeBound: nil
+            )
+            switch decision {
+            case .ignoreSilently, .ignoreStale:
+                break
+            case .finishPairingFailure:
+                rejectedPresentation = .failed("pairing")
+                rejectedRecoveryResumes += 1
+            case .publishFailure:
+                rejectedPresentation = .failed("unbound")
+                rejectedFailurePublications += 1
+            }
+        }
+        expect(rejectedPresentation == .idle,
+               "rejected inbound 的 cancelled/failed/timeout 均不得污染 idle UI/Retry")
+        expect(rejectedFailurePublications == 0 && rejectedRecoveryResumes == 0,
+               "rejected inbound 不得发布失败或恢复 deferred/automatic")
+
+        let repeatedRejectedConnection = ConnectionProbe()
+        let repeatedRejectedLifecycle = Policy.InboundConnectionLifecycle(
+            connection: repeatedRejectedConnection
+        )
+        expect(repeatedRejectedLifecycle.rejectSilently(repeatedRejectedConnection),
+               "第二条 suppression reject 应与前一条连接独立")
+        expect(repeatedRejectedLifecycle.terminalDecision(
+            for: .cancelled,
+            source: repeatedRejectedConnection,
+            activePairing: nil,
+            activeBound: nil
+        ) == .ignoreSilently, "重复回连被拒绝后也必须静默收口")
+
+        let normalPairingConnection = ConnectionProbe()
+        let normalPairingLifecycle = Policy.InboundConnectionLifecycle(
+            connection: normalPairingConnection
+        )
+        expect(normalPairingLifecycle.terminalDecision(
+            for: .cancelled,
+            source: normalPairingConnection,
+            activePairing: normalPairingConnection,
+            activeBound: nil
+        ) == .finishPairingFailure,
+        "未知设备的正常 pairing cancel 仍必须发布失败并释放 deferred")
+        expect(normalPairingLifecycle.terminalDecision(
+            for: .failed,
+            source: normalPairingConnection,
+            activePairing: nil,
+            activeBound: nil
+        ) == .ignoreStale, "同一正常 pairing 的重复终态必须幂等")
 
         expect(ConnectionState.connected(peerName: "B").isBusy, "connected 应 busy")
         expect(ConnectionState.connecting.isBusy, "connecting 应 busy")

@@ -742,18 +742,24 @@ final class TransferService: ObservableObject {
     // MARK: - 被动接受
 
     private func acceptInbound(_ conn: TransferConnection) {
+        let lifecycle = TransferReconnectExecutionPolicy.InboundConnectionLifecycle(
+            connection: conn
+        )
         logger.log(.info, tool: "transfer", "① 收到入站连接,等待握手 .ready…")
         conn.onStateChange = { [weak self, weak conn] st in
             guard let self, let conn else { return }
             switch st {
             case .ready:
                 self.logger.log(.info, tool: "transfer", "② 入站连接已 .ready,转入 inboundReady")
-                DispatchQueue.main.async { self.inboundReady(conn: conn) }
+                DispatchQueue.main.async {
+                    self.inboundReady(conn: conn, lifecycle: lifecycle)
+                }
             case .failed(let e):
-                self.logger.log(.warn, tool: "transfer", "✗ 入站连接 .failed: \(e)")
                 DispatchQueue.main.async {
                     self.finishUnboundInboundConnection(
                         conn,
+                        lifecycle: lifecycle,
+                        event: .failed,
                         failure: "连接失败: \(e)"
                     )
                 }
@@ -761,6 +767,8 @@ final class TransferService: ObservableObject {
                 DispatchQueue.main.async {
                     self.finishUnboundInboundConnection(
                         conn,
+                        lifecycle: lifecycle,
+                        event: .cancelled,
                         failure: "入站配对连接已关闭"
                     )
                 }
@@ -775,28 +783,47 @@ final class TransferService: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
             guard let self else { return }
             if conn === self.activeConn { return }   // 已绑定,放过
-            conn.cancel()
+            self.finishUnboundInboundConnection(
+                conn,
+                lifecycle: lifecycle,
+                event: .timeout,
+                failure: "入站连接超时"
+            )
         }
     }
 
     private func finishUnboundInboundConnection(
         _ conn: TransferConnection,
+        lifecycle: TransferReconnectExecutionPolicy.InboundConnectionLifecycle,
+        event: TransferReconnectExecutionPolicy.InboundTerminalEvent,
         failure: String
     ) {
-        guard conn !== activeConn else { return }
-        if let pairingConn = activePairingConn {
-            guard pairingConn === conn else { return }
+        let decision = lifecycle.terminalDecision(
+            for: event,
+            source: conn,
+            activePairing: activePairingConn,
+            activeBound: activeConn
+        )
+        switch decision {
+        case .ignoreSilently, .ignoreStale:
+            if event == .timeout { conn.cancel() }
+        case .finishPairingFailure:
             activePairing = nil
             activePairingConn = nil
             conn.cancel()
             connectionState = .failed(failure)
             resumeDeferredAutomaticRecoveryIfPossible()
-        } else if activeConn == nil {
+        case .publishFailure:
+            logger.log(.warn, tool: "transfer", failure)
+            conn.cancel()
             connectionState = .failed(failure)
         }
     }
 
-    private func inboundReady(conn: TransferConnection) {
+    private func inboundReady(
+        conn: TransferConnection,
+        lifecycle: TransferReconnectExecutionPolicy.InboundConnectionLifecycle
+    ) {
         guard let fp = conn.peerFingerprint else {
             logger.log(.warn, tool: "transfer", "③✗ 入站 .ready 但读不到对端证书指纹(就卡这里,静默返回)")
             return
@@ -818,6 +845,10 @@ final class TransferService: ObservableObject {
                 locallyAllowed: reconnectCoordinator.allowsInbound(peerRef)
             ) {
             case .rejectAndCancel:
+                guard lifecycle.rejectSilently(conn) else {
+                    conn.cancel()
+                    return
+                }
                 logger.log(
                     .info,
                     tool: "transfer",
@@ -1018,8 +1049,8 @@ final class TransferService: ObservableObject {
             }
             return pm
         })
-        router.onData = { [weak self] msg in
-            guard let self else { return }
+        router.onData = { [weak self, weak conn] msg in
+            guard let self, let conn else { return }
             switch msg {
             case let .clipboardText(text, hash):
                 DispatchQueue.main.async { self.receiveClipboard(text: text, hash: hash, peerName: peer.name) }
@@ -1030,7 +1061,9 @@ final class TransferService: ObservableObject {
             case let .fileComplete(id):
                 self.fileManager.handleComplete(id: id)
             case .bye:
-                DispatchQueue.main.async { self.handlePeerBye(peer: peer) }
+                DispatchQueue.main.async {
+                    self.handlePeerBye(peer: peer, source: conn)
+                }
             default:
                 break
             }
@@ -1060,7 +1093,14 @@ final class TransferService: ObservableObject {
 
     /// 对端主动断开(收到 .bye):尊重对端的「断开」意图,本机不再自动重连它。连接随后会被对端 cancel,
     /// 由 handleBoundConnectionDrop 收尾回 idle;此处不强行 cancel,避免与收尾竞态。
-    private func handlePeerBye(peer: PairedPeer) {
+    private func handlePeerBye(
+        peer: PairedPeer,
+        source: TransferConnection
+    ) {
+        guard TransferReconnectExecutionPolicy.boundMessageDecision(
+            source: source,
+            active: activeConn
+        ) == .handle else { return }
         let peerRef = TransferAutoReconnect.PeerRef(
             deviceId: peer.deviceId,
             fingerprint: peer.fingerprint

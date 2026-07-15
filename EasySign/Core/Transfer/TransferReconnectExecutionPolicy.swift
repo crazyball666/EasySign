@@ -24,10 +24,88 @@ enum TransferConnectionOrigin: Equatable {
 }
 
 enum TransferReconnectExecutionPolicy {
+    enum BoundMessageDecision: Equatable {
+        case handle
+        case ignoreStale
+    }
+
     enum InboundDecision: Equatable {
         case rejectAndCancel
         case acceptCodeless
         case continuePairing
+    }
+
+    enum InboundTerminalEvent: CaseIterable, Equatable {
+        case failed
+        case cancelled
+        case timeout
+    }
+
+    enum InboundTerminalDecision: Equatable {
+        case ignoreSilently
+        case ignoreStale
+        case finishPairingFailure
+        case publishFailure
+    }
+
+    /// One reducer is created per accepted inbound connection. Production confines mutations to main.
+    final class InboundConnectionLifecycle: @unchecked Sendable {
+        private enum State {
+            case ordinary
+            case silentlyRejected
+            case finished
+        }
+
+        private let connectionID: ObjectIdentifier
+        private var state = State.ordinary
+
+        init(connection: AnyObject) {
+            connectionID = ObjectIdentifier(connection)
+        }
+
+        @discardableResult
+        func rejectSilently(_ connection: AnyObject) -> Bool {
+            guard matches(connection), state == .ordinary else { return false }
+            state = .silentlyRejected
+            return true
+        }
+
+        func terminalDecision(
+            for event: InboundTerminalEvent,
+            source: AnyObject,
+            activePairing: AnyObject?,
+            activeBound: AnyObject?
+        ) -> InboundTerminalDecision {
+            guard matches(source) else { return .ignoreStale }
+            switch state {
+            case .silentlyRejected:
+                return .ignoreSilently
+            case .finished:
+                return .ignoreStale
+            case .ordinary:
+                break
+            }
+
+            // Failed, cancelled, and the 30-second timeout share one idempotent terminal gate.
+            switch event {
+            case .failed, .cancelled, .timeout:
+                break
+            }
+            let decision: InboundTerminalDecision
+            if let activePairing {
+                decision = matches(activePairing) ? .finishPairingFailure : .ignoreStale
+            } else if activeBound == nil {
+                decision = .publishFailure
+            } else {
+                decision = .ignoreStale
+            }
+            state = .finished
+            return decision
+        }
+
+        private func matches(_ connection: AnyObject) -> Bool {
+            ObjectIdentifier(connection) == connectionID
+        }
     }
 
     enum CompletionDecision: Equatable {
@@ -154,6 +232,14 @@ enum TransferReconnectExecutionPolicy {
     ) -> InboundDecision {
         guard isPairedCodeless else { return .continuePairing }
         return locallyAllowed ? .acceptCodeless : .rejectAndCancel
+    }
+
+    static func boundMessageDecision(
+        source: AnyObject,
+        active: AnyObject?
+    ) -> BoundMessageDecision {
+        guard let active else { return .ignoreStale }
+        return ObjectIdentifier(source) == ObjectIdentifier(active) ? .handle : .ignoreStale
     }
 
     static func completionDecision(
