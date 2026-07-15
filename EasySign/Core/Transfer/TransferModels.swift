@@ -40,7 +40,7 @@ enum ConnectionState: Equatable {
     case failed(String)
 }
 
-enum TransferNetworkTransition: Equatable {
+enum TransferNetworkTransition: Equatable, Sendable {
     case initial
     case unchanged
     case becameUnavailable
@@ -58,7 +58,7 @@ enum TransferNetworkTransition: Equatable {
 }
 
 /// Bonjour 浏览发现的一台对端设备。fingerprint 来自 TXT 记录,用于标注是否已配对。
-struct DiscoveredPeer: Identifiable, Equatable {
+struct DiscoveredPeer: Identifiable, Equatable, Sendable {
     var id: String { deviceId }
     let deviceId: String
     let name: String
@@ -76,6 +76,7 @@ struct DiscoveredPeer: Identifiable, Equatable {
     }
 
     var reconnectEndpointKey: String {
+        // Bonjour peers always receive a reducer token; endpoint description is only host/manual fallback.
         recoveryToken ?? String(describing: endpoint)
     }
 
