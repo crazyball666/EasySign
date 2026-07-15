@@ -13,7 +13,7 @@ import Security
 ///
 /// If the server fingerprint comes back nil, this reproduces "对端不弹配对码".
 
-final class Box<T> {
+final class Box<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var v: T
     init(_ initial: T) { v = initial }
@@ -39,28 +39,39 @@ struct TransferBonjourEndpointTests {
         let server = TransferServer(identity: { idB.identity })
         let serverConn = Box<TransferConnection?>(nil)
         let serverConnSem = DispatchSemaphore(value: 0)
+        let serverPort = Box<UInt16?>(nil)
+        let serverReadySem = DispatchSemaphore(value: 0)
         server.onConnection = { conn in
             if serverConn.value == nil { serverConn.set(conn); serverConnSem.signal() }
+        }
+        server.onStateChange = { state, port in
+            guard case .ready = state, let port else { return }
+            serverPort.set(port)
+            serverReadySem.signal()
         }
         server.setAdvertiseInfo((deviceId: serverDeviceId,
                                  name: "ServerMac",
                                  fingerprint: idB.fingerprint))
         try server.start()
-        expect(waitUntil(timeout: 10) { server.port != nil }, "server bound a port")
+        expect(serverReadySem.wait(timeout: .now() + 10) == .success,
+               "server bound a port")
+        guard let listeningPort = serverPort.value else {
+            return fail("server ready callback did not include a port")
+        }
         server.setAdvertising(true)
-        log("server listening on :\(server.port!), advertising deviceId=\(serverDeviceId)")
+        log("server listening on :\(listeningPort), advertising deviceId=\(serverDeviceId)")
 
         // ---- Discover it via real NWBrowser (selfDeviceId differs so it's not filtered) -
         let discovery = PeerDiscovery(selfDeviceId: { "client-dev-\(getpid())" })
         let foundPeer = Box<DiscoveredPeer?>(nil)
-        let foundSem = DispatchSemaphore(value: 0)
         discovery.onPeersChanged = { peers in
             if let p = peers.first(where: { $0.deviceId == serverDeviceId }), foundPeer.value == nil {
-                foundPeer.set(p); foundSem.signal()
+                foundPeer.set(p)
             }
         }
         discovery.start()
-        guard foundSem.wait(timeout: .now() + 15) == .success, let peer = foundPeer.value else {
+        guard waitOnMainRunLoop(timeout: 15, { foundPeer.value != nil }),
+              let peer = foundPeer.value else {
             return fail("Bonjour discovery never found the advertised server within 15s")
         }
         log("discovered peer endpoint = \(peer.endpoint)")
@@ -118,6 +129,16 @@ struct TransferBonjourEndpointTests {
     static func waitUntil(timeout: TimeInterval, _ cond: () -> Bool) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline { if cond() { return true }; Thread.sleep(forTimeInterval: 0.02) }
+        return cond()
+    }
+    @discardableResult
+    static func waitOnMainRunLoop(timeout: TimeInterval, _ cond: () -> Bool) -> Bool {
+        precondition(Thread.isMainThread)
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if cond() { return true }
+            RunLoop.main.run(until: min(deadline, Date().addingTimeInterval(0.01)))
+        }
         return cond()
     }
     static func log(_ m: String) { FileHandle.standardError.write(Data("• \(m)\n".utf8)) }

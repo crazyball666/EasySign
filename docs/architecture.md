@@ -121,7 +121,7 @@ static let allTools: [any Tool] = [ ResignTool(), QRCodeTool(), DevicesTool(), T
 
 - 只有 deviceId 较小的一端主动拨号;较大端只修复 listener/Bonjour 并等待入站,不能用保存的手动 IP 绕过仲裁。网络 path 未知/不可用或当前 Bonjour endpoint 缺失时均不自动拨号。
 - 自动 token 同时绑定 generation、attempt、预期 `PeerRef`(deviceId + fingerprint)与 discovery token;每次拨号从最新 snapshot 解析 endpoint,TLS ready 后再次核对身份。用户 Connect/Retry 会取消定时任务并推进 generation;忙碌导致的 deferred recovery 保留原 token/attempt,不消耗尝试次数;旧回调只能清理自己的连接实例。
-- 睡醒/网络恢复先修 listener,非隐身模式下重声明 Bonjour,再重启 discovery,最后才请求恢复;Bonjour 重声明有独立 3 秒去抖,旧 browser generation 回调会被拒绝。
+- 睡醒/网络恢复始终先修 listener,最后才请求恢复;非隐身模式的 Bonjour 广告重声明与 discovery 重启组成同一组 repair 动作,**共同受独立 3 秒去抖控制**,旧 browser generation 回调会被拒绝。
 - 自动连接永远不带配对码。成功绑定后,手动 Retry 保留用户明确选择的 peer 或 host/port,但改走免码路径;手动 IP 仅能由用户显式触发。
 - 主动断开先使 recovery generation 失效,再发送 best-effort `.bye`,并把当前 `PeerRef` 加入本机抑制集合;即使 `.bye` 丢失也拒绝该设备后续免码入站,直到本机显式 Connect/Retry 或清除配对。对端 `.bye` 只停止目标恢复,不建立本机抑制。
 
