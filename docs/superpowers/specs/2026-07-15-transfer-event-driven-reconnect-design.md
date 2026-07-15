@@ -19,6 +19,7 @@ The desired behavior is automatic recovery after sleep or a network interruption
 ## Non-Goals
 
 - Automatically reconnecting after the EasySign process is terminated and relaunched. `lastConnectedPeer` remains an app-lifetime value.
+- Guaranteeing automatic recovery for a manual-IP-only session when the device that owns dial arbitration does not know the peer's current listener endpoint. Reliable automatic recovery requires Bonjour reachability.
 - Changing the pairing protocol, persisted peer format, TLS identity format, or certificate fingerprint trust model.
 - Maintaining an infinite retry timer while the peer or network remains unavailable.
 - Redesigning the Transfer UI.
@@ -63,6 +64,7 @@ State:
 - current attempt index in `[0, 2, 5, 10]`;
 - whether an attempt or delayed attempt is active;
 - whether the service is waiting for a new external event.
+- the last matching Bonjour endpoint token, so a real endpoint change can start a new cycle without treating duplicate result callbacks as new events.
 
 Outputs/actions:
 
@@ -120,6 +122,7 @@ The original inbound/outbound direction does not decide who reconnects. Device-I
 
 - Match both device ID and certificate fingerprint.
 - Resolve the current Bonjour endpoint on every attempt rather than closing over a stale `DiscoveredPeer` value.
+- Treat the endpoint as part of the recovery snapshot even though the current `DiscoveredPeer.Equatable` compares only device ID and fingerprint. The implementation must either include `endpoint` in equality or derive an explicit endpoint token for coordinator input.
 - A peer appearance or endpoint change after attempts were exhausted is a new recovery event and starts a fresh bounded cycle.
 - Duplicate callbacks for an unchanged peer while a cycle is already dialing or waiting do not reset the attempt counter.
 
@@ -134,7 +137,9 @@ The original inbound/outbound direction does not decide who reconnects. Device-I
 
 ## Manual IP Compatibility
 
-Bonjour-discovered peers use a freshly resolved endpoint for each attempt. For an existing manual IP connection, retain the saved host/port as a fallback on path restoration. If the same paired peer subsequently appears through Bonjour, prefer the current Bonjour endpoint because a rebuilt listener may have a different port.
+Bonjour-discovered peers use a freshly resolved endpoint for each attempt. For an existing manual IP connection, the saved host/port may be retained as a user-initiated Retry fallback. If the same paired peer subsequently appears through Bonjour, automatic recovery uses the current Bonjour endpoint because a rebuilt listener may have a different port.
+
+Automatic recovery never relaxes device-ID arbitration merely because one side has a saved manual endpoint. If the smaller device ID cannot discover a matching Bonjour endpoint, neither side starts an automatic dial. This includes manual-IP-only and stealth-mode sessions. Supporting those cases would require a stable endpoint or endpoint-handoff protocol and is outside this change. The optional manual Retry action remains explicit user intent and is not invoked by the automatic coordinator.
 
 ## User-Initiated Disconnect and Stop
 
@@ -145,8 +150,9 @@ Bonjour-discovered peers use a freshly resolved endpoint for each attempt. For a
 - increment the recovery generation;
 - cancel pending retry work;
 - preserve the `.bye` behavior so the peer also clears its auto-reconnect target.
+- on Disconnect, add the current peer's device ID and fingerprint to an app-lifetime local suppression set before sending `.bye`.
 
-No later wake, path, discovery, timeout, or stale connection callback may restart that session.
+The suppression set closes the best-effort `.bye` gap: if `.bye` is lost and the remote peer later dials codeless, the local side rejects that inbound connection before `bindConnected`. An explicit local Connect/Retry to that peer removes its suppression entry. Clearing the paired peer removes the entry as well. No later wake, path, discovery, timeout, stale connection callback, or unsolicited inbound connection may restart a user-disconnected session.
 
 ## Pairing and Trust
 
@@ -179,6 +185,9 @@ Required regression cases:
 8. User Disconnect cancels a pending generation and all later stale callbacks are ignored.
 9. A timeout from an old connection cannot cancel or fail a replacement connection.
 10. Every automatic dial uses the codeless paired-fingerprint path.
+11. If `.bye` is lost, the disconnecting side rejects a later codeless inbound connection until that user explicitly reconnects.
+12. Automatic recovery does not let a larger-ID manual endpoint holder bypass arbitration when the smaller-ID side has no Bonjour endpoint.
+13. A changed Bonjour endpoint starts a fresh cycle, while a duplicate callback for the same endpoint does not.
 
 Existing TLS loopback, disconnect-detection, Bonjour endpoint, pairing-repair, and auto-reconnect decision tests remain required regression coverage.
 
@@ -189,4 +198,6 @@ Existing TLS loopback, disconnect-detection, Bonjour endpoint, pairing-repair, a
 - Leaving a peer offline causes no continuing retry timer after the bounded recovery window.
 - Bringing the peer back or restoring the network generates a new event and reconnects automatically.
 - User-initiated Disconnect stays disconnected across wake, path, and discovery events.
+- User-initiated Disconnect stays disconnected even if its `.bye` message is lost and the peer attempts a codeless inbound reconnect.
 - At most one side actively dials during recovery, and neither side remains indefinitely in Connecting.
+- Manual-IP-only or stealth-mode sessions without a Bonjour endpoint remain manually recoverable but do not violate one-way arbitration to auto-dial.
