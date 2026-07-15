@@ -8,7 +8,7 @@ import Network
 /// 故自动重连一律走免码路径,永远不碰那个会在每次配对成功后轮换的 pendingPairingCode。
 enum TransferAutoReconnect {
     /// 一台对端的稳定标识(配对时确定,跨会话不变)。
-    struct PeerRef: Equatable {
+    struct PeerRef: Hashable {
         let deviceId: String
         let fingerprint: String
     }
