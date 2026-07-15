@@ -1144,6 +1144,12 @@ final class TransferService: ObservableObject {
         activeConn != nil && activePeerFingerprint != nil
     }
 
+    private var hasActiveAutomaticAttempt: Bool {
+        guard let activeOutboundAttempt else { return false }
+        if case .automatic = activeOutboundAttempt.origin { return true }
+        return false
+    }
+
     private func executeLifecycleActions(
         _ actions: [TransferReconnectExecutionPolicy.LifecycleAction]
     ) {
@@ -1273,7 +1279,7 @@ final class TransferService: ObservableObject {
         let newPeer = target.flatMap { discoveredPeer(matching: $0, in: peers) }
         discoveredPeers = peers
 
-        guard target != nil else { return }
+        guard let target else { return }
         if oldPeer != nil, newPeer == nil {
             cancelReconnectScheduling()
             reconnectCoordinator.peerBecameUnavailable()
@@ -1283,15 +1289,40 @@ final class TransferService: ObservableObject {
             }
             return
         }
-        if let newPeer,
-           oldPeer == nil || oldPeer?.reconnectEndpointKey != newPeer.reconnectEndpointKey {
-            if hasBoundConnection, let target {
+        if let newPeer {
+            executeDiscoveryEndpointActions(
+                TransferReconnectExecutionPolicy.discoveryEndpointActions(
+                    oldEndpointKey: oldPeer?.reconnectEndpointKey,
+                    newEndpointKey: newPeer.reconnectEndpointKey,
+                    hasBoundConnection: hasBoundConnection,
+                    hasActiveAutomaticAttempt: hasActiveAutomaticAttempt
+                ),
+                target: target,
+                newEndpointKey: newPeer.reconnectEndpointKey
+            )
+        }
+    }
+
+    private func executeDiscoveryEndpointActions(
+        _ actions: [TransferReconnectExecutionPolicy.DiscoveryEndpointAction],
+        target: TransferAutoReconnect.PeerRef,
+        newEndpointKey: String
+    ) {
+        for action in actions {
+            switch action {
+            case .invalidateAutomaticRecovery:
+                cancelReconnectScheduling()
+                reconnectCoordinator.peerBecameUnavailable()
+            case .cleanupAutomaticAttempt:
+                cleanupUnboundAutomaticAttempt()
+            case .recordBoundEndpoint:
                 reconnectCoordinator.connected(
                     to: target,
-                    endpointKey: newPeer.reconnectEndpointKey
+                    endpointKey: newEndpointKey
                 )
+            case .requestRecovery:
+                requestAutomaticRecovery()
             }
-            requestAutomaticRecovery()
         }
     }
 

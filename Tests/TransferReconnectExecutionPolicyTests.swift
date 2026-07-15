@@ -120,6 +120,83 @@ struct TransferReconnectExecutionPolicyTests {
             attemptMatches: true, connectionMatches: true, tokenAccepted: true
         ) == .cleanupAndRetry, "attempt/connection/token 全匹配才可清理并重试")
 
+        var endpointRaceCoordinator = Coordinator()
+        endpointRaceCoordinator.connected(to: peerRef, endpointKey: "ep-1")
+        guard case let .dial(oldEndpointToken) = endpointRaceCoordinator.unexpectedDrop(
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-1"
+        ) else { fail("endpoint 竞态需要一个 ep-1 自动 attempt") }
+        let endpointChangeActions = Policy.discoveryEndpointActions(
+            oldEndpointKey: "ep-1",
+            newEndpointKey: "ep-2",
+            hasBoundConnection: false,
+            hasActiveAutomaticAttempt: true
+        )
+        expect(endpointChangeActions == [
+            .invalidateAutomaticRecovery,
+            .cleanupAutomaticAttempt,
+            .requestRecovery,
+        ], "自动拨号中 endpoint 变化必须先失效、再收口旧 attempt、最后请求最新 endpoint")
+        expect(Policy.discoveryEndpointActions(
+            oldEndpointKey: "ep-1",
+            newEndpointKey: "ep-2",
+            hasBoundConnection: true,
+            hasActiveAutomaticAttempt: false
+        ) == [.recordBoundEndpoint, .requestRecovery],
+        "bound connection 的 endpoint 变化应更新 coordinator，但不清理连接")
+        expect(Policy.discoveryEndpointActions(
+            oldEndpointKey: "ep-1",
+            newEndpointKey: "ep-2",
+            hasBoundConnection: false,
+            hasActiveAutomaticAttempt: false
+        ) == [.requestRecovery], "空闲/等待时 endpoint 变化直接请求新周期")
+        expect(Policy.discoveryEndpointActions(
+            oldEndpointKey: "ep-1",
+            newEndpointKey: "ep-1",
+            hasBoundConnection: false,
+            hasActiveAutomaticAttempt: true
+        ).isEmpty, "endpoint key 未变化不得打断当前 attempt")
+
+        var automaticConnectionCount = 1
+        var replacementCommand = Coordinator.Command.none
+        for action in endpointChangeActions {
+            switch action {
+            case .invalidateAutomaticRecovery:
+                endpointRaceCoordinator.peerBecameUnavailable()
+                expect(!endpointRaceCoordinator.accepts(oldEndpointToken),
+                       "处理 ep-2 前必须先使 ep-1 token 失效")
+            case .cleanupAutomaticAttempt:
+                expect(Policy.completionDecision(
+                    attemptMatches: true,
+                    connectionMatches: true,
+                    tokenAccepted: endpointRaceCoordinator.accepts(oldEndpointToken)
+                ) == .cleanupOnly, "旧 attempt 必须完成 identity cleanup，但不得续排 ep-1 retry")
+                automaticConnectionCount -= 1
+            case .recordBoundEndpoint:
+                fail("未绑定的自动 attempt 不应走 bound endpoint 更新")
+            case .requestRecovery:
+                expect(automaticConnectionCount == 0,
+                       "请求 ep-2 前旧 ep-1 connection 必须已经收口，禁止并发拨号")
+                replacementCommand = endpointRaceCoordinator.recoveryEvent(
+                    pathSatisfied: true,
+                    canDial: true,
+                    busy: false,
+                    endpointKey: "ep-2"
+                )
+            }
+        }
+        guard case let .dial(newEndpointToken) = replacementCommand else {
+            fail("旧 attempt 收口后必须立即拨最新 ep-2")
+        }
+        automaticConnectionCount += 1
+        expect(newEndpointToken.endpointKey == "ep-2",
+               "替代 token 必须绑定最新 endpoint")
+        expect(newEndpointToken.generation != oldEndpointToken.generation,
+               "endpoint 变化必须换 generation")
+        expect(automaticConnectionCount == 1,
+               "endpoint 切换全过程最多只能保留一个自动 connection")
+
         expect(Policy.actions(for: .pathUnavailable) == [
             .cancelRecovery,
             .invalidateForNetworkLoss,

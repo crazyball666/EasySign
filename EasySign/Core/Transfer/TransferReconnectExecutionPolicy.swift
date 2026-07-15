@@ -60,6 +60,13 @@ enum TransferReconnectExecutionPolicy {
         case stopServices
     }
 
+    enum DiscoveryEndpointAction: Equatable {
+        case invalidateAutomaticRecovery
+        case cleanupAutomaticAttempt
+        case recordBoundEndpoint
+        case requestRecovery
+    }
+
     static func mayStartAutomatic(
         token: TransferReconnectCoordinator.Token,
         tokenAccepted: Bool,
@@ -92,6 +99,27 @@ enum TransferReconnectExecutionPolicy {
     ) -> CompletionDecision {
         guard attemptMatches, connectionMatches else { return .ignore }
         return tokenAccepted ? .cleanupAndRetry : .cleanupOnly
+    }
+
+    static func discoveryEndpointActions(
+        oldEndpointKey: String?,
+        newEndpointKey: String?,
+        hasBoundConnection: Bool,
+        hasActiveAutomaticAttempt: Bool
+    ) -> [DiscoveryEndpointAction] {
+        guard let newEndpointKey,
+              newEndpointKey != oldEndpointKey else { return [] }
+        if hasBoundConnection {
+            return [.recordBoundEndpoint, .requestRecovery]
+        }
+        if hasActiveAutomaticAttempt {
+            return [
+                .invalidateAutomaticRecovery,
+                .cleanupAutomaticAttempt,
+                .requestRecovery,
+            ]
+        }
+        return [.requestRecovery]
     }
 
     static func actions(for event: RecoveryEvent) -> [RecoveryAction] {
