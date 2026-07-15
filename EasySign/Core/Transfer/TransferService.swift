@@ -242,7 +242,7 @@ final class TransferService: ObservableObject {
             server.onStateChange = { [weak self] st, port in
                 DispatchQueue.main.async {
                     guard let self,
-                          self.serviceGeneration.accepts(generation) else { return }
+                          self.serviceGeneration.acceptsEvent(generation) else { return }
                     switch st {
                     case .ready:                 self.listenPort = port
                     case .failed, .cancelled:    self.listenPort = nil
@@ -258,10 +258,10 @@ final class TransferService: ObservableObject {
             self.client = TransferClient(identity: { try self.identity().identity })
             // PeerDiscovery 的 production bridge 已保证 callback 按 FIFO 在 main queue 执行。
             discovery.onPeersChanged = { [weak self] peers in
-                self?.handleDiscoveredPeers(peers)
+                self?.handleDiscoveredPeers(peers, generation: generation)
             }
             discovery.onFailure = { [weak self] error in
-                self?.handleDiscoveryFailure(error)
+                self?.handleDiscoveryFailure(error, generation: generation)
             }
             guard serviceGeneration.activate(generation) else {
                 server.stop()
@@ -707,6 +707,13 @@ final class TransferService: ObservableObject {
         )
         guard decision != .ignore else { return }
 
+        let hasConcurrentPairingConnection: Bool
+        if let pairingConn = activePairingConn {
+            hasConcurrentPairingConnection = conn.map { pairingConn !== $0 } ?? true
+        } else {
+            hasConcurrentPairingConnection = false
+        }
+
         connectTimeoutWork?.cancel()
         connectTimeoutWork = nil
         activeOutboundAttempt = nil
@@ -736,7 +743,11 @@ final class TransferService: ObservableObject {
             case .ignore:
                 break
             case .cleanupOnly:
-                showWaitingForRecovery(failure)
+                if TransferReconnectExecutionPolicy.shouldPublishAutomaticCompletion(
+                    hasConcurrentPairingConnection: hasConcurrentPairingConnection
+                ) {
+                    showWaitingForRecovery(failure)
+                }
             case .cleanupAndRetry:
                 if let failure {
                     logger.log(.info, tool: "transfer", "自动重连 attempt 失败: \(failure)")
@@ -753,7 +764,7 @@ final class TransferService: ObservableObject {
         _ conn: TransferConnection,
         generation: UInt
     ) {
-        guard serviceGeneration.accepts(generation) else {
+        guard serviceGeneration.acceptsEvent(generation) else {
             conn.cancel()
             return
         }
@@ -821,7 +832,7 @@ final class TransferService: ObservableObject {
         event: TransferReconnectExecutionPolicy.InboundTerminalEvent,
         failure: String
     ) {
-        guard serviceGeneration.accepts(generation) else {
+        guard serviceGeneration.acceptsEvent(generation) else {
             conn.cancel()
             return
         }
@@ -852,7 +863,7 @@ final class TransferService: ObservableObject {
         lifecycle: TransferReconnectExecutionPolicy.InboundConnectionLifecycle,
         generation: UInt
     ) {
-        guard serviceGeneration.accepts(generation) else {
+        guard serviceGeneration.acceptsEvent(generation) else {
             conn.cancel()
             return
         }
@@ -1422,8 +1433,11 @@ final class TransferService: ObservableObject {
         }
     }
 
-    private func handleDiscoveredPeers(_ peers: [DiscoveredPeer]) {
-        guard servicesRunning else { return }
+    private func handleDiscoveredPeers(
+        _ peers: [DiscoveredPeer],
+        generation: UInt
+    ) {
+        guard serviceGeneration.acceptsEvent(generation) else { return }
         let sessionDisposition = discoverySessionDisposition
         let target = reconnectCoordinator.target
         let oldPeer = target.flatMap { discoveredPeer(matching: $0) }
@@ -1434,7 +1448,7 @@ final class TransferService: ObservableObject {
         if oldPeer != nil, newPeer == nil {
             cancelReconnectScheduling()
             reconnectCoordinator.peerBecameUnavailable()
-            if sessionDisposition == .automatic {
+            if sessionDisposition.allowsAutomaticAttemptCleanup {
                 cleanupUnboundAutomaticAttempt()
             }
             if !sessionDisposition.preservesPresentation {
@@ -1469,7 +1483,9 @@ final class TransferService: ObservableObject {
                 cancelReconnectScheduling()
                 reconnectCoordinator.peerBecameUnavailable()
             case .cleanupAutomaticAttempt:
-                cleanupUnboundAutomaticAttempt()
+                if sessionDisposition.allowsAutomaticAttemptCleanup {
+                    cleanupUnboundAutomaticAttempt()
+                }
             case .recordBoundEndpoint:
                 reconnectCoordinator.connected(
                     to: target,
@@ -1483,14 +1499,17 @@ final class TransferService: ObservableObject {
         }
     }
 
-    private func handleDiscoveryFailure(_ error: Error) {
-        guard servicesRunning else { return }
+    private func handleDiscoveryFailure(
+        _ error: Error,
+        generation: UInt
+    ) {
+        guard serviceGeneration.acceptsEvent(generation) else { return }
         let sessionDisposition = discoverySessionDisposition
         cancelReconnectScheduling()
         if reconnectCoordinator.target != nil {
             reconnectCoordinator.peerBecameUnavailable()
         }
-        if sessionDisposition == .automatic {
+        if sessionDisposition.allowsAutomaticAttemptCleanup {
             cleanupUnboundAutomaticAttempt()
         }
         discoveredPeers = []

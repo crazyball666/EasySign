@@ -47,21 +47,21 @@ struct TransferReconnectExecutionPolicyTests {
 
         var serviceGeneration = Policy.ServiceGeneration()
         let firstServiceGeneration = serviceGeneration.begin()
-        expect(!serviceGeneration.accepts(firstServiceGeneration),
+        expect(!serviceGeneration.acceptsEvent(firstServiceGeneration),
                "server setup 尚未完成时不得接受 inbound callback")
         expect(serviceGeneration.activate(firstServiceGeneration),
                "当前 setup generation 完成后应可激活")
         expect(serviceGeneration.isRunning
-               && serviceGeneration.accepts(firstServiceGeneration),
+               && serviceGeneration.acceptsEvent(firstServiceGeneration),
                "运行中的 exact generation 应接受 inbound callback")
         serviceGeneration.stop()
         expect(!serviceGeneration.isRunning
-               && !serviceGeneration.accepts(firstServiceGeneration),
+               && !serviceGeneration.acceptsEvent(firstServiceGeneration),
                "stop 必须推进代次并拒绝已投递的旧 inbound callback")
         var staleInboundCancelled = false
         var staleInboundPresentation = ConnectionState.idle
         var staleInboundRecoveryRequests = 0
-        if serviceGeneration.accepts(firstServiceGeneration) {
+        if serviceGeneration.acceptsEvent(firstServiceGeneration) {
             staleInboundPresentation = .failed("stale inbound")
             staleInboundRecoveryRequests += 1
         } else {
@@ -76,11 +76,39 @@ struct TransferReconnectExecutionPolicyTests {
                "restart 必须使用新 generation")
         expect(serviceGeneration.activate(restartedServiceGeneration),
                "restart setup 应能激活新 generation")
-        expect(serviceGeneration.accepts(restartedServiceGeneration)
-               && !serviceGeneration.accepts(firstServiceGeneration),
+        expect(serviceGeneration.acceptsEvent(restartedServiceGeneration)
+               && !serviceGeneration.acceptsEvent(firstServiceGeneration),
                "restart 只能接受新 generation，旧 server callback 必须静默失效")
         expect(!serviceGeneration.activate(firstServiceGeneration),
                "迟到旧 setup completion 不得覆盖当前 running generation")
+
+        var discoveryHandlerInvocations: [String] = []
+        var simulatedDiscoveredPeers = ["baseline"]
+        var simulatedCoordinatorMutations = 0
+        var simulatedPresentation = ConnectionState.pairing
+        if serviceGeneration.acceptsEvent(firstServiceGeneration) {
+            discoveryHandlerInvocations.append("old peers")
+            simulatedDiscoveredPeers = ["stale"]
+            simulatedCoordinatorMutations += 1
+        }
+        if serviceGeneration.acceptsEvent(firstServiceGeneration) {
+            discoveryHandlerInvocations.append("old failure")
+            simulatedPresentation = .failed("stale failure")
+            simulatedCoordinatorMutations += 1
+        }
+        expect(discoveryHandlerInvocations.isEmpty
+               && simulatedDiscoveredPeers == ["baseline"]
+               && simulatedCoordinatorMutations == 0
+               && simulatedPresentation == .pairing,
+               "stop→start 后旧 peers/failure 不得改 peers/coordinator/UI")
+        if serviceGeneration.acceptsEvent(restartedServiceGeneration) {
+            discoveryHandlerInvocations.append("new peers")
+        }
+        if serviceGeneration.acceptsEvent(restartedServiceGeneration) {
+            discoveryHandlerInvocations.append("new failure")
+        }
+        expect(discoveryHandlerInvocations == ["new peers", "new failure"],
+               "restart 后只有新 generation 的 peers/failure 可进入 handler")
 
         let peerA = TransferAutoReconnect.PeerRef(deviceId: "peer-A", fingerprint: "fp-A")
         let peerB = TransferAutoReconnect.PeerRef(deviceId: "peer-B", fingerprint: "fp-B")
@@ -168,6 +196,12 @@ struct TransferReconnectExecutionPolicyTests {
             activeOrigin: automatic,
             hasActivePairingConnection: false
         )
+        let overlappingAutomaticPairing = Policy.discoverySessionDisposition(
+            connectionState: .pairing,
+            hasBoundConnection: false,
+            activeOrigin: automatic,
+            hasActivePairingConnection: true
+        )
         expect(userConnecting == .manual && userPairing == .manual,
                "手动 connecting/pairing 必须归为 manual session")
         expect(inboundPairing == .transientBusy,
@@ -176,6 +210,8 @@ struct TransferReconnectExecutionPolicyTests {
         expect(idleSession == .idle, "空闲状态必须归为 idle session")
         expect(automaticConnecting == .automatic,
                "automatic connecting 必须归为 automatic session，而非通用 busy")
+        expect(overlappingAutomaticPairing == .transientBusy,
+               "automatic outbound 与 active pairing 重叠时必须优先保护 pairing")
         for disposition in [userConnecting, userPairing, inboundPairing, boundSession] {
             expect(disposition.preservesPresentation,
                    "manual/pairing/bound 遇到 peer 消失或 browser failure 必须保留 UI")
@@ -188,6 +224,59 @@ struct TransferReconnectExecutionPolicyTests {
             expect(disposition.allowsAutomaticRecovery,
                    "idle/automatic session 应允许 discovery 驱动恢复")
         }
+        for event in ["peer disappeared", "browser failure"] {
+            var presentation = ConnectionState.pairing
+            var cleanupCount = 0
+            var recoveryRequestCount = 0
+            if overlappingAutomaticPairing.allowsAutomaticAttemptCleanup {
+                cleanupCount += 1
+            }
+            if !overlappingAutomaticPairing.preservesPresentation {
+                presentation = .failed(event)
+            }
+            if overlappingAutomaticPairing.allowsAutomaticRecovery {
+                recoveryRequestCount += 1
+            }
+            expect(presentation == .pairing,
+                   "\(event) 不得覆盖重叠 pairing UI")
+            expect(cleanupCount == 0,
+                   "\(event) 不得抢先清理与 pairing 重叠的 automatic attempt")
+            expect(recoveryRequestCount == 0,
+                   "\(event) 不得在 pairing 期间创建 automatic token")
+        }
+        expect(automaticConnecting.allowsAutomaticAttemptCleanup,
+               "纯 automatic session 的 discovery event 应可收口旧 attempt")
+        expect(!overlappingAutomaticPairing.allowsAutomaticAttemptCleanup,
+               "pairing 重叠时 discovery event 必须等待 automatic attempt 自身终态")
+        expect(!Policy.shouldPublishAutomaticCompletion(
+            hasConcurrentPairingConnection: true
+        ), "automatic attempt 自身终态不得覆盖并发 pairing UI")
+        expect(Policy.shouldPublishAutomaticCompletion(
+            hasConcurrentPairingConnection: false
+        ), "没有并发 pairing 时 automatic 终态仍应呈现等待恢复")
+        var overlapEndpointCleanupCount = 0
+        var overlapEndpointRecoveryCount = 0
+        for action in Policy.discoveryEndpointActions(
+            oldEndpointKey: "ep-1",
+            newEndpointKey: "ep-2",
+            hasBoundConnection: false,
+            hasActiveAutomaticAttempt: true
+        ) {
+            switch action {
+            case .cleanupAutomaticAttempt:
+                if overlappingAutomaticPairing.allowsAutomaticAttemptCleanup {
+                    overlapEndpointCleanupCount += 1
+                }
+            case .requestRecovery:
+                if overlappingAutomaticPairing.allowsAutomaticRecovery {
+                    overlapEndpointRecoveryCount += 1
+                }
+            case .invalidateAutomaticRecovery, .recordBoundEndpoint:
+                break
+            }
+        }
+        expect(overlapEndpointCleanupCount == 0 && overlapEndpointRecoveryCount == 0,
+               "endpoint change 也不得抢清 pairing 或生成 automatic token")
 
         let validStart = Policy.mayStartAutomatic(
             token: token,

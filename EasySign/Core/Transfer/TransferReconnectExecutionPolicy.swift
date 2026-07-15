@@ -50,7 +50,7 @@ enum TransferReconnectExecutionPolicy {
             runningGeneration = nil
         }
 
-        func accepts(_ generation: UInt) -> Bool {
+        func acceptsEvent(_ generation: UInt) -> Bool {
             runningGeneration == generation
         }
     }
@@ -206,6 +206,10 @@ enum TransferReconnectExecutionPolicy {
                 false
             }
         }
+
+        var allowsAutomaticAttemptCleanup: Bool {
+            self == .automatic
+        }
     }
 
     enum AutomaticDialDecision: Equatable {
@@ -224,6 +228,12 @@ enum TransferReconnectExecutionPolicy {
         servicesRunning && !stopRequested
     }
 
+    static func shouldPublishAutomaticCompletion(
+        hasConcurrentPairingConnection: Bool
+    ) -> Bool {
+        !hasConcurrentPairingConnection
+    }
+
     static func discoverySessionDisposition(
         connectionState: ConnectionState,
         hasBoundConnection: Bool,
@@ -231,17 +241,12 @@ enum TransferReconnectExecutionPolicy {
         hasActivePairingConnection: Bool
     ) -> DiscoverySessionDisposition {
         if hasBoundConnection { return .bound }
-        switch activeOrigin {
-        case .user:
-            return .manual
-        case .automatic:
-            return .automatic
-        case nil:
-            break
-        }
-        if hasActivePairingConnection || connectionState.isBusy {
+        if activeOrigin == .user { return .manual }
+        if hasActivePairingConnection || connectionState == .pairing {
             return .transientBusy
         }
+        if case .automatic = activeOrigin { return .automatic }
+        if connectionState.isBusy { return .transientBusy }
         return .idle
     }
 
