@@ -19,6 +19,35 @@ struct PeerDiscoveryDedupTests {
         let out = PeerDiscovery.deduped(peers)
         expect(out.count == 2, "同一 deviceId 应只保留一条,实际 \(out.count)")
         expect(out.map(\.deviceId) == ["A", "B"], "应保留首次出现顺序 [A, B],实际 \(out.map(\.deviceId))")
+        expect(PeerDiscoveryGenerationGate.accepts(updateGeneration: 3,
+                                                   currentGeneration: 3,
+                                                   isBrowsing: true),
+               "当前 browser 可以发布")
+        expect(!PeerDiscoveryGenerationGate.accepts(updateGeneration: 2,
+                                                    currentGeneration: 3,
+                                                    isBrowsing: true),
+               "旧 browser 回调必须丢弃")
+        expect(!PeerDiscoveryGenerationGate.accepts(updateGeneration: 3,
+                                                    currentGeneration: 3,
+                                                    isBrowsing: false),
+               "stop 后的回调必须丢弃")
+        expect(PeerDiscoveryRecoveryToken.make(browserGeneration: 7, changeRevision: 1)
+               != PeerDiscoveryRecoveryToken.make(browserGeneration: 7, changeRevision: 2),
+               "Bonjour changed 必须推进恢复 token")
+
+        var tokens = PeerDiscoveryRecoveryTokenStore()
+        let firstA = tokens.recordChange(for: "A", browserGeneration: 7)
+        _ = tokens.recordChange(for: "B", browserGeneration: 7)
+        expect(tokens.token(for: "A") == firstA,
+               "无关 peer change 不得推进目标设备 token")
+        let changedA = tokens.recordChange(for: "A", browserGeneration: 7)
+        expect(changedA != firstA, "同一设备任一接口 changed 都必须推进设备 token")
+        tokens.removeTokensForInactiveDevices(activeDeviceIds: ["A"])
+        expect(tokens.token(for: "A") == changedA,
+               "同设备仍有其他接口时 removed 不得清除设备 token")
+        tokens.removeTokensForInactiveDevices(activeDeviceIds: [])
+        expect(tokens.token(for: "A") == nil,
+               "设备最后一个接口 removed 后必须清除 token")
         print("ALL PASS")
     }
 

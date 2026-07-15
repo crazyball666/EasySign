@@ -40,6 +40,23 @@ enum ConnectionState: Equatable {
     case failed(String)
 }
 
+enum TransferNetworkTransition: Equatable {
+    case initial
+    case unchanged
+    case becameUnavailable
+    case restored
+
+    static func next(previous: Bool?, current: Bool) -> Self {
+        switch (previous, current) {
+        case (nil, true): .initial
+        case (nil, false): .becameUnavailable
+        case (false, true): .restored
+        case (true, false): .becameUnavailable
+        default: .unchanged
+        }
+    }
+}
+
 /// Bonjour 浏览发现的一台对端设备。fingerprint 来自 TXT 记录,用于标注是否已配对。
 struct DiscoveredPeer: Identifiable, Equatable {
     var id: String { deviceId }
@@ -47,6 +64,21 @@ struct DiscoveredPeer: Identifiable, Equatable {
     let name: String
     let fingerprint: String     // 对端证书指纹(来自 TXT),用于标注已配对
     let endpoint: NWEndpoint
+    let recoveryToken: String?
+
+    init(deviceId: String, name: String, fingerprint: String,
+         endpoint: NWEndpoint, recoveryToken: String? = nil) {
+        self.deviceId = deviceId
+        self.name = name
+        self.fingerprint = fingerprint
+        self.endpoint = endpoint
+        self.recoveryToken = recoveryToken
+    }
+
+    var reconnectEndpointKey: String {
+        recoveryToken ?? String(describing: endpoint)
+    }
+
     static func == (l: DiscoveredPeer, r: DiscoveredPeer) -> Bool {
         l.deviceId == r.deviceId && l.fingerprint == r.fingerprint
     }
