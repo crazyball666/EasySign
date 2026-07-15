@@ -24,6 +24,12 @@ enum TransferConnectionOrigin: Equatable {
 }
 
 enum TransferReconnectExecutionPolicy {
+    enum InboundDecision: Equatable {
+        case rejectAndCancel
+        case acceptCodeless
+        case continuePairing
+    }
+
     enum CompletionDecision: Equatable {
         case ignore
         case cleanupOnly
@@ -140,6 +146,14 @@ enum TransferReconnectExecutionPolicy {
     ) -> Bool {
         token.peer.deviceId == actual.deviceId
             && token.peer.fingerprint == actual.fingerprint
+    }
+
+    static func inboundDecision(
+        isPairedCodeless: Bool,
+        locallyAllowed: Bool
+    ) -> InboundDecision {
+        guard isPairedCodeless else { return .continuePairing }
+        return locallyAllowed ? .acceptCodeless : .rejectAndCancel
     }
 
     static func completionDecision(

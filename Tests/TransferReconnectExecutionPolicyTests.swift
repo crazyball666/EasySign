@@ -423,6 +423,22 @@ struct TransferReconnectExecutionPolicyTests {
             .suppressCurrentPeer,
         ], "disconnect 无 bound 时不应发 bye，但必须保留抑制语义")
 
+        expect(Policy.inboundDecision(
+            isPairedCodeless: true,
+            locallyAllowed: false
+        ) == .rejectAndCancel,
+        "本机主动断开后即使 bye 丢失也必须拒绝免码入站")
+        expect(Policy.inboundDecision(
+            isPairedCodeless: true,
+            locallyAllowed: true
+        ) == .acceptCodeless,
+        "未被本机抑制的已配对免码入站应直接接受")
+        expect(Policy.inboundDecision(
+            isPairedCodeless: false,
+            locallyAllowed: false
+        ) == .continuePairing,
+        "未知设备首次配对不能被已配对 suppression 误伤")
+
         expect(ConnectionState.connected(peerName: "B").isBusy, "connected 应 busy")
         expect(ConnectionState.connecting.isBusy, "connecting 应 busy")
         expect(ConnectionState.pairing.isBusy, "pairing 应 busy")

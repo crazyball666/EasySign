@@ -321,12 +321,46 @@ struct TransferReconnectCoordinatorTests {
         let restored = c.recoveryEvent(pathSatisfied: true, canDial: true, busy: false, endpointKey: "ep-1")
         guard case .dial = restored else { fail("网络恢复应重新拨号") }
 
-        c.userDisconnected(from: peer)
-        expect(!c.allowsInbound(peer), "主动断开后应拒绝免码入站")
-        expect(c.recoveryEvent(pathSatisfied: true, canDial: true, busy: false, endpointKey: "ep-1") == .none,
-               "主动断开后恢复事件不得重连")
-        c.explicitlyConnecting(to: peer)
-        expect(c.allowsInbound(peer), "本机显式连接后解除抑制")
+        var explicitlyDisconnected = Coordinator()
+        explicitlyDisconnected.connected(to: peer, endpointKey: "ep-1")
+        let generationBeforeDisconnect = explicitlyDisconnected.generation
+        explicitlyDisconnected.userDisconnected(from: peer)
+        expect(explicitlyDisconnected.generation != generationBeforeDisconnect,
+               "主动断开必须推进 generation")
+        expect(!explicitlyDisconnected.allowsInbound(peer),
+               "bye 丢失后仍必须拒绝已主动断开 peer 的免码入站")
+        expect(explicitlyDisconnected.recoveryEvent(
+            pathSatisfied: true, canDial: true, busy: false, endpointKey: "ep-1"
+        ) == .none, "wake/discovery 事件不得解除主动断开抑制")
+        explicitlyDisconnected.networkUnavailable()
+        expect(explicitlyDisconnected.recoveryEvent(
+            pathSatisfied: true, canDial: true, busy: false, endpointKey: "ep-1"
+        ) == .none, "network restored 事件不得解除主动断开抑制")
+        explicitlyDisconnected.connected(to: peer, endpointKey: "ep-1")
+        expect(!explicitlyDisconnected.allowsInbound(peer),
+               "未请求的 inbound/automatic bind 不得解除本机 suppression")
+        explicitlyDisconnected.explicitlyConnecting(to: peer)
+        expect(explicitlyDisconnected.allowsInbound(peer),
+               "只有本机显式 Connect/Retry 才能解除对应 peer 抑制")
+
+        var clearedPeer = Coordinator()
+        clearedPeer.connected(to: peer, endpointKey: "ep-1")
+        clearedPeer.userDisconnected(from: peer)
+        clearedPeer.clearPeer(peer)
+        expect(clearedPeer.allowsInbound(peer),
+               "清除配对设备必须同时清除对应 suppression")
+
+        var disconnectRace = Coordinator()
+        disconnectRace.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(disconnectAttempt) = disconnectRace.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ), case let .schedule(disconnectToken, _) = disconnectRace.attemptFailed(disconnectAttempt)
+        else { fail("主动断开前应有可失效的排程 token") }
+        disconnectRace.userDisconnected(from: peer)
+        expect(!disconnectRace.accepts(disconnectToken),
+               "主动断开必须使已排程 token 失效")
+        expect(disconnectRace.delayElapsed(disconnectToken) == .none,
+               "主动断开后旧排程 work 不得醒来拨号")
 
         c.connected(to: peer, endpointKey: "ep-1")
         let old = c.unexpectedDrop(pathSatisfied: true, canDial: true, endpointKey: "ep-1")

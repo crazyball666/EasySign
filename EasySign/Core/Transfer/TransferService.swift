@@ -335,7 +335,7 @@ final class TransferService: ObservableObject {
             pairingCode: pairingCode
         )
         installManualRetryAction()
-        prepareExplicitConnection(to: peerRef)
+        prepareExplicitConnection(to: pairedPeerRef(forFingerprint: peer.fingerprint))
         performOutbound(to: peer, pairingCode: pairingCode, origin: .user)
     }
 
@@ -357,7 +357,7 @@ final class TransferService: ObservableObject {
                 origin: .user
             )
         case let .peer(peerRef):
-            prepareExplicitConnection(to: peerRef)
+            prepareExplicitConnection(to: pairedPeerRef(forFingerprint: peerRef.fingerprint))
             guard let peer = TransferManualRetryPolicy.resolvePeer(
                 request,
                 discovered: discoveredPeers
@@ -377,6 +377,11 @@ final class TransferService: ObservableObject {
             reconnectCoordinator.explicitlyConnecting(to: peer)
         }
         cleanupUnboundAutomaticAttempt()
+    }
+
+    private func pairedPeerRef(forFingerprint fingerprint: String) -> TransferAutoReconnect.PeerRef? {
+        guard let paired = peerStore.peer(forFingerprint: fingerprint) else { return nil }
+        return .init(deviceId: paired.deviceId, fingerprint: paired.fingerprint)
     }
 
     private func prepareForNewOutboundConnection() {
@@ -619,12 +624,16 @@ final class TransferService: ObservableObject {
             return
         }
 
+        let paired = peerStore.peer(forFingerprint: fp)
+        if let paired {
+            reconnectCoordinator.explicitlyConnecting(to: .init(
+                deviceId: paired.deviceId,
+                fingerprint: paired.fingerprint
+            ))
+        }
+
         if pairingCode == nil {
-            if let paired = peerStore.peer(forFingerprint: fp) {
-                reconnectCoordinator.explicitlyConnecting(to: .init(
-                    deviceId: paired.deviceId,
-                    fingerprint: paired.fingerprint
-                ))
+            if let paired {
                 bindConnected(
                     conn: conn,
                     peer: paired,
@@ -800,7 +809,27 @@ final class TransferService: ObservableObject {
             // 同一对端重连:继续往下走(会在 bindConnected 里替换旧连接)
         }
         if let paired = peerStore.peer(forFingerprint: fp) {
-            bindConnected(conn: conn, peer: paired)
+            let peerRef = TransferAutoReconnect.PeerRef(
+                deviceId: paired.deviceId,
+                fingerprint: paired.fingerprint
+            )
+            switch TransferReconnectExecutionPolicy.inboundDecision(
+                isPairedCodeless: true,
+                locallyAllowed: reconnectCoordinator.allowsInbound(peerRef)
+            ) {
+            case .rejectAndCancel:
+                logger.log(
+                    .info,
+                    tool: "transfer",
+                    "拒绝用户主动断开设备的自动回连：\(paired.name)"
+                )
+                conn.cancel()
+            case .acceptCodeless:
+                bindConnected(conn: conn, peer: paired)
+            case .continuePairing:
+                assertionFailure("已配对免码路径不应进入首次配对")
+                conn.cancel()
+            }
         } else {
             // 全局限速:静默取消,不向攻击者暴露(避免每换证书绕过 per-fp 冷却)。
             if isGloballyCoolingDown() {
@@ -1156,11 +1185,15 @@ final class TransferService: ObservableObject {
     }
 
     func clearPairedDevices() {
-        peerStore.removeAll(); pairedPeers = []
-        if let lastConnectedPeer {
-            reconnectCoordinator.clearPeer(lastConnectedPeer)
-        }
         cancelReconnectScheduling()
+        for peer in peerStore.all() {
+            reconnectCoordinator.clearPeer(.init(
+                deviceId: peer.deviceId,
+                fingerprint: peer.fingerprint
+            ))
+        }
+        peerStore.removeAll()
+        pairedPeers = []
         lastConnectedPeer = nil
     }
 
