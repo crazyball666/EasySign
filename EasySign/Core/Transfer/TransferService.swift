@@ -3,9 +3,78 @@ import Network
 import Security
 import AppKit
 
+/// TransferNetworkMonitor 的 callback 在其私有队列执行且为 @Sendable。
+/// bridge 自身只有一个初始化后不变的 weak 引用，并且只在 main queue 解引用服务，
+/// 因而无需把整个 TransferService 错标为 Sendable。
+private final class TransferServiceNetworkPathBridge: @unchecked Sendable {
+    weak var service: TransferService?
+    private let lock = NSLock()
+    private var generation: UInt = 0
+    private var active = false
+
+    func activate() {
+        lock.lock()
+        generation &+= 1
+        active = true
+        lock.unlock()
+    }
+
+    func deactivate() {
+        lock.lock()
+        generation &+= 1
+        active = false
+        lock.unlock()
+    }
+
+    func deliver(_ isSatisfied: Bool, transition: TransferNetworkTransition) {
+        lock.lock()
+        guard active else {
+            lock.unlock()
+            return
+        }
+        let deliveryGeneration = generation
+        lock.unlock()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let isCurrent = self.active && self.generation == deliveryGeneration
+            self.lock.unlock()
+            guard isCurrent else { return }
+            self.service?.handleNetworkPath(isSatisfied, transition: transition)
+        }
+    }
+}
+
+/// `.bye` send completion 与 0.5s fallback 可能从不同队列到达；锁保证只关闭一次。
+private final class TransferConnectionCloseOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private let connection: TransferConnection
+    private var closed = false
+
+    init(_ connection: TransferConnection) {
+        self.connection = connection
+    }
+
+    func close() {
+        lock.lock()
+        guard !closed else {
+            lock.unlock()
+            return
+        }
+        closed = true
+        lock.unlock()
+        connection.cancel()
+    }
+}
+
 /// 互传服务门面。串联身份 / 监听 / 连接 / 剪贴板 / 配对,持有 @Published 状态供 UI 观察。
 /// 设计要点:剪贴板同步、收消息不依赖主窗口(本对象活在 ServiceHub,App 生命周期)。
 final class TransferService: ObservableObject {
+    private struct ActiveOutboundAttempt {
+        let id: UUID
+        let origin: TransferConnectionOrigin
+    }
+
     let logger: LoggerService
 
     @Published var connectionState: ConnectionState = .idle
@@ -27,7 +96,6 @@ final class TransferService: ObservableObject {
     private var client: TransferClient?
     private var loadedIdentity: DeviceIdentity.Loaded?
     private var activeConn: TransferConnection?
-    private var activeIsOutbound = false             // 当前已绑定连接的方向:仅出站允许重连
     private var activePeerFingerprint: String?       // 当前已绑定对端指纹:用于拒绝陌生入站、放行同端重连
     private var activePairing: PairingManager?
     private var activePairingConn: TransferConnection?   // 强持有配对中的连接(连同其 pm),避免被并发入站顶掉
@@ -36,27 +104,30 @@ final class TransferService: ObservableObject {
     private var pairFailureTimes: [Date] = []        // 全局配对失败时间戳(滑动窗口)
     private var globalPairCooldownUntil: Date?
     private var pairingCodeIssuedAt: Date?           // 当前 pendingPairingCode 的签发时间(用于 180s 过期)
-    // 连接超时与尽力而为重连(仅作用于主动出站连接;入站不重连)。
+    // 出站连接超时、自动恢复与显式 Retry。
     private var connectTimeoutWork: DispatchWorkItem?
     private var cleanupTimer: DispatchSourceTimer?   // 定时按保留天数回收历史/inbox 文件
-    private var lastReconnect: (() -> Void)?
-    private var lastManualConnect: (() -> Void)?     // UI「重试」:原样重放上次用户发起的连接(含当时的配对码)
-    private var reconnectAttempts = 0
-    private var reconnectGeneration = 0
+    private var lastManualConnect: (() -> Void)?     // 仅供 UI 显式「重试」，自动恢复绝不读取
     private var userStopped = false
-    private var wasConnected = false
-    // 自动(免码)重连:记住「最后一次成功连上的那台」,前台/睡醒/Bonjour 重新发现时免码重连它。
-    // 见 TransferAutoReconnect.target 的纯决策与 maybeAutoReconnect 的触发装配。
     private var lastConnectedPeer: TransferAutoReconnect.PeerRef?
-    private var lastAutoReconnectAt: Date?            // 自动重连冷却,避免发现回调/前台事件密集触发成紧密循环
-    private var lastDiscoveryRefreshAt: Date?         // 前台/睡醒重启 Bonjour 浏览的去抖(didBecomeActive 很频繁)
-    private var lastReassertAt: Date?                 // 睡醒/前台重新广播的去抖(避免每次获焦都重注册 Bonjour,致对端发现抖动)
-    private var autoReconnecting = false              // 本次出站是否为「静默自动重连」:失败时不弹红条,静默回落 .idle
+    private var networkPathSatisfied: Bool?
+    private var reconnectCoordinator = TransferReconnectCoordinator()
+    private var reconnectWork: DispatchWorkItem?
+    private var reconnectScheduledToken: TransferReconnectCoordinator.Token?
+    private var activeOutboundAttempt: ActiveOutboundAttempt?
+    private var manualRetryRequest: TransferManualRetryRequest?
+    private var lastBonjourRepairAt: TimeInterval?
+    private var servicesRunning = false
+    private let networkPathBridge = TransferServiceNetworkPathBridge()
+    private lazy var networkMonitor = TransferNetworkMonitor { [networkPathBridge] isSatisfied, transition in
+        networkPathBridge.deliver(isSatisfied, transition: transition)
+    }
     private var appActiveObserver: NSObjectProtocol?  // NSApplication.didBecomeActive
     private var didWakeObserver: NSObjectProtocol?    // NSWorkspace.didWake(系统睡醒)
 
     init(logger: LoggerService) {
         self.logger = logger
+        networkPathBridge.service = self
         self.pairedPeers = peerStore.all()
         self.history = historyStore.load()
         monitor.onLocalText = { [weak self] text, hash in
@@ -146,6 +217,7 @@ final class TransferService: ObservableObject {
     /// 故后续 `identity()` 即便被 server 的 `{ try self.identity().identity }` 闭包在 transfer.server 队列上
     /// (listener 自愈/重建时)调用,也只是读取这份「初始化后即不变」的缓存引用,无写竞态,无需加锁。
     private func startServices() {
+        guard !userStopped, !servicesRunning else { return }
         // 与 SettingsStore(.transferStealthMode) 共用同一 UserDefaults 裸键;
         // 此处直接读以免把 SettingsStore 注入 TransferService(默认 false = 广播开)。
         stealthMode = UserDefaults.standard.bool(forKey: "transferStealthMode")
@@ -178,18 +250,19 @@ final class TransferService: ObservableObject {
             server.setAdvertising(!stealthMode)
             self.server = server
             self.client = TransferClient(identity: { try self.identity().identity })
-            // 启动 Bonjour 浏览,发现局域网内其它 EasySign 设备。
-            // 列表变化时除刷新 UI 外,顺带尝试免码自动重连「最后那台」(它若刚重新出现就接上)。
+            // PeerDiscovery 的 production bridge 已保证 callback 按 FIFO 在 main queue 执行。
             discovery.onPeersChanged = { [weak self] peers in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    self.discoveredPeers = peers
-                    self.maybeAutoReconnect()
-                }
+                self?.handleDiscoveredPeers(peers)
             }
+            discovery.onFailure = { [weak self] error in
+                self?.handleDiscoveryFailure(error)
+            }
+            servicesRunning = true
             discovery.start()
             installLifecycleObservers()
             monitor.start()
+            networkPathBridge.activate()
+            networkMonitor.start()
             // 监听端口由 server.onStateChange 的 .ready 同步到 listenPort(见上),无需再轮询 server.port(跨线程读)。
             logger.log(.info, tool: "transfer", "互传服务已启动,本机指纹 \(id.fingerprint.prefix(8))…")
         } catch {
@@ -202,53 +275,24 @@ final class TransferService: ObservableObject {
 
     func stop() {
         userStopped = true
-        reconnectGeneration += 1      // 取消任何挂起的重连
-        wasConnected = false
-        autoReconnecting = false
-        lastConnectedPeer = nil       // 停服:清掉自动重连目标
-        removeLifecycleObservers()
-        connectTimeoutWork?.cancel(); connectTimeoutWork = nil
-        cleanupTimer?.cancel(); cleanupTimer = nil
-        monitor.stop()
-        discovery.stop()
-        discoveredPeers = []
-        server?.stop(); server = nil
-        listenPort = nil              // 监听已停:清掉「本机」卡片上的端口显示
-        activeConn?.cancel(); activeConn = nil
-        activePeerFingerprint = nil
-        fileManager.reset()
-        activePairing = nil
-        activePairingConn?.cancel(); activePairingConn = nil
-        pendingPairingCode = nil
-        pairingCodeIssuedAt = nil
-        connectionState = .idle
+        executeLifecycleActions(
+            TransferReconnectExecutionPolicy.lifecycleActions(
+                for: .stop,
+                hasBoundConnection: hasBoundConnection
+            )
+        )
     }
 
     /// 断开当前连接但不停服务、不解除配对:回到"未连接",对端仍在已配对列表,可一键重连。
     /// 与 stop() 不同——监听/发现/剪贴板继续运行,本机仍可被发现、可主动或被动重新连接。
     func disconnect() {
-        userStopped = true            // 阻止本次断开触发自动重连
-        reconnectGeneration += 1      // 撤销任何挂起的重连
-        autoReconnecting = false
-        lastConnectedPeer = nil       // 主动断开:本机不再自动重连这台
-        connectTimeoutWork?.cancel(); connectTimeoutWork = nil
-        wasConnected = false
-        let c = activeConn; activeConn = nil   // 先置空,使断开回调的 guard 失效,避免重复收尾
-        activePeerFingerprint = nil
-        activePairing = nil
-        let pc = activePairingConn; activePairingConn = nil
-        // 先告知对端「我主动断开」,让对端也清掉自动重连目标(否则对端的「发现即连」会把本机又拉回来)。
-        // bye 必须在关闭前真正写出去:在 send 完成回调里关闭(冲刷后再 cancel),再挂 0.5s 兜底
-        // (回调因连接半死不来时也能收口)。两路都走 closeOnce,只 cancel 一次(且 cancel 本身幂等)。
-        if let c {
-            var closed = false
-            let closeOnce: () -> Void = { if !closed { closed = true; c.cancel() } }
-            c.send(.bye) { _ in DispatchQueue.main.async(execute: closeOnce) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: closeOnce)
-        }
-        pc?.cancel()
-        fileManager.reset()
-        connectionState = .idle
+        userStopped = true
+        executeLifecycleActions(
+            TransferReconnectExecutionPolicy.lifecycleActions(
+                for: .disconnect,
+                hasBoundConnection: hasBoundConnection
+            )
+        )
         logger.log(.info, tool: "transfer", "已手动断开当前连接(配对关系保留)")
     }
 
@@ -262,205 +306,427 @@ final class TransferService: ObservableObject {
     // MARK: - 主动连接(手动 IP)
 
     func connect(host: String, port: UInt16, pairingCode: String?) {
-        // 一次用户主动连接 = 取消上次的"已停止"并清零重连计数、撞代际取消任何挂起重连。
-        autoReconnecting = false      // 用户主动发起:失败要可见(红条 + 重试)
-        reconnectGeneration += 1
-        reconnectAttempts = 0
-        userStopped = false
-        wasConnected = false
-        lastReconnect = { [weak self] in self?.performOutbound(host: host, port: port, pairingCode: nil) }
-        lastManualConnect = { [weak self] in self?.connect(host: host, port: port, pairingCode: pairingCode) }
-        performOutbound(host: host, port: port, pairingCode: pairingCode)
+        manualRetryRequest = TransferManualRetryRequest(
+            target: .host(host: host, port: port),
+            pairingCode: pairingCode
+        )
+        installManualRetryAction()
+        prepareExplicitConnection(to: nil)
+        performOutbound(
+            host: host,
+            port: port,
+            pairingCode: pairingCode,
+            origin: .user
+        )
     }
 
-    /// UI「重试」:原样重放上次用户发起的连接(含当时输入的配对码)。失败态下由状态条上的按钮调用。
+    /// UI「重试」只重放显式用户请求；peer endpoint 每次从最新 Bonjour snapshot 解析。
     func retry() { lastManualConnect?() }
-    var canRetry: Bool { lastManualConnect != nil }
+    var canRetry: Bool { manualRetryRequest != nil }
 
-    private func performOutbound(host: String, port: UInt16, pairingCode: String?) {
-        activeConn?.cancel()
-        activeConn = nil
-        guard let client else { return }
+    /// 用户点击 Bonjour peer 的显式连接入口。
+    func connect(to peer: DiscoveredPeer, pairingCode: String?) {
+        let peerRef = TransferAutoReconnect.PeerRef(
+            deviceId: peer.deviceId,
+            fingerprint: peer.fingerprint
+        )
+        manualRetryRequest = TransferManualRetryRequest(
+            target: .peer(peerRef),
+            pairingCode: pairingCode
+        )
+        installManualRetryAction()
+        prepareExplicitConnection(to: peerRef)
+        performOutbound(to: peer, pairingCode: pairingCode, origin: .user)
+    }
+
+    private func installManualRetryAction() {
+        lastManualConnect = { [weak self] in
+            self?.performManualRetry()
+        }
+    }
+
+    private func performManualRetry() {
+        guard let request = manualRetryRequest else { return }
+        switch request.target {
+        case let .host(host, port):
+            prepareExplicitConnection(to: nil)
+            performOutbound(
+                host: host,
+                port: port,
+                pairingCode: request.pairingCode,
+                origin: .user
+            )
+        case let .peer(peerRef):
+            prepareExplicitConnection(to: peerRef)
+            guard let peer = TransferManualRetryPolicy.resolvePeer(
+                request,
+                discovered: discoveredPeers
+            ) else {
+                connectionState = .failed("等待设备重新出现后再重试")
+                return
+            }
+            performOutbound(to: peer, pairingCode: request.pairingCode, origin: .user)
+        }
+    }
+
+    private func prepareExplicitConnection(to peer: TransferAutoReconnect.PeerRef?) {
+        userStopped = false
+        cancelReconnectScheduling()
+        reconnectCoordinator.cancelAutomaticRecovery()
+        if let peer {
+            reconnectCoordinator.explicitlyConnecting(to: peer)
+        }
+        cleanupUnboundAutomaticAttempt()
+    }
+
+    private func prepareForNewOutboundConnection() {
+        connectTimeoutWork?.cancel()
+        connectTimeoutWork = nil
+        activeOutboundAttempt = nil
+        activePairing = nil
+        if let pairingConn = activePairingConn {
+            activePairingConn = nil
+            if pairingConn !== activeConn { pairingConn.cancel() }
+        }
+        if let connection = activeConn {
+            activeConn = nil
+            connection.cancel()
+        }
+        activePeerFingerprint = nil
+        fileManager.reset()
+    }
+
+    private func performOutbound(
+        host: String,
+        port: UInt16,
+        pairingCode requestedCode: String?,
+        origin: TransferConnectionOrigin
+    ) {
+        prepareForNewOutboundConnection()
+        let attemptID = UUID()
+        activeOutboundAttempt = ActiveOutboundAttempt(id: attemptID, origin: origin)
+        let pairingCode = origin.pairingCode(requested: requestedCode)
         connectionState = pairingCode == nil ? .connecting : .pairing
         logger.log(.info, tool: "transfer", "发起出站连接 → \(host):\(port)(\(pairingCode == nil ? "无码/重连" : "配对码"))")
+
+        guard let client else {
+            finishOutboundAttempt(
+                id: attemptID,
+                conn: nil,
+                origin: origin,
+                failure: "连接服务尚未就绪"
+            )
+            return
+        }
         do {
-            let conn = try client.connect(host: host, port: port, pin: .acceptAny)
-            beginOutbound(conn, pairingCode: pairingCode)
+            let pin = origin.expectedFingerprint.map {
+                TransferTLS.PinMode.requirePinned(fingerprint: $0)
+            } ?? .acceptAny
+            let conn = try client.connect(host: host, port: port, pin: pin)
+            beginOutbound(
+                conn,
+                attemptID: attemptID,
+                pairingCode: pairingCode,
+                origin: origin
+            )
         } catch {
             logger.log(.error, tool: "transfer", "出站连接创建失败: \(error.localizedDescription)")
-            failState("连接失败: \(error.localizedDescription)")
+            finishOutboundAttempt(
+                id: attemptID,
+                conn: nil,
+                origin: origin,
+                failure: "连接失败: \(error.localizedDescription)"
+            )
         }
     }
 
-    /// 连接 Bonjour 发现出的对端。复用与手动 IP 完全相同的配对/pinning 流程(`.acceptAny` → 读指纹 → 配对/绑定)。
-    /// 用户点「连接」/「重试」走这里(auto=false,失败可见);静默自动重连由 maybeAutoReconnect 用 auto=true 调私有重载。
-    func connect(to peer: DiscoveredPeer, pairingCode: String?) {
-        connect(to: peer, pairingCode: pairingCode, auto: false)
-    }
-
-    private func connect(to peer: DiscoveredPeer, pairingCode: String?, auto: Bool) {
-        autoReconnecting = auto
-        reconnectGeneration += 1
-        reconnectAttempts = 0
-        userStopped = false
-        wasConnected = false
-        lastReconnect = { [weak self] in self?.performOutbound(to: peer, pairingCode: nil) }
-        // 用户重试 = 非 auto(失败可见);故指向公开重载。
-        lastManualConnect = { [weak self] in self?.connect(to: peer, pairingCode: pairingCode) }
-        performOutbound(to: peer, pairingCode: pairingCode)
-    }
-
-    private func performOutbound(to peer: DiscoveredPeer, pairingCode: String?) {
-        activeConn?.cancel()
-        activeConn = nil
-        guard let client else { return }
+    private func performOutbound(
+        to peer: DiscoveredPeer,
+        pairingCode requestedCode: String?,
+        origin: TransferConnectionOrigin
+    ) {
+        prepareForNewOutboundConnection()
+        let attemptID = UUID()
+        activeOutboundAttempt = ActiveOutboundAttempt(id: attemptID, origin: origin)
+        let pairingCode = origin.pairingCode(requested: requestedCode)
         connectionState = pairingCode == nil ? .connecting : .pairing
         logger.log(.info, tool: "transfer", "发起出站连接(Bonjour)→ \(String(describing: peer.endpoint))(\(pairingCode == nil ? "无码/重连" : "配对码"))")
+
+        guard let client else {
+            finishOutboundAttempt(
+                id: attemptID,
+                conn: nil,
+                origin: origin,
+                failure: "连接服务尚未就绪"
+            )
+            return
+        }
         do {
-            let conn = try client.connect(endpoint: peer.endpoint, pin: .acceptAny)
-            beginOutbound(conn, pairingCode: pairingCode)
+            let pin = origin.expectedFingerprint.map {
+                TransferTLS.PinMode.requirePinned(fingerprint: $0)
+            } ?? .acceptAny
+            let conn = try client.connect(endpoint: peer.endpoint, pin: pin)
+            beginOutbound(
+                conn,
+                attemptID: attemptID,
+                pairingCode: pairingCode,
+                origin: origin
+            )
         } catch {
             logger.log(.error, tool: "transfer", "出站连接创建失败: \(error.localizedDescription)")
-            failState("连接失败: \(error.localizedDescription)")
+            finishOutboundAttempt(
+                id: attemptID,
+                conn: nil,
+                origin: origin,
+                failure: "连接失败: \(error.localizedDescription)"
+            )
         }
     }
 
-    /// 主动连接(host/port 与 endpoint)共用的 post-`.ready` 装配:安装状态回调并记录 activeConn。
-    private func beginOutbound(_ conn: TransferConnection, pairingCode: String?) {
-        self.activeConn = conn
-        conn.onStateChange = { [weak self, weak conn] st in
+    private func beginOutbound(
+        _ conn: TransferConnection,
+        attemptID: UUID,
+        pairingCode: String?,
+        origin: TransferConnectionOrigin
+    ) {
+        guard activeOutboundAttempt?.id == attemptID else {
+            conn.cancel()
+            return
+        }
+        activeConn = conn
+        conn.onStateChange = { [weak self, weak conn] state in
             guard let self, let conn else { return }
-            switch st {
+            switch state {
             case .ready:
                 self.logger.log(.info, tool: "transfer", "出站:握手完成 .ready,读取对端指纹…")
-                DispatchQueue.main.async { self.outboundReady(conn: conn, pairingCode: pairingCode) }
-            case .waiting(let e):
-                // 网络暂时不可达(对端未就绪 / 握手受阻等)。不改状态,交给 12s 超时裁决。
-                self.logger.log(.warn, tool: "transfer", "出站:连接等待中(可能网络不可达或握手受阻): \(e)")
-            case .failed(let e):
-                self.logger.log(.warn, tool: "transfer", "出站:连接失败 \(e)")
-                DispatchQueue.main.async { self.handleOutboundDrop(conn, failure: "连接失败: \(e)") }
+                DispatchQueue.main.async {
+                    self.outboundReady(
+                        conn: conn,
+                        attemptID: attemptID,
+                        pairingCode: pairingCode,
+                        origin: origin
+                    )
+                }
+            case let .waiting(error):
+                self.logger.log(.warn, tool: "transfer", "出站:连接等待中: \(error)")
+            case let .failed(error):
+                self.logger.log(.warn, tool: "transfer", "出站:连接失败 \(error)")
+                DispatchQueue.main.async {
+                    self.finishOutboundAttempt(
+                        id: attemptID,
+                        conn: conn,
+                        origin: origin,
+                        failure: "连接失败: \(error)"
+                    )
+                }
             case .cancelled:
-                DispatchQueue.main.async { self.handleOutboundDrop(conn, failure: nil) }
+                DispatchQueue.main.async {
+                    self.finishOutboundAttempt(
+                        id: attemptID,
+                        conn: conn,
+                        origin: origin,
+                        failure: nil
+                    )
+                }
             default:
-                // .setup / .preparing(TLS + WebSocket 握手中)。若一直停在 preparing 直到超时,
-                // 说明对端回发的握手数据没到本端 —— 多半是网络只通单向(VPN/MTU/AP 隔离)。
-                self.logger.log(.info, tool: "transfer", "出站连接状态: \(Self.describe(st))")
+                self.logger.log(.info, tool: "transfer", "出站连接状态: \(Self.describe(state))")
             }
         }
-        armConnectTimeout(conn)
+        armConnectTimeout(
+            conn,
+            attemptID: attemptID,
+            origin: origin
+        )
     }
 
-    /// 把 NWConnection.State 转成可读字符串,供出站连接逐阶段日志使用。
-    private static func describe(_ s: NWConnection.State) -> String {
-        switch s {
+    private static func describe(_ state: NWConnection.State) -> String {
+        switch state {
         case .setup:            return "setup"
-        case .waiting(let e):   return "waiting(\(e))"
+        case let .waiting(e):   return "waiting(\(e))"
         case .preparing:        return "preparing(TLS/WebSocket 握手中)"
         case .ready:            return "ready"
-        case .failed(let e):    return "failed(\(e))"
+        case let .failed(e):    return "failed(\(e))"
         case .cancelled:        return "cancelled"
         @unknown default:       return "unknown"
         }
     }
 
-    /// 出站连接 12s 未达 `.connected`/`.pairing`(仍 `.connecting`)则判超时取消。
-    private func armConnectTimeout(_ conn: TransferConnection) {
+    private func armConnectTimeout(
+        _ conn: TransferConnection,
+        attemptID: UUID,
+        origin: TransferConnectionOrigin
+    ) {
         connectTimeoutWork?.cancel()
         let work = DispatchWorkItem { [weak self, weak conn] in
             guard let self else { return }
-            if case .connecting = self.connectionState {
-                conn?.cancel()
-                self.logger.log(.warn, tool: "transfer", "出站:12s 内未完成握手(仍 .connecting)→ 判定连接超时。若对端已显示连接/配对成功,通常是网络只通单向(VPN / MTU / AP 隔离),导致对端回发的握手数据到不了本端。")
-                self.failState("连接超时(握手未完成,可能是网络/VPN/MTU 问题)")
-            } else if case .pairing = self.connectionState {
-                // 配对中也设个上限
-                conn?.cancel()
-                self.logger.log(.warn, tool: "transfer", "出站:12s 内配对未完成(仍 .pairing)→ 判定配对超时。")
-                self.connectionState = .failed("配对超时")
+            let failure: String
+            if case .pairing = self.connectionState {
+                failure = "配对超时"
+            } else {
+                failure = "连接超时(握手未完成,可能是网络/VPN/MTU 问题)"
             }
+            self.logger.log(.warn, tool: "transfer", "出站:12s 内未绑定，收口 attempt \(attemptID)")
+            self.finishOutboundAttempt(
+                id: attemptID,
+                conn: conn,
+                origin: origin,
+                failure: failure
+            )
         }
         connectTimeoutWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: work)
     }
 
-    /// 出站连接断开统一处理。仅处理当前活动连接;曾建立连接(`wasConnected`)且非用户主动停止时尝试重连。
-    private func handleOutboundDrop(_ conn: TransferConnection, failure: String?) {
-        guard conn === activeConn else { return }   // 已被新连接取代的旧连接,忽略
-        connectTimeoutWork?.cancel()
-        if wasConnected && !userStopped && lastReconnect != nil {
-            scheduleReconnect()
-            return
-        }
-        // 配对中被对端断开:对端码不匹配/正忙/触发限速静默拒绝时,这条连接会被对端 cancel。
-        // 不再干等 12s 超时,直接给可行动的失败原因。
-        if case .pairing = connectionState {
-            activeConn = nil
-            connectionState = .failed(failure ?? "配对未完成:对端未响应(检查对端配对码是否一致,或稍候重试)")
-            logger.log(.warn, tool: "transfer", "出站配对中连接被断开: \(failure ?? "对端无响应")")
-            return
-        }
-        if let failure { failState(failure) }
-    }
-
-    /// 已建立连接断开的统一收尾。清理 activeConn/状态;仅出站且非用户停止时尝试重连。
-    private func handleConnectedDrop(_ conn: TransferConnection, failure: String?) {
-        guard conn === activeConn else { return }   // 已被新连接取代
-        connectTimeoutWork?.cancel()
-        if activeIsOutbound && wasConnected && !userStopped && lastReconnect != nil {
-            scheduleReconnect()
-            return
-        }
-        // 入站(或不可重连):清理并回到空闲,避免假"已连接"+幽灵历史
-        activeConn?.cancel()
-        activeConn = nil
-        activePeerFingerprint = nil
-        fileManager.reset()
-        wasConnected = false
-        connectionState = failure.map { .failed($0) } ?? .idle
-    }
-
-    private func scheduleReconnect() {
-        guard !userStopped, reconnectAttempts < 3, let r = lastReconnect else { return }
-        wasConnected = false   // 防同一次断开的 .failed+.cancelled 双触发重连
-        reconnectAttempts += 1
-        let gen = reconnectGeneration
-        let delay = Double(1 << reconnectAttempts) // 2,4,8
-        connectionState = .failed("连接断开,重连中(\(reconnectAttempts)/3)…")
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, !self.userStopped, gen == self.reconnectGeneration else { return }
-            r()
-        }
-    }
-
-    private func outboundReady(conn: TransferConnection, pairingCode: String?) {
-        activeIsOutbound = true   // 此连接为主动出站:断开后允许重连
+    private func outboundReady(
+        conn: TransferConnection,
+        attemptID: UUID,
+        pairingCode: String?,
+        origin: TransferConnectionOrigin
+    ) {
+        guard activeOutboundAttempt?.id == attemptID,
+              conn === activeConn else { return }
         guard let fp = conn.peerFingerprint else {
             logger.log(.warn, tool: "transfer", "出站:.ready 但读不到对端证书指纹")
-            failState("未取到对端证书"); return
+            finishOutboundAttempt(
+                id: attemptID,
+                conn: conn,
+                origin: origin,
+                failure: "未取到对端证书"
+            )
+            return
         }
         logger.log(.info, tool: "transfer", "出站:已读到对端指纹 \(fp.prefix(8))…(\(pairingCode == nil ? "查已配对" : "开始配对"))")
+
+        if case let .automatic(token) = origin {
+            guard let paired = peerStore.peer(forFingerprint: fp),
+                  TransferReconnectExecutionPolicy.readyPeerMatches(
+                      token: token,
+                      actual: paired
+                  ) else {
+                finishOutboundAttempt(
+                    id: attemptID,
+                    conn: conn,
+                    origin: origin,
+                    failure: "自动重连对端身份不匹配"
+                )
+                return
+            }
+            bindConnected(
+                conn: conn,
+                peer: paired,
+                outboundAttempt: ActiveOutboundAttempt(id: attemptID, origin: origin)
+            )
+            return
+        }
+
         if pairingCode == nil {
             if let paired = peerStore.peer(forFingerprint: fp) {
-                bindConnected(conn: conn, peer: paired)
+                reconnectCoordinator.explicitlyConnecting(to: .init(
+                    deviceId: paired.deviceId,
+                    fingerprint: paired.fingerprint
+                ))
+                bindConnected(
+                    conn: conn,
+                    peer: paired,
+                    outboundAttempt: ActiveOutboundAttempt(id: attemptID, origin: origin)
+                )
             } else {
-                activeConn?.cancel(); activeConn = nil
-                failState("该设备未配对,请输入对端显示的配对码")
+                finishOutboundAttempt(
+                    id: attemptID,
+                    conn: conn,
+                    origin: origin,
+                    failure: "该设备未配对,请输入对端显示的配对码"
+                )
             }
             return
         }
         if isGloballyCoolingDown() {
-            activeConn?.cancel(); activeConn = nil
-            connectionState = .failed("配对尝试过多,请稍后再试")
+            finishOutboundAttempt(
+                id: attemptID,
+                conn: conn,
+                origin: origin,
+                failure: "配对尝试过多,请稍后再试"
+            )
             return
         }
         if isCoolingDown(fp) {
-            activeConn?.cancel(); activeConn = nil
-            connectionState = .failed("配对失败过多,请稍后再试")
+            finishOutboundAttempt(
+                id: attemptID,
+                conn: conn,
+                origin: origin,
+                failure: "配对失败过多,请稍后再试"
+            )
             return
         }
         logger.log(.info, tool: "transfer", "发起配对,对端 \(fp.prefix(8))…,输入码 \(pairingCode!)")
-        startPairing(conn: conn, code: pairingCode!, peerFingerprint: fp)
+        startPairing(
+            conn: conn,
+            code: pairingCode!,
+            peerFingerprint: fp,
+            outboundAttempt: ActiveOutboundAttempt(id: attemptID, origin: origin)
+        )
+    }
+
+    private func finishOutboundAttempt(
+        id: UUID,
+        conn: TransferConnection?,
+        origin: TransferConnectionOrigin,
+        failure: String?
+    ) {
+        let attemptMatches = activeOutboundAttempt?.id == id
+            && activeOutboundAttempt?.origin == origin
+        let connectionMatches = conn.map { $0 === activeConn } ?? true
+        let tokenAccepted: Bool
+        if case let .automatic(token) = origin {
+            tokenAccepted = reconnectCoordinator.accepts(token)
+        } else {
+            tokenAccepted = false
+        }
+
+        let decision = TransferReconnectExecutionPolicy.completionDecision(
+            attemptMatches: attemptMatches,
+            connectionMatches: connectionMatches,
+            tokenAccepted: tokenAccepted
+        )
+        guard decision != .ignore else { return }
+
+        connectTimeoutWork?.cancel()
+        connectTimeoutWork = nil
+        activeOutboundAttempt = nil
+        let clearsPairing = conn.map { activePairingConn === $0 } ?? false
+        if let conn {
+            if activeConn === conn { activeConn = nil }
+            if activePairingConn === conn { activePairingConn = nil }
+            conn.cancel()
+        }
+        if clearsPairing { activePairing = nil }
+        activePeerFingerprint = nil
+        fileManager.reset()
+
+        switch origin {
+        case .user:
+            let message: String
+            if let failure {
+                message = failure
+            } else if case .pairing = connectionState {
+                message = "配对未完成:对端未响应(检查配对码或稍后重试)"
+            } else {
+                message = "连接已断开"
+            }
+            connectionState = .failed(message)
+        case let .automatic(token):
+            switch decision {
+            case .ignore:
+                break
+            case .cleanupOnly:
+                showWaitingForRecovery(failure)
+            case .cleanupAndRetry:
+                if let failure {
+                    logger.log(.info, tool: "transfer", "自动重连 attempt 失败: \(failure)")
+                }
+                executeReconnect(reconnectCoordinator.attemptFailed(token))
+            }
+        }
     }
 
     // MARK: - 被动接受
@@ -509,7 +775,6 @@ final class TransferService: ObservableObject {
             }
             // 同一对端重连:继续往下走(会在 bindConnected 里替换旧连接)
         }
-        activeIsOutbound = false   // 此连接为被动入站:断开后不重连
         if let paired = peerStore.peer(forFingerprint: fp) {
             bindConnected(conn: conn, peer: paired)
         } else {
@@ -532,21 +797,49 @@ final class TransferService: ObservableObject {
 
     // MARK: - 配对
 
-    private func startPairing(conn: TransferConnection, code: String, peerFingerprint fp: String) {
+    private func startPairing(
+        conn: TransferConnection,
+        code: String,
+        peerFingerprint fp: String,
+        outboundAttempt: ActiveOutboundAttempt? = nil
+    ) {
         // 并发入站:若已有另一条连接正在配对,顶替(supersede)旧的,避免旧连接被孤立永不收尾。
         if let oldConn = activePairingConn, oldConn !== conn {
+            activePairingConn = nil
             oldConn.cancel()
         }
         activePairing = nil
         connectionState = .pairing
         let selfId: DeviceIdentity.Loaded
-        do { selfId = try identity() } catch { connectionState = .failed("身份加载失败"); return }
+        do {
+            selfId = try identity()
+        } catch {
+            if let outboundAttempt {
+                finishOutboundAttempt(
+                    id: outboundAttempt.id,
+                    conn: conn,
+                    origin: outboundAttempt.origin,
+                    failure: "身份加载失败"
+                )
+            } else {
+                conn.cancel()
+                connectionState = .failed("身份加载失败")
+            }
+            return
+        }
         let pm = PairingManager(code: code, selfFingerprint: selfId.fingerprint,
                                 selfDeviceId: identityStore.deviceId, selfName: deviceName,
                                 peerFingerprint: fp)
         pm.send = { [weak conn] msg in conn?.send(msg) }
         pm.onOutcome = { [weak self] outcome in
-            DispatchQueue.main.async { self?.finishPairing(conn: conn, fp: fp, outcome: outcome) }
+            DispatchQueue.main.async {
+                self?.finishPairing(
+                    conn: conn,
+                    fp: fp,
+                    outcome: outcome,
+                    outboundAttempt: outboundAttempt
+                )
+            }
         }
         activePairing = pm
         activePairingConn = conn   // 强持有,保证配对期间 pm/conn 不被并发入站释放
@@ -556,7 +849,13 @@ final class TransferService: ObservableObject {
         pm.begin()
     }
 
-    private func finishPairing(conn: TransferConnection, fp: String, outcome: PairingManager.Outcome) {
+    private func finishPairing(
+        conn: TransferConnection,
+        fp: String,
+        outcome: PairingManager.Outcome,
+        outboundAttempt: ActiveOutboundAttempt?
+    ) {
+        guard activePairingConn === conn else { return }
         activePairing = nil
         activePairingConn = nil    // 释放配对期的强持有;成功时由 bindConnected 接管 activeConn
         switch outcome {
@@ -567,43 +866,79 @@ final class TransferService: ObservableObject {
             // 配对成功后轮换出新码:旧码即时失效(防重放),同时常驻显示不留空。
             pendingPairingCode = PairingCrypto.makeCode()
             pairingCodeIssuedAt = Date()
-            bindConnected(conn: conn, peer: peer)
+            bindConnected(conn: conn, peer: peer, outboundAttempt: outboundAttempt)
             logger.log(.info, tool: "transfer", "已与 \(peer.name) 配对")
         case let .failed(reason):
-            conn.cancel()
-            if activeConn === conn { activeConn = nil }
             failureCounts[fp, default: 0] += 1
             if failureCounts[fp]! >= 3 { cooldownUntil[fp] = Date().addingTimeInterval(60) }
             recordPairFailure()    // 全局(与指纹无关)滑动窗口限速
             // 常驻码:失败不轮换,保持显示同一码,方便对端照着重试(防爆破已有冷却兜底)。
-            connectionState = .failed(reason)
+            if let outboundAttempt {
+                finishOutboundAttempt(
+                    id: outboundAttempt.id,
+                    conn: conn,
+                    origin: outboundAttempt.origin,
+                    failure: reason
+                )
+            } else {
+                conn.cancel()
+                if activeConn === conn { activeConn = nil }
+                connectionState = .failed(reason)
+            }
             logger.log(.warn, tool: "transfer", "配对失败: \(reason)")
         }
     }
 
-    private func bindConnected(conn: TransferConnection, peer: PairedPeer) {
+    private func bindConnected(
+        conn: TransferConnection,
+        peer: PairedPeer,
+        outboundAttempt: ActiveOutboundAttempt? = nil
+    ) {
+        if let outboundAttempt {
+            guard activeOutboundAttempt?.id == outboundAttempt.id,
+                  activeOutboundAttempt?.origin == outboundAttempt.origin,
+                  conn === activeConn else { return }
+        }
+        cancelReconnectScheduling()
         connectTimeoutWork?.cancel()
-        reconnectAttempts = 0
-        wasConnected = true
-        if let old = activeConn, old !== conn { old.cancel() }
+        connectTimeoutWork = nil
+        if let old = activeConn, old !== conn {
+            activeConn = nil
+            activeOutboundAttempt = nil
+            old.cancel()
+        }
+        activeOutboundAttempt = nil
         connectionState = .connected(peerName: peer.name)
-        autoReconnecting = false   // 已连上,本次(可能的)自动重连结束
         activeConn = conn
         activePeerFingerprint = peer.fingerprint
-        // 记住这台,供前台/睡醒/重新发现时免码自动重连(出/入站都记,使两端断开后都能各自重连)。
-        lastConnectedPeer = .init(deviceId: peer.deviceId, fingerprint: peer.fingerprint)
-        // 已绑定 = 已配对:把「重试」改走免码重连(lastReconnect),避免重放已轮换失效的旧配对码
-        // (否则首连后码已轮换,点重试会拿旧码重新配对而失败——正是用户最初抱怨的「码变了又要重配」)。
-        if activeIsOutbound, lastReconnect != nil { lastManualConnect = lastReconnect }
+        let peerRef = TransferAutoReconnect.PeerRef(
+            deviceId: peer.deviceId,
+            fingerprint: peer.fingerprint
+        )
+        lastConnectedPeer = peerRef
+        reconnectCoordinator.connected(
+            to: peerRef,
+            endpointKey: discoveredPeer(matching: peerRef)?.reconnectEndpointKey
+        )
+        if let outboundAttempt, outboundAttempt.origin == .user,
+           let manualRetryRequest {
+            self.manualRetryRequest = TransferManualRetryPolicy.afterSuccessfulBind(
+                manualRetryRequest
+            )
+        }
         // 绑定后统一接管断开收尾(覆盖 acceptInbound/beginOutbound 的 pre-bind 回调),
         // 入站/出站均处理:出站 .cancelled 也曾被忽略,入站 .cancelled 之前完全没有收尾。
         conn.onStateChange = { [weak self, weak conn] st in
             guard let self, let conn else { return }
             switch st {
             case .failed(let e):
-                DispatchQueue.main.async { self.handleConnectedDrop(conn, failure: "连接断开: \(e)") }
+                DispatchQueue.main.async {
+                    self.handleBoundConnectionDrop(conn, failure: "连接断开: \(e)")
+                }
             case .cancelled:
-                DispatchQueue.main.async { self.handleConnectedDrop(conn, failure: nil) }
+                DispatchQueue.main.async {
+                    self.handleBoundConnectionDrop(conn, failure: nil)
+                }
             default:
                 break
             }
@@ -648,16 +983,36 @@ final class TransferService: ObservableObject {
         conn.onMessage = { router.handle($0) }   // 强捕获 router:连接持有该闭包即维持其与内部 pm 存活
     }
 
+    private func handleBoundConnectionDrop(
+        _ conn: TransferConnection,
+        failure: String?
+    ) {
+        guard conn === activeConn else { return }
+        connectTimeoutWork?.cancel()
+        connectTimeoutWork = nil
+        activeConn = nil
+        activeOutboundAttempt = nil
+        activePeerFingerprint = nil
+        activePairing = nil
+        if activePairingConn === conn { activePairingConn = nil }
+        fileManager.reset()
+        conn.cancel()
+        connectionState = failure.map(ConnectionState.failed) ?? .idle
+
+        guard !userStopped, reconnectCoordinator.target != nil else { return }
+        requestAutomaticRecovery(unexpectedDrop: true)
+    }
+
     /// 对端主动断开(收到 .bye):尊重对端的「断开」意图,本机不再自动重连它。连接随后会被对端 cancel,
-    /// 由 handleConnectedDrop 收尾回 idle;此处不强行 cancel,避免与收尾竞态。
-    /// 两条自动重连路径都要堵死:
-    ///   - 清 lastConnectedPeer → 挡住「发现即连」(maybeAutoReconnect);
-    ///   - 清 wasConnected + 撞 reconnectGeneration → 挡住出站随之而来的 scheduleReconnect
-    ///     (本机若是出站方,紧接着的断开本会触发 3 次重连,把刚被对方断开的会话又拉回来)。
+    /// 由 handleBoundConnectionDrop 收尾回 idle;此处不强行 cancel,避免与收尾竞态。
     private func handlePeerBye(peer: PairedPeer) {
-        if lastConnectedPeer?.deviceId == peer.deviceId { lastConnectedPeer = nil }
-        wasConnected = false
-        reconnectGeneration += 1
+        let peerRef = TransferAutoReconnect.PeerRef(
+            deviceId: peer.deviceId,
+            fingerprint: peer.fingerprint
+        )
+        cancelReconnectScheduling()
+        reconnectCoordinator.peerSaidBye(peerRef)
+        if lastConnectedPeer == peerRef { lastConnectedPeer = nil }
         logger.log(.info, tool: "transfer", "对端 \(peer.name) 主动断开,停止对其自动重连")
     }
 
@@ -776,88 +1131,388 @@ final class TransferService: ObservableObject {
 
     func clearPairedDevices() {
         peerStore.removeAll(); pairedPeers = []
-        lastConnectedPeer = nil   // 配对全清:不再有可自动重连的对象
+        if let lastConnectedPeer {
+            reconnectCoordinator.clearPeer(lastConnectedPeer)
+        }
+        cancelReconnectScheduling()
+        lastConnectedPeer = nil
     }
 
-    /// 置失败态。但若本次是「静默自动重连」(autoReconnecting),失败不打扰用户——清标志并回落 .idle
-    /// (下次前台/发现/睡醒会再试),避免用户没点过的红色错误条凭空闪现。
-    private func failState(_ msg: String) {
-        if autoReconnecting {
-            autoReconnecting = false
+    // MARK: - 生命周期动作
+
+    private var hasBoundConnection: Bool {
+        activeConn != nil && activePeerFingerprint != nil
+    }
+
+    private func executeLifecycleActions(
+        _ actions: [TransferReconnectExecutionPolicy.LifecycleAction]
+    ) {
+        for action in actions {
+            switch action {
+            case .invalidateRecovery:
+                cancelReconnectScheduling()
+                reconnectCoordinator.cancelAutomaticRecovery()
+                connectTimeoutWork?.cancel()
+                connectTimeoutWork = nil
+                if !hasBoundConnection {
+                    cleanupUnboundConnectionForLifecycle()
+                }
+            case .suppressCurrentPeer:
+                if let peer = lastConnectedPeer {
+                    reconnectCoordinator.userDisconnected(from: peer)
+                    lastConnectedPeer = nil
+                }
+            case .sendByeThenClose:
+                sendByeThenCloseBoundConnection()
+            case .stopServices:
+                stopServicesNow()
+            }
+        }
+        if !actions.contains(.stopServices) {
             connectionState = .idle
-            // 失败即释放自动重连冷却:让随后刷新的发现/前台事件能立刻用重新解析的地址再试,
-            // 不被冷却吞掉(冷却本意是挡密集触发,不该挡「上一发已失败」后的合法重试)。
-            lastAutoReconnectAt = nil
-            logger.log(.info, tool: "transfer", "自动重连未成功(静默回落空闲): \(msg)")
-        } else {
-            connectionState = .failed(msg)
         }
     }
 
-    // MARK: - 自动(免码)重连
-
-    /// 统一的自动重连入口:Bonjour 列表变化 / 切回前台 / 系统睡醒都会调用。
-    /// 仅在「空闲 + 非用户主动断开 + 记得最后那台且它已配对并正被发现」时,免码重连最后那台。
-    /// 决策本身是纯函数(TransferAutoReconnect.target),便于单测;这里只负责装配实参与节流。
-    private func maybeAutoReconnect() {
-        let busy: Bool
-        switch connectionState {
-        case .connected, .connecting, .pairing: busy = true
-        case .idle, .failed:                     busy = false
+    private func cleanupUnboundConnectionForLifecycle() {
+        if let attempt = activeOutboundAttempt {
+            finishOutboundAttempt(
+                id: attempt.id,
+                conn: activeConn,
+                origin: attempt.origin,
+                failure: "连接已取消"
+            )
+        } else if let conn = activeConn {
+            activeConn = nil
+            conn.cancel()
         }
-        // 让位给正在退避中的 scheduleReconnect(出站断线后的 2/4/8s 三次快速重连),避免两条重连路径互抢;
-        // 三次用尽后 reconnectAttempts 停在 3,此时由本路径接管。
-        if reconnectAttempts >= 1, reconnectAttempts < 3 { return }
-        // 决策(含「本机 id 较小才主动拨号」的单向仲裁)收敛在纯函数里,便于单测。
-        // 仲裁不可破例:睡醒那台若 id 较大,不在此自拨(会与对端的拨入撞成 glare 抖动),
-        // 改由 onWokeOrActivated 的「自愈监听 + 重广播」让对端发现并拨入。
-        guard let target = TransferAutoReconnect.target(
-            busy: busy,
+        activePairing = nil
+        if let pairingConn = activePairingConn {
+            activePairingConn = nil
+            if pairingConn !== activeConn { pairingConn.cancel() }
+        }
+        activePeerFingerprint = nil
+        fileManager.reset()
+    }
+
+    private func sendByeThenCloseBoundConnection() {
+        guard let conn = activeConn else { return }
+        activeConn = nil
+        activeOutboundAttempt = nil
+        activePeerFingerprint = nil
+        activePairing = nil
+        if activePairingConn === conn { activePairingConn = nil }
+        fileManager.reset()
+        connectionState = .idle
+
+        let closeOnce = TransferConnectionCloseOnce(conn)
+        conn.send(.bye) { _ in
+            DispatchQueue.main.async {
+                closeOnce.close()
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            closeOnce.close()
+        }
+    }
+
+    private func stopServicesNow() {
+        servicesRunning = false
+        cancelReconnectScheduling()
+        reconnectCoordinator.stop()
+        lastConnectedPeer = nil
+        networkPathBridge.deactivate()
+        networkMonitor.stop()
+        networkPathSatisfied = nil
+        removeLifecycleObservers()
+        cleanupTimer?.cancel()
+        cleanupTimer = nil
+        monitor.stop()
+        discovery.stop()
+        discovery.onPeersChanged = nil
+        discovery.onFailure = nil
+        discoveredPeers = []
+        server?.stop()
+        server = nil
+        client = nil
+        listenPort = nil
+        connectTimeoutWork?.cancel()
+        connectTimeoutWork = nil
+        if let conn = activeConn {
+            activeConn = nil
+            conn.cancel()
+        }
+        activeOutboundAttempt = nil
+        activePeerFingerprint = nil
+        fileManager.reset()
+        activePairing = nil
+        activePairingConn?.cancel()
+        activePairingConn = nil
+        manualRetryRequest = nil
+        lastManualConnect = nil
+        pendingPairingCode = nil
+        pairingCodeIssuedAt = nil
+        lastBonjourRepairAt = nil
+        connectionState = .idle
+    }
+
+    // MARK: - 自动恢复事件与动作
+
+    private func discoveredPeer(
+        matching peer: TransferAutoReconnect.PeerRef,
+        in peers: [DiscoveredPeer]? = nil
+    ) -> DiscoveredPeer? {
+        (peers ?? discoveredPeers).first {
+            $0.deviceId == peer.deviceId && $0.fingerprint == peer.fingerprint
+        }
+    }
+
+    private func handleDiscoveredPeers(_ peers: [DiscoveredPeer]) {
+        guard servicesRunning else { return }
+        let target = reconnectCoordinator.target
+        let oldPeer = target.flatMap { discoveredPeer(matching: $0) }
+        let newPeer = target.flatMap { discoveredPeer(matching: $0, in: peers) }
+        discoveredPeers = peers
+
+        guard target != nil else { return }
+        if oldPeer != nil, newPeer == nil {
+            cancelReconnectScheduling()
+            reconnectCoordinator.peerBecameUnavailable()
+            cleanupUnboundAutomaticAttempt()
+            if !hasBoundConnection {
+                showWaitingForRecovery("等待设备重新出现")
+            }
+            return
+        }
+        if let newPeer,
+           oldPeer == nil || oldPeer?.reconnectEndpointKey != newPeer.reconnectEndpointKey {
+            if hasBoundConnection, let target {
+                reconnectCoordinator.connected(
+                    to: target,
+                    endpointKey: newPeer.reconnectEndpointKey
+                )
+            }
+            requestAutomaticRecovery()
+        }
+    }
+
+    private func handleDiscoveryFailure(_ error: Error) {
+        guard servicesRunning else { return }
+        cancelReconnectScheduling()
+        if reconnectCoordinator.target != nil {
+            reconnectCoordinator.peerBecameUnavailable()
+        }
+        cleanupUnboundAutomaticAttempt()
+        discoveredPeers = []
+        logger.log(.warn, tool: "transfer", "Bonjour 浏览失败: \(error.localizedDescription)")
+        if !hasBoundConnection {
+            showWaitingForRecovery("等待设备重新出现")
+        }
+    }
+
+    fileprivate func handleNetworkPath(
+        _ isSatisfied: Bool,
+        transition: TransferNetworkTransition
+    ) {
+        guard servicesRunning else { return }
+        networkPathSatisfied = isSatisfied
+        let event: TransferReconnectExecutionPolicy.RecoveryEvent
+        switch transition {
+        case .becameUnavailable:
+            event = .pathUnavailable
+        case .restored:
+            event = .pathRestored(reassertBonjour: shouldReassertBonjourNow())
+        case .initial where isSatisfied:
+            event = .initialSatisfied(reassertBonjour: shouldReassertBonjourNow())
+        case .initial, .unchanged:
+            return
+        }
+        executeRecoveryActions(
+            TransferReconnectExecutionPolicy.actions(for: event)
+        )
+    }
+
+    private func shouldReassertBonjourNow() -> Bool {
+        TransferReconnectExecutionPolicy.shouldReassertBonjour(
+            last: lastBonjourRepairAt,
+            now: ProcessInfo.processInfo.systemUptime,
+            minimumInterval: 3
+        )
+    }
+
+    private func executeRecoveryActions(
+        _ actions: [TransferReconnectExecutionPolicy.RecoveryAction]
+    ) {
+        for action in actions {
+            switch action {
+            case .cancelRecovery:
+                cancelReconnectScheduling()
+            case .invalidateForNetworkLoss:
+                reconnectCoordinator.networkUnavailable()
+            case .cleanupCurrentConnection:
+                cleanupCurrentConnectionForNetworkLoss()
+            case .waitForEvent:
+                showWaitingForRecovery("网络不可用，等待网络恢复")
+            case .repairListener:
+                server?.restartIfUnhealthy()
+            case .reassertBonjour:
+                lastBonjourRepairAt = ProcessInfo.processInfo.systemUptime
+                server?.setAdvertising(!stealthMode)
+            case .restartDiscovery:
+                discovery.start()
+            case .requestRecovery:
+                requestAutomaticRecovery()
+            }
+        }
+    }
+
+    private func cleanupCurrentConnectionForNetworkLoss() {
+        if let attempt = activeOutboundAttempt {
+            finishOutboundAttempt(
+                id: attempt.id,
+                conn: activeConn,
+                origin: attempt.origin,
+                failure: "网络连接已中断"
+            )
+        } else if let conn = activeConn {
+            activeConn = nil
+            activePeerFingerprint = nil
+            fileManager.reset()
+            conn.cancel()
+        }
+        activePairing = nil
+        if let pairingConn = activePairingConn {
+            activePairingConn = nil
+            if pairingConn !== activeConn { pairingConn.cancel() }
+        }
+        connectTimeoutWork?.cancel()
+        connectTimeoutWork = nil
+    }
+
+    private func cleanupUnboundAutomaticAttempt() {
+        guard activePeerFingerprint == nil,
+              let attempt = activeOutboundAttempt,
+              case .automatic = attempt.origin else { return }
+        finishOutboundAttempt(
+            id: attempt.id,
+            conn: activeConn,
+            origin: attempt.origin,
+            failure: "自动恢复目标已变化"
+        )
+    }
+
+    private func currentAutomaticTarget() -> DiscoveredPeer? {
+        TransferAutoReconnect.target(
+            busy: connectionState.isBusy,
             userStopped: userStopped,
             selfDeviceId: identityStore.deviceId,
             last: lastConnectedPeer,
             discovered: discoveredPeers,
             pairedFingerprints: Set(pairedPeers.map(\.fingerprint))
-        ) else { return }
-        // 冷却:发现回调 / 前台事件可能密集触发,避免连成紧密循环(连接中/已连接时上面的 busy 已挡住)。
-        // 注:auto 失败会在 failState 里清空冷却,允许随后刷新的发现用新地址即试,不被这 4s 吞掉。
-        if let t = lastAutoReconnectAt, Date().timeIntervalSince(t) < 4 { return }
-        lastAutoReconnectAt = Date()
-        logger.log(.info, tool: "transfer", "自动重连(免码)→ \(target.name)")
-        connect(to: target, pairingCode: nil, auto: true)   // auto:失败静默回落 .idle,不弹红条
+        )
     }
 
-    /// 切回前台 / 系统睡醒:重启 Bonjour 浏览(睡眠后发现缓存可能失效),并尝试免码重连最后那台。
-    /// 对端重新出现会再触发一次 onPeersChanged → maybeAutoReconnect,故这里直接调一次即可。
+    private func requestAutomaticRecovery(unexpectedDrop: Bool = false) {
+        let target = currentAutomaticTarget()
+        let endpointKey = target?.reconnectEndpointKey
+        let command: TransferReconnectCoordinator.Command
+        if unexpectedDrop {
+            command = reconnectCoordinator.unexpectedDrop(
+                pathSatisfied: networkPathSatisfied == true,
+                canDial: target != nil,
+                endpointKey: endpointKey
+            )
+        } else {
+            command = reconnectCoordinator.recoveryEvent(
+                pathSatisfied: networkPathSatisfied == true,
+                canDial: target != nil,
+                busy: connectionState.isBusy,
+                endpointKey: endpointKey
+            )
+        }
+        executeReconnect(command)
+    }
+
+    private func executeReconnect(_ command: TransferReconnectCoordinator.Command) {
+        switch command {
+        case .none:
+            return
+        case .waitForEvent:
+            cancelReconnectScheduling()
+            showWaitingForRecovery(nil)
+        case let .schedule(token, delay):
+            cancelReconnectScheduling()
+            reconnectScheduledToken = token
+            connectionState = .failed("连接断开，等待自动恢复…")
+            let work = DispatchWorkItem { [weak self] in
+                guard let self,
+                      self.reconnectScheduledToken == token else { return }
+                self.reconnectWork = nil
+                self.reconnectScheduledToken = nil
+                self.executeReconnect(self.reconnectCoordinator.delayElapsed(token))
+            }
+            reconnectWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        case let .dial(token):
+            cancelReconnectScheduling()
+            let target = currentAutomaticTarget()
+            let currentPeer = target.map {
+                TransferAutoReconnect.PeerRef(
+                    deviceId: $0.deviceId,
+                    fingerprint: $0.fingerprint
+                )
+            }
+            let currentEndpointKey = target?.reconnectEndpointKey
+            let tokenAccepted = reconnectCoordinator.accepts(token)
+            guard TransferReconnectExecutionPolicy.mayStartAutomatic(
+                token: token,
+                tokenAccepted: tokenAccepted,
+                busy: connectionState.isBusy,
+                hasActiveConnection: activeConn != nil,
+                pathSatisfied: networkPathSatisfied == true,
+                currentPeer: currentPeer,
+                currentEndpointKey: currentEndpointKey
+            ) else {
+                if tokenAccepted,
+                   !connectionState.isBusy,
+                   activeConn == nil,
+                   networkPathSatisfied == true,
+                   (currentPeer != token.peer || currentEndpointKey != token.endpointKey) {
+                    reconnectCoordinator.peerBecameUnavailable()
+                    cleanupUnboundAutomaticAttempt()
+                    showWaitingForRecovery("等待设备重新出现")
+                }
+                return
+            }
+            guard let target else { return }
+            logger.log(.info, tool: "transfer", "自动重连(免码)→ \(target.name), attempt \(token.attempt)")
+            performOutbound(
+                to: target,
+                pairingCode: nil,
+                origin: .automatic(token)
+            )
+        }
+    }
+
+    private func cancelReconnectScheduling() {
+        reconnectWork?.cancel()
+        reconnectWork = nil
+        reconnectScheduledToken = nil
+    }
+
+    private func showWaitingForRecovery(_ detail: String?) {
+        let message = detail ?? "等待设备重新出现或网络恢复"
+        connectionState = .failed(message)
+    }
+
     private func onWokeOrActivated(_ reason: String) {
-        guard let server else { return }
-        // 已连接/连接中/配对中无需打扰(getFocus 会频繁触发 didBecomeActive,避免每次都重启浏览)。
-        switch connectionState {
-        case .connected, .connecting, .pairing: return
-        case .idle, .failed: break
-        }
-        // 始终自愈监听,确保本机持续可被连入(睡眠/网络变更可能打死 listener;健康时为 no-op,无副作用)。
-        // 这对「本机 id 较大」尤其关键:它不主动拨号(单向仲裁),全靠对端发现本机后拨入——前提是本机可被发现。
-        server.restartIfUnhealthy()
-        // 没有「最后那台」记忆 / 用户已主动停:仅维持可达性,不主动重连、也不重广播打扰对端。
-        guard !userStopped, lastConnectedPeer != nil else { return }
-        logger.log(.info, tool: "transfer", "\(reason):自愈监听/广播并尝试自动重连")
-        // 「我回来了」重广播:提示对端尽快重新发现本机并拨入。仅在
-        //   ① 没有正在退避的出站重连(reconnectAttempts==0)——退避中说明本端就是拨号方,再催对端会两边都拨成 glare;
-        //   ② 距上次重广播 ≥5s(didBecomeActive 每次获焦都触发)——避免频繁重注册 Bonjour 致对端发现抖动
-        // 时才发。
-        if reconnectAttempts == 0,
-           lastReassertAt == nil || Date().timeIntervalSince(lastReassertAt!) >= 5 {
-            lastReassertAt = Date()
-            server.setAdvertising(!stealthMode)
-        }
-        // 去抖:didBecomeActive 在每次窗口获焦都会触发,不必每次都 cancel+重建 NWBrowser。
-        // 距上次刷新超过 3s 才重启浏览;其初始结果回调会再驱动一次 maybeAutoReconnect(用重新解析的 endpoint)。
-        if lastDiscoveryRefreshAt == nil || Date().timeIntervalSince(lastDiscoveryRefreshAt!) >= 3 {
-            lastDiscoveryRefreshAt = Date()
-            discovery.start()    // 重新浏览,促使对端尽快重新出现
-        }
-        maybeAutoReconnect()
+        guard servicesRunning else { return }
+        logger.log(.info, tool: "transfer", "\(reason):检查监听/广播与自动恢复")
+        let event = TransferReconnectExecutionPolicy.RecoveryEvent.wake(
+            reassertBonjour: shouldReassertBonjourNow()
+        )
+        executeRecoveryActions(
+            TransferReconnectExecutionPolicy.actions(for: event)
+        )
     }
 
     deinit { removeLifecycleObservers() }   // 兜底:本对象虽为 App 生命周期常驻,仍对称移除观察者

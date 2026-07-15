@@ -139,6 +139,15 @@ struct TransferReconnectCoordinatorTests {
         expect(cannotDial.unexpectedDrop(pathSatisfied: true, canDial: false, endpointKey: "ep-2") == .waitForEvent,
                "deviceId 较大的一端只能等待拨入")
 
+        var connectedBusyEvent = Coordinator()
+        connectedBusyEvent.connected(to: peer, endpointKey: "ep-2")
+        expect(connectedBusyEvent.recoveryEvent(
+            pathSatisfied: true, canDial: true, busy: true, endpointKey: "ep-2"
+        ) == .none, "已连接时的恢复事件不得开启自动恢复周期")
+        guard case .dial = connectedBusyEvent.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-2"
+        ) else { fail("忙碌恢复事件不得吞掉随后真实 unexpectedDrop") }
+
         var missingEndpoint = Coordinator()
         missingEndpoint.connected(to: peer, endpointKey: "ep-2")
         expect(missingEndpoint.unexpectedDrop(
@@ -157,6 +166,9 @@ struct TransferReconnectCoordinatorTests {
         expect(unavailable.endpointKey == nil, "peer 消失后必须清除 endpoint")
         expect(unavailable.phase == .waitingForEvent, "peer 消失后必须等待新事件")
         expect(!unavailable.accepts(unavailableToken), "peer 消失后旧 token 必须失效")
+        expect(unavailable.recoveryEvent(
+            pathSatisfied: true, canDial: false, busy: false, endpointKey: nil
+        ) == .waitForEvent, "peer 消失且无可拨 endpoint 时恢复事件必须继续等待")
 
         var saidBye = Coordinator()
         saidBye.connected(to: peer, endpointKey: "ep-1")
