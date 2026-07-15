@@ -985,18 +985,20 @@ struct TransferReconnectExecutionPolicyTests {
             .stopServices,
         ], "stop + bound 必须先失效恢复、发 bye 关闭、再停服务")
         expect(Policy.lifecycleActions(for: .disconnect, hasBoundConnection: true) == [
+            .silenceInboundPairingTerminal,
             .invalidateRecovery,
             .suppressCurrentPeer,
             .sendByeThenClose,
-        ], "disconnect + bound 必须先失效、抑制当前 peer、再发 bye 关闭")
+        ], "disconnect + bound 必须先静默 inbound pairing，再失效、抑制并关闭")
         expect(Policy.lifecycleActions(for: .stop, hasBoundConnection: false) == [
             .invalidateRecovery,
             .stopServices,
         ], "stop 无 bound 时不应发 bye，但必须保留其余语义")
         expect(Policy.lifecycleActions(for: .disconnect, hasBoundConnection: false) == [
+            .silenceInboundPairingTerminal,
             .invalidateRecovery,
             .suppressCurrentPeer,
-        ], "disconnect 无 bound 时不应发 bye，但必须保留抑制语义")
+        ], "disconnect 无 bound 时也必须在 cancel pairing 前先静默终态")
 
         expect(Policy.inboundDecision(
             isPairedCodeless: true,
@@ -1090,6 +1092,61 @@ struct TransferReconnectExecutionPolicyTests {
             activePairing: nil,
             activeBound: nil
         ) == .ignoreSilently, "重复回连被拒绝后也必须静默收口")
+
+        let disconnectedPairingConnection = ConnectionProbe()
+        let disconnectedPairingLifecycle = Policy.InboundConnectionLifecycle(
+            connection: disconnectedPairingConnection
+        )
+        expect(!disconnectedPairingLifecycle.cancelForUserDisconnect(staleBoundConnection),
+               "disconnect 静默标记不得应用到 stale connection")
+        expect(disconnectedPairingLifecycle.cancelForUserDisconnect(
+            disconnectedPairingConnection
+        ), "disconnect 必须在 cancel exact inbound pairing 前标记 user-cancelled")
+        expect(!disconnectedPairingLifecycle.cancelForUserDisconnect(
+            disconnectedPairingConnection
+        ), "同一 pairing 只能被 disconnect 标记一次")
+        var disconnectedPairingPresentation = ConnectionState.idle
+        var disconnectedPairingRecoveryResumes = 0
+        for event in [
+            Policy.InboundTerminalEvent.cancelled,
+            .failed,
+            .timeout,
+            .cancelled,
+            .failed,
+        ] {
+            let decision = disconnectedPairingLifecycle.terminalDecision(
+                for: event,
+                source: disconnectedPairingConnection,
+                activePairing: nil,
+                activeBound: nil
+            )
+            switch decision {
+            case .ignoreSilently, .ignoreStale:
+                break
+            case .finishPairingFailure:
+                disconnectedPairingPresentation = .failed("pairing")
+                disconnectedPairingRecoveryResumes += 1
+            case .publishFailure:
+                disconnectedPairingPresentation = .failed("unbound")
+            }
+            expect(decision == .ignoreSilently,
+                   "disconnect 后 \(event) 与 duplicate terminal 均必须幂等静默")
+        }
+        expect(disconnectedPairingPresentation == .idle
+               && disconnectedPairingRecoveryResumes == 0,
+               "disconnect→cancel callback 必须保持 idle，且不得恢复 automatic")
+
+        let ordinaryRemoteCancelConnection = ConnectionProbe()
+        let ordinaryRemoteCancelLifecycle = Policy.InboundConnectionLifecycle(
+            connection: ordinaryRemoteCancelConnection
+        )
+        expect(ordinaryRemoteCancelLifecycle.terminalDecision(
+            for: .cancelled,
+            source: ordinaryRemoteCancelConnection,
+            activePairing: nil,
+            activeBound: nil
+        ) == .publishFailure,
+        "未被用户 disconnect 的普通远端 cancel 仍必须发布失败")
 
         let normalPairingConnection = ConnectionProbe()
         let normalPairingLifecycle = Policy.InboundConnectionLifecycle(

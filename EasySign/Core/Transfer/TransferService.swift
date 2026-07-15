@@ -117,6 +117,8 @@ final class TransferService: ObservableObject {
     private var activeOutboundAttempt: ActiveOutboundAttempt?
     private var inboundPairingBlockerLifecycle:
         TransferReconnectExecutionPolicy.InboundPairingBlockerLifecycle?
+    private var inboundPairingConnectionLifecycle:
+        TransferReconnectExecutionPolicy.InboundConnectionLifecycle?
     private var manualRetryRequest: TransferManualRetryRequest?
     private var lastBonjourRepairAt: TimeInterval?
     private var serviceGeneration = TransferReconnectExecutionPolicy.ServiceGeneration()
@@ -950,7 +952,8 @@ final class TransferService: ObservableObject {
             if pendingPairingCode == nil { pendingPairingCode = PairingCrypto.makeCode(); pairingCodeIssuedAt = Date() }
             enterInboundPairingBlocker(
                 inboundPairingBlockerDecision,
-                connection: conn
+                connection: conn,
+                lifecycle: lifecycle
             )
             logger.log(.info, tool: "transfer", "④ 入站配对开始,本机码 \(pendingPairingCode!),发 hello/pairOffer 给对端")
             startPairing(conn: conn, code: pendingPairingCode!, peerFingerprint: fp)
@@ -959,7 +962,8 @@ final class TransferService: ObservableObject {
 
     private func enterInboundPairingBlocker(
         _ decision: TransferReconnectExecutionPolicy.InboundPairingBlockerDecision,
-        connection: TransferConnection
+        connection: TransferConnection,
+        lifecycle: TransferReconnectExecutionPolicy.InboundConnectionLifecycle
     ) {
         guard decision == .invalidateRecoveryOnly
                 || decision == .invalidateAndCancelAutomaticAttempt else { return }
@@ -968,6 +972,7 @@ final class TransferService: ObservableObject {
             TransferReconnectExecutionPolicy.InboundPairingBlockerLifecycle(
                 connection: connection
             )
+        inboundPairingConnectionLifecycle = lifecycle
         cancelReconnectScheduling()
         reconnectCoordinator.blockAutomaticRecoveryForInboundPairing()
 
@@ -1384,12 +1389,14 @@ final class TransferService: ObservableObject {
     private func executeLifecycleActions(
         _ actions: [TransferReconnectExecutionPolicy.LifecycleAction]
     ) {
-        // stop/disconnect/user intent owns teardown; no cancelled inbound callback may
-        // subsequently reinterpret that teardown as an automatic recovery event.
-        invalidateInboundPairingBlocker()
         for action in actions {
             switch action {
+            case .silenceInboundPairingTerminal:
+                silenceInboundPairingTerminalForUserDisconnect()
             case .invalidateRecovery:
+                // This follows the disconnect-only silence action, but remains the first
+                // action for stop so its service-generation behavior is unchanged.
+                invalidateInboundPairingBlocker()
                 cancelReconnectScheduling()
                 reconnectCoordinator.cancelAutomaticRecovery()
                 connectTimeoutWork?.cancel()
@@ -1726,6 +1733,13 @@ final class TransferService: ObservableObject {
     private func invalidateInboundPairingBlocker() {
         inboundPairingBlockerLifecycle?.invalidate()
         inboundPairingBlockerLifecycle = nil
+        inboundPairingConnectionLifecycle = nil
+    }
+
+    private func silenceInboundPairingTerminalForUserDisconnect() {
+        guard let connection = activePairingConn,
+              let lifecycle = inboundPairingConnectionLifecycle else { return }
+        _ = lifecycle.cancelForUserDisconnect(connection)
     }
 
     private func consumeInboundPairingBlockerWithoutRecovery(
@@ -1734,6 +1748,7 @@ final class TransferService: ObservableObject {
         guard let lifecycle = inboundPairingBlockerLifecycle,
               lifecycle.consumeWithoutRecovery(connection) else { return }
         inboundPairingBlockerLifecycle = nil
+        inboundPairingConnectionLifecycle = nil
     }
 
     /// An accepted inbound pairing connection is the sole owner of its blocker release.
@@ -1746,6 +1761,7 @@ final class TransferService: ObservableObject {
         guard let lifecycle = inboundPairingBlockerLifecycle,
               lifecycle.consumeRelease(connection) else { return }
         inboundPairingBlockerLifecycle = nil
+        inboundPairingConnectionLifecycle = nil
 
         let deferredToken = reconnectCoordinator.deferredToken
         let decision = TransferReconnectExecutionPolicy.inboundPairingBlockerReleaseDecision(

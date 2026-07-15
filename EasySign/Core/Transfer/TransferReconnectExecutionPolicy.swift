@@ -135,6 +135,7 @@ enum TransferReconnectExecutionPolicy {
         private enum State {
             case ordinary
             case silentlyRejected
+            case cancelledByUser
             case finished
         }
 
@@ -152,6 +153,13 @@ enum TransferReconnectExecutionPolicy {
             return true
         }
 
+        @discardableResult
+        func cancelForUserDisconnect(_ connection: AnyObject) -> Bool {
+            guard matches(connection), state == .ordinary else { return false }
+            state = .cancelledByUser
+            return true
+        }
+
         func terminalDecision(
             for event: InboundTerminalEvent,
             source: AnyObject,
@@ -160,7 +168,7 @@ enum TransferReconnectExecutionPolicy {
         ) -> InboundTerminalDecision {
             guard matches(source) else { return .ignoreStale }
             switch state {
-            case .silentlyRejected:
+            case .silentlyRejected, .cancelledByUser:
                 return .ignoreSilently
             case .finished:
                 return .ignoreStale
@@ -220,6 +228,7 @@ enum TransferReconnectExecutionPolicy {
     }
 
     enum LifecycleAction: Equatable {
+        case silenceInboundPairingTerminal
         case invalidateRecovery
         case suppressCurrentPeer
         case sendByeThenClose
@@ -486,7 +495,11 @@ enum TransferReconnectExecutionPolicy {
         for event: LifecycleEvent,
         hasBoundConnection: Bool
     ) -> [LifecycleAction] {
-        var actions: [LifecycleAction] = [.invalidateRecovery]
+        var actions: [LifecycleAction] = []
+        if event == .disconnect {
+            actions.append(.silenceInboundPairingTerminal)
+        }
+        actions.append(.invalidateRecovery)
         if event == .disconnect {
             actions.append(.suppressCurrentPeer)
         }
