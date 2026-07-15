@@ -727,6 +727,7 @@ final class TransferService: ObservableObject {
                 executeReconnect(reconnectCoordinator.attemptFailed(token))
             }
         }
+        resumeDeferredAutomaticRecoveryIfPossible()
     }
 
     // MARK: - 被动接受
@@ -742,11 +743,17 @@ final class TransferService: ObservableObject {
             case .failed(let e):
                 self.logger.log(.warn, tool: "transfer", "✗ 入站连接 .failed: \(e)")
                 DispatchQueue.main.async {
-                    // 仅当本连接是(或可能成为)活动会话时才改全局状态,
-                    // 避免陌生入站/探测的 .failed 污染与对端 A 的现有连接。
-                    if self.activeConn == nil || self.activeConn === conn {
-                        self.connectionState = .failed("连接失败: \(e)")
-                    }
+                    self.finishUnboundInboundConnection(
+                        conn,
+                        failure: "连接失败: \(e)"
+                    )
+                }
+            case .cancelled:
+                DispatchQueue.main.async {
+                    self.finishUnboundInboundConnection(
+                        conn,
+                        failure: "入站配对连接已关闭"
+                    )
                 }
             default:
                 break
@@ -760,6 +767,23 @@ final class TransferService: ObservableObject {
             guard let self else { return }
             if conn === self.activeConn { return }   // 已绑定,放过
             conn.cancel()
+        }
+    }
+
+    private func finishUnboundInboundConnection(
+        _ conn: TransferConnection,
+        failure: String
+    ) {
+        guard conn !== activeConn else { return }
+        if let pairingConn = activePairingConn {
+            guard pairingConn === conn else { return }
+            activePairing = nil
+            activePairingConn = nil
+            conn.cancel()
+            connectionState = .failed(failure)
+            resumeDeferredAutomaticRecoveryIfPossible()
+        } else if activeConn == nil {
+            connectionState = .failed(failure)
         }
     }
 
@@ -824,6 +848,7 @@ final class TransferService: ObservableObject {
             } else {
                 conn.cancel()
                 connectionState = .failed("身份加载失败")
+                resumeDeferredAutomaticRecoveryIfPossible()
             }
             return
         }
@@ -884,6 +909,7 @@ final class TransferService: ObservableObject {
                 conn.cancel()
                 if activeConn === conn { activeConn = nil }
                 connectionState = .failed(reason)
+                resumeDeferredAutomaticRecoveryIfPossible()
             }
             logger.log(.warn, tool: "transfer", "配对失败: \(reason)")
         }
@@ -1463,24 +1489,40 @@ final class TransferService: ObservableObject {
         executeReconnect(command)
     }
 
-    private func executeReconnect(
-        _ command: TransferReconnectCoordinator.Command,
-        preserveConnectionState: Bool = false
-    ) {
+    private func resumeDeferredAutomaticRecoveryIfPossible() {
+        guard let token = reconnectCoordinator.deferredToken,
+              TransferReconnectExecutionPolicy.mayResumeDeferredRecovery(
+                  tokenAccepted: reconnectCoordinator.accepts(token),
+                  servicesRunning: servicesRunning,
+                  userStopped: userStopped,
+                  busy: connectionState.isBusy,
+                  hasActiveConnection: activeConn != nil,
+                  hasActivePairing: activePairing != nil,
+                  hasActivePairingConnection: activePairingConn != nil,
+                  hasBoundConnection: hasBoundConnection
+              ) else { return }
+        let target = currentAutomaticTarget()
+        executeReconnect(
+            reconnectCoordinator.resumeDeferredRecovery(
+                token,
+                pathSatisfied: networkPathSatisfied == true,
+                canDial: target != nil,
+                endpointKey: target?.reconnectEndpointKey
+            )
+        )
+    }
+
+    private func executeReconnect(_ command: TransferReconnectCoordinator.Command) {
         switch command {
         case .none:
             return
         case .waitForEvent:
             cancelReconnectScheduling()
-            if !preserveConnectionState {
-                showWaitingForRecovery(nil)
-            }
+            showWaitingForRecovery(nil)
         case let .schedule(token, delay):
             cancelReconnectScheduling()
             reconnectScheduledToken = token
-            if !preserveConnectionState {
-                connectionState = .failed("连接断开，等待自动恢复…")
-            }
+            connectionState = .failed("连接断开，等待自动恢复…")
             let work = DispatchWorkItem { [weak self] in
                 guard let self,
                       self.reconnectScheduledToken == token else { return }
@@ -1513,11 +1555,8 @@ final class TransferService: ObservableObject {
             switch decision {
             case .ignore:
                 return
-            case .finishCurrentAttempt:
-                executeReconnect(
-                    reconnectCoordinator.attemptFailed(token),
-                    preserveConnectionState: true
-                )
+            case .deferCurrentAttempt:
+                reconnectCoordinator.deferDial(token)
                 return
             case .targetChanged:
                 reconnectCoordinator.peerBecameUnavailable()

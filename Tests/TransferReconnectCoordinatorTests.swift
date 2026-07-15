@@ -51,6 +51,116 @@ struct TransferReconnectCoordinatorTests {
         expect(duplicateDrop.generation == activeGeneration, "重复 drop 不得推进 generation")
         expect(duplicateDrop.accepts(d0), "重复 drop 后首个 token 必须仍有效")
 
+        var deferred = Coordinator()
+        deferred.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(deferredToken) = deferred.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) else { fail("deferred 测试需要 current dialing token") }
+        expect(deferred.deferDial(deferredToken),
+               "current dialing token 应进入 deferred phase")
+        expect(deferred.phase == .deferred(deferredToken),
+               "deferred phase 必须保存 exact token")
+        expect(deferred.accepts(deferredToken),
+               "deferred token 必须保持 generation/token 有效")
+        for _ in 0..<(Coordinator.delays.count + 3) {
+            expect(deferred.recoveryEvent(
+                pathSatisfied: true, canDial: true, busy: true, endpointKey: "ep-1"
+            ) == .none, "持续 busy 不得消耗网络重试次数")
+        }
+        expect(deferred.deferredToken?.attempt == 0,
+               "超过旧 0/2/5/10 窗口后 attempt 仍应为 0")
+        guard case let .dial(resumedDeferredToken) = deferred.resumeDeferredRecovery(
+            deferredToken,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-1"
+        ) else { fail("临时 blocker 释放后应产生一次 coordinated recovery") }
+        expect(resumedDeferredToken.attempt == 0,
+               "deferred release 不得消耗实际拨号预算")
+        expect(resumedDeferredToken.generation != deferredToken.generation,
+               "deferred release 应换 generation 隔离旧 session 回调")
+        expect(deferred.resumeDeferredRecovery(
+            deferredToken,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-1"
+        ) == .none, "同一个 deferred token 不得恢复两次")
+
+        var deferredStopped = Coordinator()
+        deferredStopped.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(stoppedDeferredToken) = deferredStopped.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) else { fail("deferred stop 测试需要 token") }
+        expect(deferredStopped.deferDial(stoppedDeferredToken), "stop 前应成功 deferred")
+        deferredStopped.stop()
+        expect(deferredStopped.resumeDeferredRecovery(
+            stoppedDeferredToken,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-1"
+        ) == .none, "stop 后 deferred release 不得恢复")
+
+        var deferredBound = Coordinator()
+        deferredBound.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(boundDeferredToken) = deferredBound.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) else { fail("deferred bind 测试需要 token") }
+        expect(deferredBound.deferDial(boundDeferredToken), "bind 前应成功 deferred")
+        deferredBound.connected(to: peer, endpointKey: "ep-1")
+        expect(deferredBound.resumeDeferredRecovery(
+            boundDeferredToken,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-1"
+        ) == .none, "成功 bind 后 deferred token 必须 stale，不得自动拨号")
+
+        var deferredExplicit = Coordinator()
+        deferredExplicit.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(explicitDeferredToken) = deferredExplicit.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) else { fail("deferred explicit 测试需要 token") }
+        expect(deferredExplicit.deferDial(explicitDeferredToken),
+               "显式连接前应成功 deferred")
+        deferredExplicit.explicitlyConnecting(to: peer)
+        expect(deferredExplicit.resumeDeferredRecovery(
+            explicitDeferredToken,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-1"
+        ) == .none, "用户显式会话必须使 deferred token stale")
+
+        var deferredArbitration = Coordinator()
+        deferredArbitration.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(arbitrationDeferredToken) = deferredArbitration.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) else { fail("deferred arbitration 测试需要 token") }
+        expect(deferredArbitration.deferDial(arbitrationDeferredToken),
+               "arbitration 变化前应成功 deferred")
+        expect(deferredArbitration.resumeDeferredRecovery(
+            arbitrationDeferredToken,
+            pathSatisfied: true,
+            canDial: false,
+            endpointKey: "ep-1"
+        ) == .waitForEvent, "release 不得绕过当前单向拨号仲裁")
+        expect(deferredArbitration.phase == .waitingForEvent,
+               "不可拨一端必须等待入站事件")
+
+        var deferredEndpoint = Coordinator()
+        deferredEndpoint.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(endpointDeferredToken) = deferredEndpoint.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) else { fail("deferred endpoint 测试需要 token") }
+        expect(deferredEndpoint.deferDial(endpointDeferredToken),
+               "endpoint 变化前应成功 deferred")
+        guard case let .dial(latestEndpointToken) = deferredEndpoint.resumeDeferredRecovery(
+            endpointDeferredToken,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-2"
+        ) else { fail("release 必须经 coordinator 切换到最新 endpoint") }
+        expect(latestEndpointToken.endpointKey == "ep-2",
+               "deferred release 不得拨旧 endpoint")
+
         let exhaustedGeneration = c.generation
         expect(c.unexpectedDrop(
             pathSatisfied: true, canDial: true, endpointKey: "ep-1"

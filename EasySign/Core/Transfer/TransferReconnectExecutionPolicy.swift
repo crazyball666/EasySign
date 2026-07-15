@@ -70,7 +70,7 @@ enum TransferReconnectExecutionPolicy {
     enum AutomaticDialDecision: Equatable {
         case start
         case ignore
-        case finishCurrentAttempt
+        case deferCurrentAttempt
         case targetChanged
         case targetUnavailable
         case waitForEvent
@@ -106,12 +106,32 @@ enum TransferReconnectExecutionPolicy {
         currentEndpointKey: String?
     ) -> AutomaticDialDecision {
         guard tokenAccepted else { return .ignore }
-        if busy || hasActiveConnection { return .finishCurrentAttempt }
+        if busy || hasActiveConnection { return .deferCurrentAttempt }
         guard pathSatisfied else { return .waitForEvent }
         guard currentPeer == token.peer else { return .targetUnavailable }
         guard let currentEndpointKey else { return .targetUnavailable }
         guard currentEndpointKey == token.endpointKey else { return .targetChanged }
         return .start
+    }
+
+    static func mayResumeDeferredRecovery(
+        tokenAccepted: Bool,
+        servicesRunning: Bool,
+        userStopped: Bool,
+        busy: Bool,
+        hasActiveConnection: Bool,
+        hasActivePairing: Bool,
+        hasActivePairingConnection: Bool,
+        hasBoundConnection: Bool
+    ) -> Bool {
+        tokenAccepted
+            && servicesRunning
+            && !userStopped
+            && !busy
+            && !hasActiveConnection
+            && !hasActivePairing
+            && !hasActivePairingConnection
+            && !hasBoundConnection
     }
 
     static func readyPeerMatches(

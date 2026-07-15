@@ -11,6 +11,7 @@ struct TransferReconnectCoordinator {
     enum Phase: Equatable {
         case inactive
         case dialing(Token)
+        case deferred(Token)
         case waiting(Token)
         case waitingForEvent
     }
@@ -98,6 +99,36 @@ struct TransferReconnectCoordinator {
         return .schedule(next, delay: Self.delays[nextAttempt])
     }
 
+    @discardableResult
+    mutating func deferDial(_ token: Token) -> Bool {
+        guard accepts(token), phase == .dialing(token) else { return false }
+        phase = .deferred(token)
+        return true
+    }
+
+    var deferredToken: Token? {
+        guard case let .deferred(token) = phase else { return nil }
+        return token
+    }
+
+    mutating func resumeDeferredRecovery(
+        _ token: Token,
+        pathSatisfied: Bool,
+        canDial: Bool,
+        endpointKey: String?
+    ) -> Command {
+        guard accepts(token),
+              phase == .deferred(token),
+              target == token.peer,
+              allowsInbound(token.peer) else { return .none }
+        return beginRecovery(
+            peer: token.peer,
+            pathSatisfied: pathSatisfied,
+            canDial: canDial,
+            endpointKey: endpointKey
+        )
+    }
+
     mutating func delayElapsed(_ token: Token) -> Command {
         guard accepts(token), phase == .waiting(token) else { return .none }
         phase = .dialing(token)
@@ -139,7 +170,9 @@ struct TransferReconnectCoordinator {
         guard token.generation == generation else { return false }
 
         switch phase {
-        case let .dialing(current), let .waiting(current):
+        case let .dialing(current),
+             let .deferred(current),
+             let .waiting(current):
             return current == token
         case .inactive, .waitingForEvent:
             return false

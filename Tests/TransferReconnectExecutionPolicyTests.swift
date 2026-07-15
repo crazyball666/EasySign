@@ -233,8 +233,8 @@ struct TransferReconnectExecutionPolicyTests {
             pathSatisfied: true,
             currentPeer: nil,
             currentEndpointKey: nil
-        ) == .finishCurrentAttempt,
-        "current token 被 pairing busy 阻挡时必须完成本 attempt，而非留在 dialing")
+        ) == .deferCurrentAttempt,
+        "current token 被 pairing busy 阻挡时必须 deferred，不能消耗网络 attempt")
         expect(Policy.automaticDialDecision(
             token: busyToken0,
             tokenAccepted: busyDialCoordinator.accepts(busyToken0),
@@ -243,8 +243,8 @@ struct TransferReconnectExecutionPolicyTests {
             pathSatisfied: true,
             currentPeer: peerRef,
             currentEndpointKey: "ep-1"
-        ) == .finishCurrentAttempt,
-        "current token 被 activeConn 阻挡时也必须完成本 attempt")
+        ) == .deferCurrentAttempt,
+        "current token 被临时 activeConn 阻挡时也必须 deferred")
         expect(Policy.automaticDialDecision(
             token: busyToken0,
             tokenAccepted: busyDialCoordinator.accepts(busyToken0),
@@ -273,42 +273,103 @@ struct TransferReconnectExecutionPolicyTests {
             currentEndpointKey: nil
         ) == .targetUnavailable, "peer/endpoint 真正缺失时必须等待新发现事件")
 
+        expect(busyDialCoordinator.deferDial(busyToken0),
+               "current dialing token 必须能进入 deferred phase")
         var startedAutomaticDials = 0
-        guard case let .schedule(busyToken1, busyDelay1) = busyDialCoordinator.attemptFailed(busyToken0)
-        else { fail("pairing busy 必须推进剩余退避") }
-        expect(busyDelay1 == 2, "首次 busy 应进入 2s 退避")
-        guard case .dial = busyDialCoordinator.delayElapsed(busyToken1) else {
-            fail("2s 到点必须重新评估 current token")
+        for _ in 0..<(Coordinator.delays.count + 3) {
+            expect(busyDialCoordinator.recoveryEvent(
+                pathSatisfied: true,
+                canDial: true,
+                busy: true,
+                endpointKey: "ep-1"
+            ) == .none, "busy 超过全部旧退避窗口也不得产生 timer/dial")
+            expect(busyDialCoordinator.deferredToken == busyToken0,
+                   "busy 持续期间必须保留 exact deferred token")
+            expect(busyDialCoordinator.deferredToken?.attempt == 0,
+                   "未实际拨号不得消耗 attempt budget")
         }
-        expect(Policy.automaticDialDecision(
-            token: busyToken1,
-            tokenAccepted: busyDialCoordinator.accepts(busyToken1),
-            busy: true,
-            hasActiveConnection: false,
-            pathSatisfied: true,
-            currentPeer: nil,
-            currentEndpointKey: nil
-        ) == .finishCurrentAttempt, "pairing 尚未释放时继续推进有限退避")
         expect(startedAutomaticDials == 0, "busy 期间不得发起并发自动拨号")
 
-        guard case let .schedule(busyToken2, busyDelay2) = busyDialCoordinator.attemptFailed(busyToken1)
-        else { fail("第二次 busy 仍应保留后续恢复机会") }
-        expect(busyDelay2 == 5, "第二次 busy 应进入 5s 退避")
-        guard case .dial = busyDialCoordinator.delayElapsed(busyToken2) else {
-            fail("5s 到点必须重新评估 current token")
-        }
-        expect(Policy.automaticDialDecision(
-            token: busyToken2,
-            tokenAccepted: busyDialCoordinator.accepts(busyToken2),
+        guard case let .dial(resumedBusyToken) = busyDialCoordinator.resumeDeferredRecovery(
+            busyToken0,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-1"
+        ) else { fail("pairing 失败释放后必须恢复一次") }
+        startedAutomaticDials += 1
+        expect(resumedBusyToken.attempt == 0,
+               "deferred 释放后首次实际拨号仍必须是 attempt 0")
+        expect(resumedBusyToken.generation != busyToken0.generation,
+               "deferred 释放必须开启新 generation，隔离迟到回调")
+        expect(busyDialCoordinator.resumeDeferredRecovery(
+            busyToken0,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-1"
+        ) == .none, "同一 release/token 只能恢复一次")
+        expect(startedAutomaticDials == 1,
+               "busy 失败释放后只能启动一个自动拨号")
+
+        expect(Policy.mayResumeDeferredRecovery(
+            tokenAccepted: true,
+            servicesRunning: true,
+            userStopped: false,
             busy: false,
             hasActiveConnection: false,
-            pathSatisfied: true,
-            currentPeer: peerRef,
-            currentEndpointKey: "ep-1"
-        ) == .start, "pairing 释放后同 endpoint 的 current token 必须恢复拨号")
-        startedAutomaticDials += 1
-        expect(startedAutomaticDials == 1,
-               "busy 释放后只能启动一个自动拨号")
+            hasActivePairing: false,
+            hasActivePairingConnection: false,
+            hasBoundConnection: false
+        ), "未绑定临时会话完全释放后应允许消费 deferred token")
+        expect(!Policy.mayResumeDeferredRecovery(
+            tokenAccepted: false,
+            servicesRunning: true,
+            userStopped: false,
+            busy: false,
+            hasActiveConnection: false,
+            hasActivePairing: false,
+            hasActivePairingConnection: false,
+            hasBoundConnection: false
+        ), "stale deferred token 不得恢复")
+        expect(!Policy.mayResumeDeferredRecovery(
+            tokenAccepted: true,
+            servicesRunning: false,
+            userStopped: false,
+            busy: false,
+            hasActiveConnection: false,
+            hasActivePairing: false,
+            hasActivePairingConnection: false,
+            hasBoundConnection: false
+        ), "stop 后服务未运行不得恢复")
+        expect(!Policy.mayResumeDeferredRecovery(
+            tokenAccepted: true,
+            servicesRunning: true,
+            userStopped: true,
+            busy: false,
+            hasActiveConnection: false,
+            hasActivePairing: false,
+            hasActivePairingConnection: false,
+            hasBoundConnection: false
+        ), "用户 stop/disconnect 后不得恢复")
+        expect(!Policy.mayResumeDeferredRecovery(
+            tokenAccepted: true,
+            servicesRunning: true,
+            userStopped: false,
+            busy: false,
+            hasActiveConnection: true,
+            hasActivePairing: false,
+            hasActivePairingConnection: false,
+            hasBoundConnection: true
+        ), "成功 bound/active connection 必须由自身 drop 管理，不得恢复 deferred")
+        expect(!Policy.mayResumeDeferredRecovery(
+            tokenAccepted: true,
+            servicesRunning: true,
+            userStopped: false,
+            busy: true,
+            hasActiveConnection: false,
+            hasActivePairing: true,
+            hasActivePairingConnection: true,
+            hasBoundConnection: false
+        ), "pairing 尚未完全释放不得提前恢复")
 
         expect(Policy.actions(for: .pathUnavailable) == [
             .cancelRecovery,
