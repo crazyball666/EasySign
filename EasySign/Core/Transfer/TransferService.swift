@@ -1463,17 +1463,24 @@ final class TransferService: ObservableObject {
         executeReconnect(command)
     }
 
-    private func executeReconnect(_ command: TransferReconnectCoordinator.Command) {
+    private func executeReconnect(
+        _ command: TransferReconnectCoordinator.Command,
+        preserveConnectionState: Bool = false
+    ) {
         switch command {
         case .none:
             return
         case .waitForEvent:
             cancelReconnectScheduling()
-            showWaitingForRecovery(nil)
+            if !preserveConnectionState {
+                showWaitingForRecovery(nil)
+            }
         case let .schedule(token, delay):
             cancelReconnectScheduling()
             reconnectScheduledToken = token
-            connectionState = .failed("连接断开，等待自动恢复…")
+            if !preserveConnectionState {
+                connectionState = .failed("连接断开，等待自动恢复…")
+            }
             let work = DispatchWorkItem { [weak self] in
                 guard let self,
                       self.reconnectScheduledToken == token else { return }
@@ -1494,7 +1501,7 @@ final class TransferService: ObservableObject {
             }
             let currentEndpointKey = target?.reconnectEndpointKey
             let tokenAccepted = reconnectCoordinator.accepts(token)
-            guard TransferReconnectExecutionPolicy.mayStartAutomatic(
+            let decision = TransferReconnectExecutionPolicy.automaticDialDecision(
                 token: token,
                 tokenAccepted: tokenAccepted,
                 busy: connectionState.isBusy,
@@ -1502,17 +1509,32 @@ final class TransferService: ObservableObject {
                 pathSatisfied: networkPathSatisfied == true,
                 currentPeer: currentPeer,
                 currentEndpointKey: currentEndpointKey
-            ) else {
-                if tokenAccepted,
-                   !connectionState.isBusy,
-                   activeConn == nil,
-                   networkPathSatisfied == true,
-                   (currentPeer != token.peer || currentEndpointKey != token.endpointKey) {
-                    reconnectCoordinator.peerBecameUnavailable()
-                    cleanupUnboundAutomaticAttempt()
-                    showWaitingForRecovery("等待设备重新出现")
-                }
+            )
+            switch decision {
+            case .ignore:
                 return
+            case .finishCurrentAttempt:
+                executeReconnect(
+                    reconnectCoordinator.attemptFailed(token),
+                    preserveConnectionState: true
+                )
+                return
+            case .targetChanged:
+                reconnectCoordinator.peerBecameUnavailable()
+                cleanupUnboundAutomaticAttempt()
+                requestAutomaticRecovery()
+                return
+            case .targetUnavailable:
+                reconnectCoordinator.peerBecameUnavailable()
+                cleanupUnboundAutomaticAttempt()
+                showWaitingForRecovery("等待设备重新出现")
+                return
+            case .waitForEvent:
+                reconnectCoordinator.networkUnavailable()
+                showWaitingForRecovery("网络不可用，等待网络恢复")
+                return
+            case .start:
+                break
             }
             guard let target else { return }
             logger.log(.info, tool: "transfer", "自动重连(免码)→ \(target.name), attempt \(token.attempt)")
