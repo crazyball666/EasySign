@@ -42,7 +42,9 @@ struct TransferBonjourEndpointTests {
         server.onConnection = { conn in
             if serverConn.value == nil { serverConn.set(conn); serverConnSem.signal() }
         }
-        server.advertiseInfo = (deviceId: serverDeviceId, name: "ServerMac", fingerprint: idB.fingerprint)
+        server.setAdvertiseInfo((deviceId: serverDeviceId,
+                                 name: "ServerMac",
+                                 fingerprint: idB.fingerprint))
         try server.start()
         expect(waitUntil(timeout: 10) { server.port != nil }, "server bound a port")
         server.setAdvertising(true)

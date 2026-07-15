@@ -115,11 +115,19 @@ static let allTools: [any Tool] = [ ResignTool(), QRCodeTool(), DevicesTool(), T
 - **门面**:`TransferService`(`ObservableObject`),UI 唯一入口。
 - **UI**:`TransferToolView` 只读 `@ObservedObject` 的 published 状态、调 `connect()` 等,**碰不到 `NWConnection`**(好边界)。
 
-**信任与重连不变量**(改 `maybeAutoReconnect` / 配对逻辑前必读 `CLAUDE.md` 对应段):首配用 6 位码 + HMAC 绑定证书指纹;已配对**免码**,靠 TLS 证书指纹钉扎;双方重新发现时**只有 deviceId 较小的一端拨号**以避免连接 glare;睡醒/回前台自愈监听并重广播 Bonjour。
+**信任与重连不变量**(改 `TransferReconnectCoordinator` / 配对逻辑前必读 `CLAUDE.md` 对应段):首配用 6 位码 + HMAC 绑定证书指纹;已配对**免码**,靠 TLS 证书指纹钉扎。自动恢复由意外断线、睡醒/回前台、网络首次可用或恢复、匹配 Bonjour 设备出现或 change token 变化驱动;每个 generation 只按 **0/2/5/10 秒**尝试,四次失败后进入无 timer 的等待状态,直到新的有效事件重开周期。同一 endpoint 的重复发现不会重置活动周期。
+
+`TransferReconnectCoordinator` 是纯状态机,`TransferReconnectExecutionPolicy` 固定服务动作顺序和门禁,`TransferNetworkMonitor`/`PeerDiscovery` 提供路径转换与带 generation/change token 的事件。其关键约束是:
+
+- 只有 deviceId 较小的一端主动拨号;较大端只修复 listener/Bonjour 并等待入站,不能用保存的手动 IP 绕过仲裁。网络 path 未知/不可用或当前 Bonjour endpoint 缺失时均不自动拨号。
+- 自动 token 同时绑定 generation、attempt、预期 `PeerRef`(deviceId + fingerprint)与 discovery token;每次拨号从最新 snapshot 解析 endpoint,TLS ready 后再次核对身份。用户 Connect/Retry 会取消定时任务并推进 generation;忙碌导致的 deferred recovery 保留原 token/attempt,不消耗尝试次数;旧回调只能清理自己的连接实例。
+- 睡醒/网络恢复先修 listener,非隐身模式下重声明 Bonjour,再重启 discovery,最后才请求恢复;Bonjour 重声明有独立 3 秒去抖,旧 browser generation 回调会被拒绝。
+- 自动连接永远不带配对码。成功绑定后,手动 Retry 保留用户明确选择的 peer 或 host/port,但改走免码路径;手动 IP 仅能由用户显式触发。
+- 主动断开先使 recovery generation 失效,再发送 best-effort `.bye`,并把当前 `PeerRef` 加入本机抑制集合;即使 `.bye` 丢失也拒绝该设备后续免码入站,直到本机显式 Connect/Retry 或清除配对。对端 `.bye` 只停止目标恢复,不建立本机抑制。
 
 **并发**:全手写 GCD —— 每连接一个串行队列 + `NSLock`,`TransferServer` 把状态收敛在自己的串行队列,`TransferService` 靠遍布的 `DispatchQueue.main.async` 隐式主线程收敛。无 actor / async-await。
 
-> ⚠️ `TransferService` 目前是 929 行的门面上帝对象(把连接状态机 + 3 条重连路径全吸进去),见 §7。
+> ⚠️ 自动重连状态与纯门禁已抽到 coordinator/policy,但 `TransferService` 仍是大型门面,负责 Network.framework 回调、连接生命周期、配对与文件传输编排,见 §7。
 
 ### 3.3 设备(`Core/Devices` + `Features/Devices`)
 
@@ -206,7 +214,7 @@ swiftc -o /tmp/t EasySign/Core/Transfer/*.swift Tests/TransferLoopbackTests.swif
 
 **C · 大重构(等它真正付利息)**
 - 引入 `ResignBackend` 协议(`func resign(...) throws -> URL`)+ `AppleResigner` / `ZSignResigner` 策略,把 `updateEntitlements` / `verifyZSignCandidate` 归位;统一 3 套 Mach-O 解析器与 3 套 IPA 解包。
-- 拆 `TransferService`(929 行门面上帝对象):抽出连接状态机 / 重连协调器。
+- 继续拆 `TransferService`:重连协调器与执行门禁已抽出,后续可再分离连接生命周期、配对和文件传输编排。
 - DI 收口:要么把 Devices 全量收进 `ServiceHub`(走 `hub.device`、强制 `requiredServices`),要么拆掉这套无人执行的清单仪式。
 - 收敛持久化:多个功能绕开 `SettingsStore` 直写 `UserDefaults`;P12 密码目前明文存 `UserDefaults`,应挪进 `KeychainService`。
 
