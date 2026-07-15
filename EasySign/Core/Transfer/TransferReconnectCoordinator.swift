@@ -41,6 +41,7 @@ struct TransferReconnectCoordinator {
         canDial: Bool,
         endpointKey: String?
     ) -> Command {
+        guard phase == .inactive else { return .none }
         guard let target, allowsInbound(target) else { return .none }
         return beginRecovery(
             peer: target,
@@ -135,9 +136,14 @@ struct TransferReconnectCoordinator {
     }
 
     func accepts(_ token: Token) -> Bool {
-        token.generation == generation
-            && token.peer == target
-            && token.endpointKey == endpointKey
+        guard token.generation == generation else { return false }
+
+        switch phase {
+        case let .dialing(current), let .waiting(current):
+            return current == token
+        case .inactive, .waitingForEvent:
+            return false
+        }
     }
 
     mutating func stop() {

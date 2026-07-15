@@ -1,3 +1,6 @@
+// swiftc -module-cache-path /tmp/easysign-swift-module-cache EasySign/Core/Transfer/TransferModels.swift EasySign/Core/Transfer/TransferAutoReconnect.swift EasySign/Core/Transfer/TransferReconnectCoordinator.swift Tests/TransferReconnectCoordinatorTests.swift -o /tmp/transfer-reconnect-coordinator
+// /tmp/transfer-reconnect-coordinator
+
 import Foundation
 
 @main
@@ -18,9 +21,14 @@ struct TransferReconnectCoordinatorTests {
         let second = c.attemptFailed(t0)
         guard case let .schedule(t1, delay) = second else { fail("首次失败应安排第二次") }
         expect(t1.attempt == 1 && delay == 2, "第二次应延迟 2 秒")
+        expect(!c.accepts(t0), "进入下一 attempt 后旧 t0 必须失效")
+        expect(c.accepts(t1), "waiting 状态必须接受当前 t1")
         expect(c.delayElapsed(t1) == .dial(t1), "2 秒到点后应拨号")
+        expect(c.accepts(t1), "delayElapsed 后 dialing 状态仍应接受当前 t1")
 
         guard case let .schedule(t2, d2) = c.attemptFailed(t1) else { fail("第二次失败应继续") }
+        expect(!c.accepts(t1), "进入 t2 后旧 t1 必须失效")
+        expect(c.accepts(t2), "waiting 状态必须接受当前 t2")
         expect(t2.attempt == 2, "第三次 attempt 应为 2")
         expect(d2 == 5, "第三次应延迟 5 秒")
         expect(c.delayElapsed(t2) == .dial(t2), "第三次到点后应拨号")
@@ -29,6 +37,26 @@ struct TransferReconnectCoordinatorTests {
         expect(d3 == 10, "第四次应延迟 10 秒")
         expect(c.delayElapsed(t3) == .dial(t3), "第四次到点后应拨号")
         expect(c.attemptFailed(t3) == .waitForEvent, "四次失败后必须停止定时重试")
+        expect(!c.accepts(t3), "进入 waitingForEvent 后最后一个 token 必须失效")
+
+        var duplicateDrop = Coordinator()
+        duplicateDrop.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(d0) = duplicateDrop.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) else { fail("首次 drop 应开启恢复周期") }
+        let activeGeneration = duplicateDrop.generation
+        expect(duplicateDrop.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) == .none, "活动恢复周期内重复 drop 必须幂等")
+        expect(duplicateDrop.generation == activeGeneration, "重复 drop 不得推进 generation")
+        expect(duplicateDrop.accepts(d0), "重复 drop 后首个 token 必须仍有效")
+
+        let exhaustedGeneration = c.generation
+        expect(c.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) == .none, "重试耗尽后重复 drop 不得重开预算")
+        expect(c.generation == exhaustedGeneration, "耗尽后的重复 drop 不得推进 generation")
+        expect(c.phase == .waitingForEvent, "耗尽后的重复 drop 必须保留 waitingForEvent")
 
         let fresh = c.recoveryEvent(pathSatisfied: true, canDial: true, busy: false, endpointKey: "ep-1")
         guard case let .dial(freshToken) = fresh else { fail("新的恢复事件应重开周期") }
@@ -99,6 +127,12 @@ struct TransferReconnectCoordinatorTests {
         expect(newToken.endpointKey == "ep-2", "新 token 必须绑定变化后的 endpoint")
         expect(newToken.generation != oldToken.generation, "endpoint 变化必须开启新 generation")
         expect(!c.accepts(oldToken), "endpoint 变化后旧连接/超时回调必须失效")
+        let changedGeneration = c.generation
+        expect(c.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) == .none, "endpoint 切换后迟到的旧 drop 不得破坏新周期")
+        expect(c.generation == changedGeneration, "迟到 drop 不得推进新周期 generation")
+        expect(c.accepts(newToken), "迟到 drop 后新 endpoint token 必须仍有效")
 
         var cannotDial = Coordinator()
         cannotDial.connected(to: peer, endpointKey: "ep-2")
@@ -110,6 +144,49 @@ struct TransferReconnectCoordinatorTests {
         expect(missingEndpoint.unexpectedDrop(
             pathSatisfied: true, canDial: true, endpointKey: nil as String?
         ) == .waitForEvent, "没有 endpoint 时必须等待新事件")
+
+        var unavailable = Coordinator()
+        unavailable.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(unavailableToken) = unavailable.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) else { fail("peer 消失测试需要有效 token") }
+        let unavailableGeneration = unavailable.generation
+        unavailable.peerBecameUnavailable()
+        expect(unavailable.generation != unavailableGeneration, "peer 消失必须推进 generation")
+        expect(unavailable.target == peer, "peer 消失后必须保留恢复 target")
+        expect(unavailable.endpointKey == nil, "peer 消失后必须清除 endpoint")
+        expect(unavailable.phase == .waitingForEvent, "peer 消失后必须等待新事件")
+        expect(!unavailable.accepts(unavailableToken), "peer 消失后旧 token 必须失效")
+
+        var saidBye = Coordinator()
+        saidBye.connected(to: peer, endpointKey: "ep-1")
+        saidBye.peerSaidBye(peer)
+        expect(saidBye.target == nil && saidBye.endpointKey == nil,
+               "peer .bye 必须清除对应 target 与 endpoint")
+        expect(saidBye.phase == .inactive, "peer .bye 后自动恢复必须 inactive")
+        expect(saidBye.allowsInbound(peer), "peer .bye 不得加入本机 suppression")
+
+        var cancelled = Coordinator()
+        cancelled.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(cancelledToken) = cancelled.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) else { fail("取消自动恢复测试需要有效 token") }
+        cancelled.cancelAutomaticRecovery()
+        expect(!cancelled.accepts(cancelledToken), "取消自动恢复后旧 token 必须失效")
+        expect(cancelled.phase == .inactive, "取消自动恢复后 phase 必须 inactive")
+        expect(cancelled.target == peer && cancelled.endpointKey == "ep-1",
+               "取消自动恢复不得清除 target 或 endpoint")
+
+        var stopped = Coordinator()
+        stopped.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(stoppedToken) = stopped.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ) else { fail("stop 测试需要有效 token") }
+        stopped.stop()
+        expect(stopped.target == nil && stopped.endpointKey == nil,
+               "stop 必须清除 target 与 endpoint")
+        expect(stopped.phase == .inactive, "stop 后 phase 必须 inactive")
+        expect(!stopped.accepts(stoppedToken), "stop 后旧 token 必须失效")
 
         print("ALL PASS")
     }
