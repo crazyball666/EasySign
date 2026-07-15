@@ -1,203 +1,203 @@
-# Transfer Event-Driven Auto-Reconnect Design
+# 互传事件驱动自动重连设计
 
-## Context
+## 背景
 
-EasySign already persists paired peers by device ID and TLS certificate fingerprint. A reconnect between paired devices therefore does not need a six-digit pairing code. The current reconnect implementation nevertheless wedges after the first failed fast retry: `scheduleReconnect()` clears `wasConnected`, the failed attempt cannot schedule the next retry, and `maybeAutoReconnect()` rejects attempts 1 and 2. Wake handling can also return while the connection still has a stale `.connected` or `.connecting` state, before repairing the listener and Bonjour discovery.
+EasySign 已按设备 ID 和 TLS 证书指纹持久化已配对设备，因此已配对设备重连时不需要再次输入 6 位配对码。但当前重连逻辑在第一次快速重试失败后会卡死：`scheduleReconnect()` 把 `wasConnected` 清为 `false`，失败的重连无法安排下一次尝试，而 `maybeAutoReconnect()` 又会拒绝第 1、2 次重连阶段。睡醒处理还可能在连接状态仍残留为 `.connected` 或 `.connecting` 时提前返回，导致监听器和 Bonjour 发现没有被修复。
 
-The desired behavior is automatic recovery after sleep or a network interruption, without indefinite background polling and without requiring the user to click Retry.
+目标是在休眠结束或网络恢复后自动恢复连接，不做无限后台轮询，也不要求用户点击“重试”。
 
-## Goals
+## 目标
 
-- Reconnect paired devices automatically after system wake, network restoration, or matching-peer rediscovery.
-- Use event-driven recovery rather than an unbounded periodic retry loop.
-- Tolerate the short interval in which the local network is reported available but Bonjour or the peer listener is not ready yet.
-- Preserve deterministic one-way dial arbitration: only the device with the smaller device ID initiates a reconnect.
-- Keep user-initiated Disconnect authoritative.
-- Reconnect without reading, rotating, or transmitting a pairing code.
-- Prevent stale timeout or connection callbacks from changing the state of a newer connection.
+- 系统睡醒、网络恢复或已配对设备重新被发现后，自动恢复连接。
+- 使用事件驱动恢复，不运行无限定时重试。
+- 容忍系统已报告网络可用，但 Bonjour 或对端监听器尚未完全恢复的短暂时间差。
+- 保持确定性的单向拨号仲裁：只有 deviceId 较小的一端主动重连。
+- 尊重用户主动点击“断开”的意图。
+- 自动重连不读取、不轮换、也不传输配对码。
+- 防止旧连接的超时或状态回调破坏新连接。
 
-## Non-Goals
+## 非目标
 
-- Automatically reconnecting after the EasySign process is terminated and relaunched. `lastConnectedPeer` remains an app-lifetime value.
-- Guaranteeing automatic recovery for a manual-IP-only session when the device that owns dial arbitration does not know the peer's current listener endpoint. Reliable automatic recovery requires Bonjour reachability.
-- Changing the pairing protocol, persisted peer format, TLS identity format, or certificate fingerprint trust model.
-- Maintaining an infinite retry timer while the peer or network remains unavailable.
-- Redesigning the Transfer UI.
+- EasySign 进程退出并重新启动后的自动重连；`lastConnectedPeer` 仍只在本次 App 生命周期内有效。
+- 当负责拨号仲裁的一端不知道对端当前监听地址时，保证纯手动 IP 会话自动恢复。可靠的自动恢复需要 Bonjour 可达。
+- 修改配对协议、已配对设备持久化格式、TLS 身份格式或证书指纹信任模型。
+- 在网络或对端持续不可用时无限定时重试。
+- 重做互传界面。
 
-## Considered Approaches
+## 方案对比
 
-### 1. Pure one-shot event recovery
+### 方案一：每个恢复事件只尝试一次
 
-Wake, path restoration, or peer discovery causes one reconnect attempt. This is simple, but it is vulnerable to normal recovery races: `NWPath` can become satisfied before Wi-Fi multicast DNS or the peer listener is ready.
+系统睡醒、网络恢复或发现设备时只尝试连接一次。实现简单，但容易受到正常恢复时序影响：`NWPath` 可能先变成可用，Wi-Fi 组播 DNS 或对端监听器稍后才恢复。
 
-### 2. Event-driven recovery with a bounded settling window — selected
+### 方案二：事件驱动 + 有限恢复窗口（采用）
 
-A recovery event starts a finite cycle with delays `[0, 2, 5, 10]` seconds. Attempts run only while the path is satisfied, the matching paired peer remains valid, and this device wins dial arbitration. After four unsuccessful attempts, all timers stop and the service waits for a new wake, path, discovery, or inbound-connection event.
+恢复事件启动一次有限重连周期，延迟序列为 `[0, 2, 5, 10]` 秒。只有在网络可用、匹配的已配对设备仍有效、且本机赢得拨号仲裁时才尝试连接。四次均失败后取消所有定时任务，等待下一次睡醒、网络变化、设备发现或入站连接事件。
 
-This handles network-settling races without creating indefinite background activity.
+这个方案能覆盖网络恢复的时间差，同时不会产生无限后台活动。
 
-### 3. Infinite exponential retry
+### 方案三：无限指数退避
 
-Retry forever with a capped interval. This eventually reconnects without another event, but creates unnecessary wakeups, connection noise, and logs when a peer is intentionally offline. It is not selected.
+使用封顶间隔无限重试。它能在没有新事件时最终连上，但对端长期离线时会制造不必要的系统唤醒、连接请求和日志，因此不采用。
 
-## Architecture
+## 架构
 
 ### `TransferReconnectCoordinator`
 
-Add a small pure-logic coordinator under `Core/Transfer`. It owns recovery-cycle state and decisions, but does not import AppKit, create `NWConnection` objects, or schedule GCD work itself.
+在 `Core/Transfer` 下新增一个纯逻辑的重连协调器。它负责保存恢复周期状态并产生决策，但不导入 AppKit、不创建 `NWConnection`，也不直接安排 GCD 定时任务。
 
-Inputs:
+输入事件：
 
-- unexpected active-connection drop;
-- system wake or app activation;
-- path transition from non-satisfied to satisfied;
-- matching Bonjour peer appearance or endpoint change;
-- reconnect attempt success or failure;
-- inbound connection success;
-- user Disconnect/Stop.
+- 活动连接意外断开；
+- 系统睡醒或 App 重新活跃；
+- 网络路径从不可用变为可用；
+- 匹配的 Bonjour 设备出现或地址变化；
+- 重连尝试成功或失败；
+- 入站连接成功；
+- 用户主动断开或停止服务。
 
-State:
+内部状态：
 
-- last connected `PeerRef`;
-- whether automatic recovery is permitted;
-- recovery generation;
-- current attempt index in `[0, 2, 5, 10]`;
-- whether an attempt or delayed attempt is active;
-- whether the service is waiting for a new external event.
-- the last matching Bonjour endpoint token, so a real endpoint change can start a new cycle without treating duplicate result callbacks as new events.
+- 最后连接设备的 `PeerRef`；
+- 当前是否允许自动恢复；
+- 恢复周期 generation；
+- `[0, 2, 5, 10]` 中的当前尝试序号；
+- 当前是否正在拨号或等待下一次有限重试；
+- 当前是否已停止计时并等待新的外部事件；
+- 最近一次匹配的 Bonjour 地址标识，用于区分真正的地址变化和重复发现回调。
 
-Outputs/actions:
+输出动作：
 
-- repair reachability infrastructure;
-- refresh discovery;
-- reassert Bonjour advertising;
-- dial now;
-- schedule the next bounded delay;
-- cancel the current recovery generation;
-- wait for another external event.
+- 修复本机可达性基础设施；
+- 刷新设备发现；
+- 重新声明 Bonjour 广播；
+- 立即拨号；
+- 安排下一次有限延迟；
+- 取消当前恢复 generation；
+- 停止计时并等待新的外部事件。
 
-`TransferService` remains responsible for executing these actions and mapping them to published UI state.
+`TransferService` 继续负责执行这些动作，并把结果映射到对外发布的 UI 状态。
 
-### Service-lifetime network path monitor
+### App 生命周期级网络路径监听
 
-Add a Core-level network path observer owned by `TransferService`. The existing `TransferNetworkPathObserver` in `Features/Transfer` is display-only and stops when the view disappears, so it cannot drive recovery.
+新增一个由 `TransferService` 持有的 Core 层网络路径监听器。当前 `Features/Transfer` 中的 `TransferNetworkPathObserver` 只用于界面展示，而且界面消失时会停止，不能驱动连接恢复。
 
-Only a transition into `.satisfied` is a reconnect event. Repeated satisfied updates for the same effective path must not continually restart a cycle. An unsatisfied transition cancels pending dial timers but retains the last peer as the recovery target.
+只有网络状态进入 `.satisfied` 才构成重连事件。同一有效网络路径的重复 satisfied 更新不能反复重启恢复周期。路径变为不可用时取消待执行的拨号定时任务，但保留最后连接设备作为后续恢复目标。
 
-### Listener and discovery repair
+### 监听器与设备发现修复
 
-Wake and path-restored handling must repair infrastructure before consulting `connectionState`:
+系统睡醒和网络恢复时，必须先修复基础设施，再检查 `connectionState`：
 
-1. ask `TransferServer` to rebuild a terminal listener;
-2. reassert Bonjour advertising when stealth mode is off;
-3. restart `PeerDiscovery` with a new browser generation;
-4. ignore callbacks from superseded browser generations;
-5. request recovery if the old active connection has already terminated.
+1. 要求 `TransferServer` 重建已经进入终态的监听器；
+2. 非隐身模式下重新声明 Bonjour 广播；
+3. 使用新的 browser generation 重启 `PeerDiscovery`；
+4. 忽略已被替代的旧 browser generation 回调；
+5. 如果旧活动连接已经终止，请求自动恢复。
 
-Infrastructure repair is safe while an old connection still reports `.connected`: the busy connection prevents a dial, but listener/discovery recovery is not skipped.
+即使旧连接仍暂时显示 `.connected`，修复基础设施也是安全的：忙碌状态会阻止拨号，但不能因此跳过监听和发现修复。
 
-`PeerDiscovery` should report terminal browser failure or restart itself so that a failed browser cannot remain silent indefinitely.
+`PeerDiscovery` 需要报告浏览器终态失败或自行重建，避免浏览器失败后永久静默。
 
-## Reconnect Flow
+## 重连流程
 
-### Unexpected disconnect
+### 非主动断线
 
-1. Clear the dropped `activeConn`, transfer progress, connection timeout, and per-connection handlers exactly once.
-2. Preserve `lastConnectedPeer` and mark automatic recovery permitted.
-3. If the network path is unavailable, publish a waiting/failure message and do not schedule a dial.
-4. If the path is satisfied, repair advertising/discovery and evaluate dial arbitration.
-5. If this device has the smaller device ID and the matching paired peer is discoverable, start the bounded recovery cycle.
-6. If this device has the larger device ID, never dial; remain reachable and wait for the peer's inbound connection.
+1. 对断开的 `activeConn`、传输进度、连接超时和逐连接回调做一次且仅一次的清理。
+2. 保留 `lastConnectedPeer`，并允许自动恢复。
+3. 如果网络不可用，只发布等待状态，不安排拨号。
+4. 如果网络可用，修复广播和发现，然后执行拨号仲裁。
+5. 如果本机 deviceId 较小且能发现匹配的已配对设备，启动有限恢复周期。
+6. 如果本机 deviceId 较大，绝不主动拨号，只保持本机可达并等待对端连入。
 
-The original inbound/outbound direction does not decide who reconnects. Device-ID arbitration is the only dial ownership rule.
+原连接是入站还是出站不再决定重连责任，deviceId 仲裁是唯一的自动拨号归属规则。
 
-### Wake or path restoration
+### 系统睡醒或网络恢复
 
-1. Increment the infrastructure/discovery generation as needed and repair listener, advertising, and browser state.
-2. Do not rely on the old `connectionState`, because Network.framework may deliver its terminal callback after the wake notification.
-3. If the old connection later proves healthy, no dial occurs.
-4. If it terminates, the current recovery event and refreshed discovery results can start a bounded cycle immediately.
+1. 按需递增基础设施或 discovery generation，并修复监听器、广播和浏览器。
+2. 不能依赖旧 `connectionState`，因为 Network.framework 可能在睡醒通知之后才发送连接终态回调。
+3. 如果旧连接随后被证明仍然健康，不发起新连接。
+4. 如果旧连接终止，当前恢复事件和刷新后的发现结果可以立即启动有限恢复周期。
 
-### Matching peer discovery
+### 匹配设备重新出现
 
-- Match both device ID and certificate fingerprint.
-- Resolve the current Bonjour endpoint on every attempt rather than closing over a stale `DiscoveredPeer` value.
-- Treat the endpoint as part of the recovery snapshot even though the current `DiscoveredPeer.Equatable` compares only device ID and fingerprint. The implementation must either include `endpoint` in equality or derive an explicit endpoint token for coordinator input.
-- A peer appearance or endpoint change after attempts were exhausted is a new recovery event and starts a fresh bounded cycle.
-- Duplicate callbacks for an unchanged peer while a cycle is already dialing or waiting do not reset the attempt counter.
+- deviceId 和证书指纹必须同时匹配。
+- 每次尝试都重新解析当前 Bonjour endpoint，不能闭包捕获旧的 `DiscoveredPeer`。
+- 虽然当前 `DiscoveredPeer.Equatable` 只比较 deviceId 和指纹，但恢复快照必须包含 endpoint。实现时要么把 endpoint 纳入相等判断，要么给协调器传入独立的 endpoint 标识。
+- 有限尝试已耗尽后，设备重新出现或 endpoint 变化属于新的恢复事件，可以启动新周期。
+- 活动恢复周期中，同一 endpoint 的重复发现回调不能重置尝试次数。
 
-### Bounded attempt cycle
+### 有限尝试周期
 
-- Attempt 1 is immediate.
-- After failure, attempts 2–4 wait 2, 5, and 10 seconds respectively.
-- Before every delayed attempt, validate the recovery generation, path availability, pairing record, peer fingerprint, arbitration result, and lack of an active connection.
-- Success clears the cycle and returns to connected state.
-- Exhaustion cancels all retry work and publishes that EasySign is waiting for the next network/device recovery event.
-- A fresh qualifying event resets the attempt index and may start a new cycle.
+- 第一次立即尝试。
+- 失败后，第 2～4 次分别等待 2、5、10 秒。
+- 每次延迟尝试前，都重新验证恢复 generation、网络状态、配对记录、设备指纹、拨号仲裁结果以及当前没有活动连接。
+- 成功后清除恢复周期并进入已连接状态。
+- 四次全部失败后取消所有重试任务，并提示 EasySign 正在等待下一次网络或设备恢复事件。
+- 新的有效恢复事件会重置尝试序号，并可启动新周期。
 
-## Manual IP Compatibility
+## 手动 IP 兼容性
 
-Bonjour-discovered peers use a freshly resolved endpoint for each attempt. For an existing manual IP connection, the saved host/port may be retained as a user-initiated Retry fallback. If the same paired peer subsequently appears through Bonjour, automatic recovery uses the current Bonjour endpoint because a rebuilt listener may have a different port.
+经 Bonjour 发现的设备，每次尝试都使用最新解析的 endpoint。对于已有的手动 IP 连接，保存的 host/port 只作为用户主动点击“重试”时的后备地址。如果同一已配对设备随后通过 Bonjour 出现，自动恢复优先使用当前 Bonjour endpoint，因为监听器重建后端口可能变化。
 
-Automatic recovery never relaxes device-ID arbitration merely because one side has a saved manual endpoint. If the smaller device ID cannot discover a matching Bonjour endpoint, neither side starts an automatic dial. This includes manual-IP-only and stealth-mode sessions. Supporting those cases would require a stable endpoint or endpoint-handoff protocol and is outside this change. The optional manual Retry action remains explicit user intent and is not invoked by the automatic coordinator.
+自动恢复不能因为某一端保存了手动地址而破坏 deviceId 仲裁。如果 deviceId 较小的一端无法发现匹配的 Bonjour endpoint，则双方都不自动拨号；纯手动 IP 和隐身模式会话也遵守这个限制。完整支持这些情况需要稳定监听地址或连接期间的地址交换协议，不在本次改动范围内。可选的手动“重试”仍代表用户明确操作，自动协调器不会调用它。
 
-## User-Initiated Disconnect and Stop
+## 用户主动断开与停止服务
 
-`disconnect()` and `stop()` must:
+`disconnect()` 和 `stop()` 必须：
 
-- clear `lastConnectedPeer` as today;
-- disable automatic recovery;
-- increment the recovery generation;
-- cancel pending retry work;
-- preserve the `.bye` behavior so the peer also clears its auto-reconnect target.
-- on Disconnect, add the current peer's device ID and fingerprint to an app-lifetime local suppression set before sending `.bye`.
+- 和当前一样清除 `lastConnectedPeer`；
+- 禁止自动恢复；
+- 递增恢复 generation；
+- 取消待执行的重试任务；
+- 保留 `.bye` 行为，让对端也清除自动重连目标；
+- 用户点击“断开”时，在发送 `.bye` 前，把当前设备的 deviceId 和指纹加入 App 生命周期级的本机抑制集合。
 
-The suppression set closes the best-effort `.bye` gap: if `.bye` is lost and the remote peer later dials codeless, the local side rejects that inbound connection before `bindConnected`. An explicit local Connect/Retry to that peer removes its suppression entry. Clearing the paired peer removes the entry as well. No later wake, path, discovery, timeout, stale connection callback, or unsolicited inbound connection may restart a user-disconnected session.
+抑制集合用于弥补 `.bye` 的尽力而为语义：如果 `.bye` 丢失，远端稍后发起免码连接，本机必须在 `bindConnected` 之前拒绝它。本机用户显式连接或重试该设备时，移除对应抑制记录；清除配对设备时也移除。后续睡醒、网络、发现、超时、旧连接回调或未请求的入站连接都不能恢复一个已被用户主动断开的会话。
 
-## Pairing and Trust
+## 配对与信任
 
-Every automatic attempt passes `pairingCode: nil`. After TLS reaches ready, the connection is accepted only when the leaf certificate fingerprint exists in `PairedPeerStore` and matches the recorded peer. Pairing-code rotation after a successful first pairing is unchanged and irrelevant to reconnect.
+所有自动连接都传入 `pairingCode: nil`。TLS 就绪后，只有当叶证书指纹存在于 `PairedPeerStore` 且与记录设备匹配时，才接受连接。初次配对成功后的配对码轮换保持不变，与重连无关。
 
-## Timeout and Callback Safety
+## 超时与回调安全
 
-Each connection attempt receives both a connection identity and recovery generation. Timeout and terminal callbacks must verify both before mutating shared state. All terminal paths converge on one idempotent attempt-completion method, preventing `.failed` plus `.cancelled` from consuming two attempts or an old 12-second timeout from cancelling a replacement connection.
+每次连接尝试同时携带连接实例标识和恢复 generation。超时及连接终态回调在修改共享状态前必须校验两者。所有终态统一进入一个幂等的尝试完成入口，防止 `.failed` 和 `.cancelled` 重复消耗尝试次数，也防止旧连接的 12 秒超时取消替代它的新连接。
 
-## UI Behavior
+## 界面行为
 
-- During a bounded attempt, the existing connecting/reconnecting presentation may be used.
-- When the network is unavailable or the bounded cycle is exhausted, show a message such as “连接中断，等待网络或设备恢复后自动重连”.
-- The manual Retry action may remain as an optional override, but normal sleep/network recovery must not require it.
-- A completed attempt must never leave the UI indefinitely in `.connecting`.
+- 有限恢复周期内可以沿用现有“连接中/重连中”展示。
+- 网络不可用或本轮尝试耗尽后，显示“连接中断，等待网络或设备恢复后自动重连”。
+- 手动“重试”可以保留为可选操作，但正常的睡醒或网络恢复不得依赖它。
+- 一次连接尝试结束后，UI 不能无限停留在 `.connecting`。
 
-## Testing
+## 测试
 
-Extracting the coordinator permits standalone `swiftc @main` tests without real sleep or two physical Macs.
+把协调器抽成纯逻辑后，可以继续使用独立 `swiftc @main` 测试，不需要真的让两台 Mac 休眠。
 
-Required regression cases:
+必须新增以下回归用例：
 
-1. An unexpected drop followed by one failed attempt schedules attempt 2 instead of wedging at attempt index 1.
-2. The bounded sequence is exactly 0/2/5/10 seconds and stops after four failures.
-3. A new path-restored or changed-peer event restarts an exhausted cycle.
-4. Duplicate unchanged discovery events do not restart an active cycle.
-5. An unsatisfied path cancels timers and a later satisfied transition starts recovery.
-6. The smaller device ID dials; the larger ID only advertises/waits, regardless of the original connection direction.
-7. Wake while the UI state is still connected repairs listener/discovery without immediately creating a competing connection.
-8. User Disconnect cancels a pending generation and all later stale callbacks are ignored.
-9. A timeout from an old connection cannot cancel or fail a replacement connection.
-10. Every automatic dial uses the codeless paired-fingerprint path.
-11. If `.bye` is lost, the disconnecting side rejects a later codeless inbound connection until that user explicitly reconnects.
-12. Automatic recovery does not let a larger-ID manual endpoint holder bypass arbitration when the smaller-ID side has no Bonjour endpoint.
-13. A changed Bonjour endpoint starts a fresh cycle, while a duplicate callback for the same endpoint does not.
+1. 非主动断线后第一次尝试失败，会安排第二次尝试，而不是卡在 attempt 1。
+2. 有限尝试序列严格为 0/2/5/10 秒，四次失败后停止。
+3. 网络重新可用或设备 endpoint 变化，可以重新启动已经耗尽的恢复周期。
+4. 同一设备、同一 endpoint 的重复发现事件不会重置活动恢复周期。
+5. 网络变为不可用会取消定时任务，稍后恢复可用会启动新周期。
+6. deviceId 较小的一端拨号；较大的一端只广播并等待，与原连接方向无关。
+7. 睡醒时 UI 状态仍为已连接，也会修复监听器和发现，但不会立刻创建竞争连接。
+8. 用户主动断开会取消当前 generation，之后所有旧回调都被忽略。
+9. 旧连接超时不能取消或置失败替代它的新连接。
+10. 所有自动拨号都走免配对码的证书指纹信任路径。
+11. `.bye` 丢失时，主动断开的一端会拒绝后续免码入站连接，直到本机用户显式重连。
+12. deviceId 较大的手动地址持有者不能在较小端没有 Bonjour endpoint 时绕过仲裁自动拨号。
+13. Bonjour endpoint 变化会启动新周期，相同 endpoint 的重复回调不会。
 
-Existing TLS loopback, disconnect-detection, Bonjour endpoint, pairing-repair, and auto-reconnect decision tests remain required regression coverage.
+现有 TLS 环回、断连检测、Bonjour endpoint、配对修复和自动重连决策测试继续作为必跑回归测试。
 
-## Acceptance Criteria
+## 验收标准
 
-- With A and B paired and connected, sleep or lock either Mac until its network drops. After wake and network restoration, the pair reconnects without clicking Retry or entering a code.
-- Disabling and re-enabling Wi-Fi on either Mac produces the same automatic recovery.
-- Leaving a peer offline causes no continuing retry timer after the bounded recovery window.
-- Bringing the peer back or restoring the network generates a new event and reconnects automatically.
-- User-initiated Disconnect stays disconnected across wake, path, and discovery events.
-- User-initiated Disconnect stays disconnected even if its `.bye` message is lost and the peer attempts a codeless inbound reconnect.
-- At most one side actively dials during recovery, and neither side remains indefinitely in Connecting.
-- Manual-IP-only or stealth-mode sessions without a Bonjour endpoint remain manually recoverable but do not violate one-way arbitration to auto-dial.
+- A、B 已配对并连接时，让任意一台休眠或锁屏直至网络断开；睡醒且网络恢复后，无需点击“重试”或输入配对码即可恢复连接。
+- 关闭再开启任意一台的 Wi-Fi，结果相同。
+- 对端持续离线时，有限恢复窗口结束后不再保留重试定时任务。
+- 对端重新出现或网络再次恢复会产生新事件，并再次自动连接。
+- 用户主动断开后，睡醒、网络或发现事件都不能恢复连接。
+- 即使 `.bye` 丢失且对端尝试免码连入，用户主动断开的一端仍保持断开。
+- 恢复期间最多只有一端主动拨号，双方都不会无限停留在“连接中”。
+- 没有 Bonjour endpoint 的纯手动 IP 或隐身模式会话仍可手动恢复，但不会为自动重连破坏单向仲裁。
