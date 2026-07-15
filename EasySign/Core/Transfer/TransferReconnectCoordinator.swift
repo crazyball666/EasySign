@@ -125,7 +125,8 @@ struct TransferReconnectCoordinator {
             peer: token.peer,
             pathSatisfied: pathSatisfied,
             canDial: canDial,
-            endpointKey: endpointKey
+            endpointKey: endpointKey,
+            attempt: endpointKey == token.endpointKey ? token.attempt : 0
         )
     }
 
@@ -189,7 +190,8 @@ struct TransferReconnectCoordinator {
         peer: TransferAutoReconnect.PeerRef,
         pathSatisfied: Bool,
         canDial: Bool,
-        endpointKey: String?
+        endpointKey: String?,
+        attempt: Int = 0
     ) -> Command {
         generation &+= 1
         self.endpointKey = endpointKey
@@ -201,7 +203,7 @@ struct TransferReconnectCoordinator {
 
         let token = Token(
             generation: generation,
-            attempt: 0,
+            attempt: attempt,
             peer: peer,
             endpointKey: endpointKey
         )

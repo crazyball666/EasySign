@@ -86,6 +86,73 @@ struct TransferReconnectCoordinatorTests {
             endpointKey: "ep-1"
         ) == .none, "同一个 deferred token 不得恢复两次")
 
+        var deferredBudget = Coordinator()
+        deferredBudget.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(budget0) = deferredBudget.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ), case let .schedule(budget1, budgetDelay1) = deferredBudget.attemptFailed(budget0),
+              deferredBudget.delayElapsed(budget1) == .dial(budget1)
+        else { fail("预算测试必须先产生已真实失败后的 attempt 1") }
+        expect(budgetDelay1 == 2 && budget1.attempt == 1,
+               "attempt 0 真实失败后应进入 2s/attempt 1")
+        expect(deferredBudget.deferDial(budget1),
+               "attempt 1 到点遇 busy 应进入 deferred")
+        guard case let .dial(resumedBudget1) = deferredBudget.resumeDeferredRecovery(
+            budget1,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-1"
+        ) else { fail("attempt 1 blocker 释放后应恢复") }
+        expect(resumedBudget1.attempt == 1,
+               "同 endpoint deferred release 必须保留 attempt 1")
+        expect(resumedBudget1.generation != budget1.generation,
+               "保留 attempt 时仍必须换 generation 拒绝迟到回调")
+
+        expect(deferredBudget.deferDial(resumedBudget1),
+               "同一 attempt 再次遇 blocker 仍可 deferred")
+        guard case let .dial(repeatedBudget1) = deferredBudget.resumeDeferredRecovery(
+            resumedBudget1,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-1"
+        ) else { fail("重复 blocker 释放后应恢复同一 attempt") }
+        expect(repeatedBudget1.attempt == 1,
+               "重复 defer/release 不得刷新 attempt 预算")
+
+        guard case let .schedule(budget2, budgetDelay2) = deferredBudget.attemptFailed(repeatedBudget1),
+              deferredBudget.delayElapsed(budget2) == .dial(budget2)
+        else { fail("attempt 1 真实失败后应进入 attempt 2") }
+        expect(budgetDelay2 == 5 && budget2.attempt == 2,
+               "第二个真实失败应进入 5s/attempt 2")
+        expect(deferredBudget.deferDial(budget2), "attempt 2 应可 deferred")
+        guard case let .dial(resumedBudget2) = deferredBudget.resumeDeferredRecovery(
+            budget2,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-1"
+        ) else { fail("attempt 2 blocker 释放后应恢复") }
+        expect(resumedBudget2.attempt == 2,
+               "同 endpoint deferred release 必须保留 attempt 2")
+
+        guard case let .schedule(budget3, budgetDelay3) = deferredBudget.attemptFailed(resumedBudget2),
+              deferredBudget.delayElapsed(budget3) == .dial(budget3)
+        else { fail("attempt 2 真实失败后应进入 attempt 3") }
+        expect(budgetDelay3 == 10 && budget3.attempt == 3,
+               "第三个真实失败应进入 10s/attempt 3")
+        expect(deferredBudget.deferDial(budget3), "attempt 3 应可 deferred")
+        guard case let .dial(resumedBudget3) = deferredBudget.resumeDeferredRecovery(
+            budget3,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-1"
+        ) else { fail("attempt 3 blocker 释放后应恢复") }
+        expect(resumedBudget3.attempt == 3,
+               "同 endpoint deferred release 必须保留 attempt 3")
+        expect(deferredBudget.attemptFailed(resumedBudget3) == .waitForEvent,
+               "attempt 3 真实失败后必须 exhausted，不得由 blocker 刷新预算")
+        expect(deferredBudget.phase == .waitingForEvent,
+               "有限周期耗尽后必须等待外部恢复事件")
+
         var deferredStopped = Coordinator()
         deferredStopped.connected(to: peer, endpointKey: "ep-1")
         guard case let .dial(stoppedDeferredToken) = deferredStopped.unexpectedDrop(
@@ -147,9 +214,13 @@ struct TransferReconnectCoordinatorTests {
 
         var deferredEndpoint = Coordinator()
         deferredEndpoint.connected(to: peer, endpointKey: "ep-1")
-        guard case let .dial(endpointDeferredToken) = deferredEndpoint.unexpectedDrop(
+        guard case let .dial(endpointAttempt0) = deferredEndpoint.unexpectedDrop(
             pathSatisfied: true, canDial: true, endpointKey: "ep-1"
-        ) else { fail("deferred endpoint 测试需要 token") }
+        ), case let .schedule(endpointDeferredToken, _) = deferredEndpoint.attemptFailed(endpointAttempt0),
+              deferredEndpoint.delayElapsed(endpointDeferredToken) == .dial(endpointDeferredToken)
+        else { fail("deferred endpoint 测试需要 token") }
+        expect(endpointDeferredToken.attempt == 1,
+               "endpoint 变化测试必须从非零 attempt 开始")
         expect(deferredEndpoint.deferDial(endpointDeferredToken),
                "endpoint 变化前应成功 deferred")
         guard case let .dial(latestEndpointToken) = deferredEndpoint.resumeDeferredRecovery(
@@ -160,6 +231,36 @@ struct TransferReconnectCoordinatorTests {
         ) else { fail("release 必须经 coordinator 切换到最新 endpoint") }
         expect(latestEndpointToken.endpointKey == "ep-2",
                "deferred release 不得拨旧 endpoint")
+        expect(latestEndpointToken.attempt == 0,
+               "endpoint 变化才应开启 attempt 0 新周期")
+
+        let replacementPeer = TransferAutoReconnect.PeerRef(
+            deviceId: "peer-C",
+            fingerprint: "fp-C"
+        )
+        var deferredTarget = Coordinator()
+        deferredTarget.connected(to: peer, endpointKey: "ep-1")
+        guard case let .dial(oldTarget0) = deferredTarget.unexpectedDrop(
+            pathSatisfied: true, canDial: true, endpointKey: "ep-1"
+        ), case let .schedule(oldTarget1, _) = deferredTarget.attemptFailed(oldTarget0),
+              deferredTarget.delayElapsed(oldTarget1) == .dial(oldTarget1)
+        else { fail("target 变化测试需要 deferred attempt 1") }
+        expect(deferredTarget.deferDial(oldTarget1), "target 变化前应成功 deferred")
+        deferredTarget.connected(to: replacementPeer, endpointKey: "ep-C")
+        expect(deferredTarget.resumeDeferredRecovery(
+            oldTarget1,
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-C"
+        ) == .none, "target 变化后旧 deferred token 必须 stale")
+        guard case let .dial(replacementTarget0) = deferredTarget.unexpectedDrop(
+            pathSatisfied: true,
+            canDial: true,
+            endpointKey: "ep-C"
+        ) else { fail("新 target 应开启独立恢复周期") }
+        expect(replacementTarget0.peer == replacementPeer
+               && replacementTarget0.attempt == 0,
+               "target 变化后的新周期必须从 attempt 0 开始")
 
         let exhaustedGeneration = c.generation
         expect(c.unexpectedDrop(
