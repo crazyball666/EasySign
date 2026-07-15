@@ -1,3 +1,8 @@
+// swiftc -swift-version 5 -strict-concurrency=complete -warnings-as-errors -module-cache-path /tmp/easysign-swift-module-cache EasySign/Core/Transfer/TransferModels.swift EasySign/Core/Transfer/PeerDiscovery.swift Tests/PeerDiscoveryDedupTests.swift -o /tmp/peer-discovery
+// /tmp/peer-discovery
+// swiftc -swift-version 6 -strict-concurrency=complete -warnings-as-errors -module-cache-path /tmp/easysign-swift-module-cache EasySign/Core/Transfer/TransferModels.swift EasySign/Core/Transfer/PeerDiscovery.swift Tests/PeerDiscoveryDedupTests.swift -o /tmp/peer-discovery-swift6
+// /tmp/peer-discovery-swift6
+
 import Foundation
 import Network
 
@@ -40,7 +45,8 @@ struct PeerDiscoveryDedupTests {
 
         testSnapshotReducer()
         testDiscoveryLifecycle()
-        testCallbackStoreReentry()
+        testCallbackDeliveryOnMainQueueInOrderWithReentry()
+        _ = NonSendableConsumer()
         print("ALL PASS")
     }
 
@@ -152,17 +158,39 @@ struct PeerDiscoveryDedupTests {
                "restart 后旧 browser callback 必须继续被拒绝")
     }
 
-    static func testCallbackStoreReentry() {
+    static func testCallbackDeliveryOnMainQueueInOrderWithReentry() {
         let callbacks = PeerDiscoveryCallbackStore()
-        let invoked = LockedFlag()
-        callbacks.onPeersChanged = { _ in
-            invoked.setTrue()
+        let delivery = PeerDiscoveryCallbackDelivery()
+        let events = LockedStrings()
+        let finished = LockedFlag()
+
+        callbacks.onPeersChanged = { peers in
+            events.append("peers:\(peers.count):main=\(Thread.isMainThread)")
             callbacks.onPeersChanged = nil
         }
-        let snapshot = callbacks.onPeersChanged
-        snapshot?([])
-        expect(invoked.value && callbacks.onPeersChanged == nil,
-               "callback 必须在锁外调用，允许回调中重配而不死锁")
+        callbacks.onFailure = { _ in
+            events.append("failure:main=\(Thread.isMainThread)")
+            callbacks.onFailure = nil
+            finished.setTrue()
+        }
+
+        DispatchQueue.global().async {
+            delivery.deliver(
+                [.peers([]), .failure(TestError.expected)],
+                to: callbacks.snapshot()
+            )
+        }
+
+        let deadline = Date().addingTimeInterval(2)
+        while !finished.value && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+
+        expect(finished.value, "main queue callback delivery 不得丢失事件")
+        expect(events.values == ["peers:0:main=true", "failure:main=true"],
+               "callback bridge 必须在 main queue 按 peers-empty → failure 顺序投递")
+        expect(callbacks.onPeersChanged == nil && callbacks.onFailure == nil,
+               "main queue callback 必须允许重入配置 callback store")
     }
 
     static func selection(for deviceId: String,
@@ -191,6 +219,39 @@ struct PeerDiscoveryDedupTests {
             lock.lock()
             storage = true
             lock.unlock()
+        }
+    }
+
+    enum TestError: Error {
+        case expected
+    }
+
+    final class LockedStrings: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [String] = []
+
+        var values: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+
+        func append(_ value: String) {
+            lock.lock()
+            storage.append(value)
+            lock.unlock()
+        }
+    }
+
+    /// 编译回归：public callback consumer 本身不需要声明 Sendable。
+    final class NonSendableConsumer {
+        private let discovery = PeerDiscovery(selfDeviceId: { "self" })
+        private var peers: [DiscoveredPeer] = []
+
+        init() {
+            discovery.onPeersChanged = { [weak self] peers in
+                self?.peers = peers
+            }
         }
     }
 }

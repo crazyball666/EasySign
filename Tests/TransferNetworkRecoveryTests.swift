@@ -35,6 +35,7 @@ struct TransferNetworkRecoveryTests {
         testMonitorLifecycle()
         testStopFromCallbackQueue()
         testDeinitCancelsSynchronously()
+        testLastReferenceReleasedFromCallbackQueue()
         print("ALL PASS")
     }
 
@@ -106,6 +107,31 @@ struct TransferNetworkRecoveryTests {
         let fake = factory.monitor(at: 0)
         monitor = nil
         expect(fake.cancelCount == 1, "deinit 返回前必须在线性化队列上清理 monitor")
+    }
+
+    static func testLastReferenceReleasedFromCallbackQueue() {
+        let factory = FakePathMonitorFactory()
+        let reference = MonitorReference()
+        let callbackReturned = DispatchSemaphore(value: 0)
+        var monitor: TransferNetworkMonitor? = TransferNetworkMonitor(
+            onPathChanged: { _, _ in
+                reference.value = nil
+                callbackReturned.signal()
+            },
+            monitorFactory: { factory.make() }
+        )
+        reference.value = monitor
+        monitor?.start()
+        let fake = factory.monitor(at: 0)
+        monitor = nil
+
+        DispatchQueue.global().async {
+            fake.emit(true)
+        }
+        expect(callbackReturned.wait(timeout: .now() + 2) == .success,
+               "callback queue 内释放最后一个 monitor 引用不得死锁")
+        expect(fake.cancelCount == 1,
+               "callback queue 内触发 deinit 必须同步 cancel 当前 monitor")
     }
 
     static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {

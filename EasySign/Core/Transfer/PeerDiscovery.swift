@@ -175,12 +175,14 @@ struct PeerDiscoveryLifecycleState: Sendable {
     }
 }
 
-/// callbacks 由锁保护，可从任意线程配置；发布方取得不可变快照后在锁外调用。
+/// callbacks 由锁保护，可从任意线程配置；consumer 只会由 delivery bridge 在 main queue 调用。
 final class PeerDiscoveryCallbackStore: @unchecked Sendable {
-    typealias PeersChanged = @Sendable ([DiscoveredPeer]) -> Void
-    typealias Failure = @Sendable (Error) -> Void
+    typealias PeersChanged = ([DiscoveredPeer]) -> Void
+    typealias Failure = (Error) -> Void
 
-    struct Snapshot: Sendable {
+    /// 快照跨 discovery queue → main queue 搬运。其闭包不是 Sendable、也不承诺可在任意队列执行；
+    /// 唯一 consumer 是 PeerDiscoveryCallbackDelivery，且只在 main queue 调用它们。
+    struct Snapshot: @unchecked Sendable {
         let onPeersChanged: PeersChanged?
         let onFailure: Failure?
     }
@@ -225,6 +227,29 @@ final class PeerDiscoveryCallbackStore: @unchecked Sendable {
     }
 }
 
+/// 将 discovery queue 产出的不可变事件按 FIFO 投递到 main queue。
+/// bridge 无可变状态；Snapshot 的 unchecked 边界只用于搬运，consumer 永不在 discovery queue 执行。
+struct PeerDiscoveryCallbackDelivery: Sendable {
+    enum Event: Sendable {
+        case peers([DiscoveredPeer])
+        case failure(any Error)
+    }
+
+    func deliver(_ events: [Event],
+                 to callbacks: PeerDiscoveryCallbackStore.Snapshot) {
+        DispatchQueue.main.async {
+            for event in events {
+                switch event {
+                case let .peers(peers):
+                    callbacks.onPeersChanged?(peers)
+                case let .failure(error):
+                    callbacks.onFailure?(error)
+                }
+            }
+        }
+    }
+}
+
 /// Bonjour 浏览 _easysign-transfer._tcp,产出 DiscoveredPeer 列表(已过滤自己)。
 /// `@unchecked Sendable` 的依据：browser/lifecycle/reducer/snapshot 只在私有串行 queue 访问；
 /// 跨线程 callback 配置由 PeerDiscoveryCallbackStore 的锁单独保护。
@@ -234,6 +259,7 @@ final class PeerDiscovery: @unchecked Sendable {
     private let queue = DispatchQueue(label: "transfer.discovery")
     private let selfDeviceId: () -> String
     private let callbacks = PeerDiscoveryCallbackStore()
+    private let callbackDelivery = PeerDiscoveryCallbackDelivery()
 
     // 以下状态只允许在 queue 上访问。
     private var browser: NWBrowser?
@@ -241,14 +267,14 @@ final class PeerDiscovery: @unchecked Sendable {
     private var reducer = PeerDiscoverySnapshotReducer<NWBrowser.Result>()
     private var peerSnapshot: [DiscoveredPeer] = []
 
-    /// 可从任意线程配置；setter/getter 经锁同步，回调在 discovery queue 上执行。
-    var onPeersChanged: (@Sendable ([DiscoveredPeer]) -> Void)? {
+    /// 可从任意线程配置；setter/getter 经锁同步，回调统一在 main queue 执行。
+    var onPeersChanged: (([DiscoveredPeer]) -> Void)? {
         get { callbacks.onPeersChanged }
         set { callbacks.onPeersChanged = newValue }
     }
 
-    /// 可从任意线程配置；setter/getter 经锁同步，回调在 discovery queue 上执行。
-    var onFailure: (@Sendable (Error) -> Void)? {
+    /// 可从任意线程配置；setter/getter 经锁同步，回调统一在 main queue 执行。
+    var onFailure: ((Error) -> Void)? {
         get { callbacks.onFailure }
         set { callbacks.onFailure = newValue }
     }
@@ -398,8 +424,10 @@ final class PeerDiscovery: @unchecked Sendable {
         clearRecoveryState()
 
         let callbackSnapshot = callbacks.snapshot()
-        callbackSnapshot.onPeersChanged?([])
-        callbackSnapshot.onFailure?(error)
+        callbackDelivery.deliver(
+            [.peers([]), .failure(error)],
+            to: callbackSnapshot
+        )
     }
 
     private func clearRecoveryState() {
@@ -408,8 +436,10 @@ final class PeerDiscovery: @unchecked Sendable {
     }
 
     private func publishPeers(_ peers: [DiscoveredPeer]) {
-        let callback = callbacks.onPeersChanged
-        callback?(peers)
+        callbackDelivery.deliver(
+            [.peers(peers)],
+            to: callbacks.snapshot()
+        )
     }
 
     /// 按 deviceId 去重,保留首次出现的那条。纯函数,便于单测及兼容既有调用。
