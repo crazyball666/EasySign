@@ -77,10 +77,96 @@ final class ConnectionCollector {
     }
 }
 
+/// Thread-safe state history for a connection whose TLS pin is expected to reject.
+/// `.waiting` is deliberately non-terminal: Network.framework may recover from it.
+final class ConnectionStateTracker {
+    struct Snapshot {
+        let everReady: Bool
+        let terminalState: String?
+        let lastState: String
+        let lastStateIsWaiting: Bool
+    }
+
+    private let condition = NSCondition()
+    private var everReady = false
+    private var terminalState: String?
+    private var lastState = "unobserved"
+    private var lastStateIsWaiting = false
+
+    var snapshot: Snapshot {
+        condition.lock()
+        defer { condition.unlock() }
+        return snapshotLocked()
+    }
+
+    func record(_ state: NWConnection.State) {
+        condition.lock()
+        lastState = Self.describe(state)
+        lastStateIsWaiting = false
+        switch state {
+        case .ready:
+            everReady = true
+        case .waiting:
+            lastStateIsWaiting = true
+        case .failed, .cancelled:
+            if terminalState == nil { terminalState = lastState }
+        default:
+            break
+        }
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    /// Waits until a state that decides the negative test (`ready`, `failed`, or `cancelled`),
+    /// or returns the latest non-terminal state when the bounded observation window expires.
+    func waitForReadyOrTerminal(timeout: TimeInterval) -> Snapshot {
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while !everReady && terminalState == nil {
+            guard condition.wait(until: deadline) else { break }
+        }
+        return snapshotLocked()
+    }
+
+    private func snapshotLocked() -> Snapshot {
+        Snapshot(
+            everReady: everReady,
+            terminalState: terminalState,
+            lastState: lastState,
+            lastStateIsWaiting: lastStateIsWaiting
+        )
+    }
+
+    private static func describe(_ state: NWConnection.State) -> String {
+        switch state {
+        case .setup: return "setup"
+        case .waiting(let error): return "waiting(\(error))"
+        case .preparing: return "preparing"
+        case .ready: return "ready"
+        case .failed(let error): return "failed(\(error))"
+        case .cancelled: return "cancelled"
+        @unknown default: return "unknown"
+        }
+    }
+}
+
 @main
 struct TransferLoopbackTests {
     static func main() {
+        verifyWrongPinOracleRejectsWaitingMutation()
         do { try run() } catch { fail("threw: \(error)") }
+    }
+
+    static func verifyWrongPinOracleRejectsWaitingMutation() {
+        let tracker = ConnectionStateTracker()
+        tracker.record(.waiting(.posix(.ENETDOWN)))
+        let waiting = tracker.waitForReadyOrTerminal(timeout: 0.01)
+        expect(!waiting.everReady && waiting.terminalState == nil && waiting.lastStateIsWaiting,
+               "controlled mutation: waiting must remain non-terminal")
+        tracker.record(.ready)
+        expect(tracker.snapshot.everReady,
+               "controlled mutation: a later ready must remain visible to the wrong-pin oracle")
     }
 
     static func run() throws {
@@ -99,7 +185,7 @@ struct TransferLoopbackTests {
         let inboundConnections = ConnectionCollector()
         server.onConnection = { conn in
             // Retain every inbound through cleanup: TLS failure paths are asynchronous and a weak
-            // wrapper could otherwise disappear before the test observes the decisive state.
+            // wrapper could otherwise disappear before the test observes the final outcome.
             inboundConnections.append(conn)
         }
         try server.start()
@@ -255,23 +341,42 @@ struct TransferLoopbackTests {
         expect(wrongFp != idB.fingerprint, "wrong pin differs from the real server fingerprint")
         let inboundBeforeWrongPin = inboundConnections.count
         let client2 = TransferClient(identity: { idA.identity })
+        let badStateTracker = ConnectionStateTracker()
         let badConn = try client2.connect(host: "127.0.0.1", port: port,
                                           pin: .requirePinned(fingerprint: wrongFp))
+        // Install immediately after connect returns. The setter replays TransferConnection's
+        // latest state; peerFingerprint below independently catches a ready missed before replay.
+        badConn.onStateChange = { badStateTracker.record($0) }
         expect(inboundConnections.waitForCount(inboundBeforeWrongPin + 1, timeout: 10),
                "server retained the wrong-pin inbound until cleanup")
-        // Poll the connection's own state (race-free vs. callback assignment ordering).
-        let decisive = waitUntil(timeout: 10) {
-            isReady(badConn.nw.state) || isBlocked(badConn.nw.state)
+
+        var badObservation = badStateTracker.waitForReadyOrTerminal(timeout: 10)
+        expect(!badObservation.everReady,
+               "pinned-wrong connection must never reach ready (last=\(badObservation.lastState))")
+        if badObservation.terminalState == nil {
+            expect(badObservation.lastStateIsWaiting,
+                   "wrong-pin connection was non-terminal but not waiting after 10s (last=\(badObservation.lastState))")
+            // A recoverable `.waiting` is not proof of rejection. Keep the tracker installed for
+            // a complete grace window so a later `.ready` cannot turn into a false negative.
+            badObservation = badStateTracker.waitForReadyOrTerminal(timeout: 2)
+            expect(!badObservation.everReady,
+                   "pinned-wrong connection reached ready during waiting grace")
         }
-        expect(decisive, "pinned-wrong connection reached a decisive state within timeout")
-        let finalState = badConn.nw.state
-        expect(!isReady(finalState),
-               "pinned-wrong connection must NOT reach .ready (state=\(describe(finalState)))")
-        expect(isBlocked(finalState),
-               "pinned-wrong connection blocked (failed/waiting/cancelled), state=\(describe(finalState))")
-        expect(badConn.peerFingerprint == nil, "blocked connection captured no peer fingerprint")
-        log("stage7 ok: TLS pinning blocked the wrong-fingerprint client (state=\(describe(finalState)))")
+        expect(badObservation.terminalState != nil || badObservation.lastStateIsWaiting,
+               "wrong-pin connection neither terminated nor stayed waiting (last=\(badObservation.lastState))")
+        expect(badConn.peerFingerprint == nil,
+               "wrong-pin connection captured a peer fingerprint, so it reached ready before observation")
+
+        let rejectionState = badObservation.terminalState ?? "waiting through the full observation window"
         badConn.cancel()
+        let afterCancel = badStateTracker.waitForReadyOrTerminal(timeout: 2)
+        expect(!afterCancel.everReady,
+               "pinned-wrong connection reached ready before cancellation completed")
+        expect(afterCancel.terminalState != nil,
+               "pinned-wrong connection did not become terminal after explicit cleanup")
+        expect(badConn.peerFingerprint == nil,
+               "pinned-wrong connection captured a peer fingerprint during cleanup")
+        log("stage7 ok: TLS pinning rejected the wrong-fingerprint client (observed \(rejectionState))")
 
         // ---- Stage 8: chunked binary file round-trip over the paired channel ----------
         // connA = clientConn (sender), connB = serverConn (receiver). Deterministic bytes
@@ -343,13 +448,6 @@ struct TransferLoopbackTests {
     static func isReady(_ s: NWConnection.State) -> Bool {
         if case .ready = s { return true }
         return false
-    }
-
-    static func isBlocked(_ s: NWConnection.State) -> Bool {
-        switch s {
-        case .failed, .waiting, .cancelled: return true
-        default: return false
-        }
     }
 
     static func describe(_ s: NWConnection.State) -> String {
