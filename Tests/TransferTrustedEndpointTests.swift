@@ -32,9 +32,17 @@ struct TransferTrustedEndpointTests {
         let ipv6 = NWEndpoint.hostPort(host: "2001:db8::8", port: 5000)
         expect(TransferTrustedEndpoint.host(from: ipv6) == "2001:db8::8",
                "hostPort 应完整保留 IPv6 host")
+        let scopedIPv6 = NWEndpoint.hostPort(host: "fe80::1%en0", port: 5000)
+        expect(TransferTrustedEndpoint.host(from: scopedIPv6) == "fe80::1%en0",
+               "hostPort 应完整保留 IPv6 zone identifier")
         let url = NWEndpoint.url(URL(string: "ws://10.0.0.9:5000/transfer")!)
         expect(TransferTrustedEndpoint.host(from: url) == "10.0.0.9",
                "URL endpoint 应提取 host")
+        let scopedIPv6URL = NWEndpoint.url(
+            URL(string: "ws://[fe80::1%25en0]:5000/transfer")!
+        )
+        expect(TransferTrustedEndpoint.host(from: scopedIPv6URL) == "fe80::1%en0",
+               "URL endpoint 应解码并保留可复用的 IPv6 zone identifier")
         let service = NWEndpoint.service(
             name: "peer-B",
             type: "_easysign-transfer._tcp",
@@ -57,6 +65,13 @@ struct TransferTrustedEndpointTests {
             port: 5000
         ) == TransferTrustedEndpoint(peer: peer, host: "10.0.0.8", port: 5000),
         "active source 的有效 hint 应绑定同一 PeerRef")
+        expect(TransferReconnectHintPolicy.endpoint(
+            peer: peer,
+            sourceIsActive: true,
+            remoteHost: " 10.0.0.8 \n",
+            port: 5000
+        ) == TransferTrustedEndpoint(peer: peer, host: "10.0.0.8", port: 5000),
+        "有效 hint 应保存 trim 后的 host")
         expect(TransferReconnectHintPolicy.endpoint(
             peer: peer,
             sourceIsActive: true,
