@@ -54,13 +54,19 @@ final class TransferConnection {
         }
     }
 
-    private let fpLock = NSLock()
+    private let metadataLock = NSLock()
     private var _peerFingerprint: String?
+    private var _remoteHost: String?
     /// 由本连接在 `.ready` 时从自身 TLS metadata 读出对端叶证书指纹后写入(在连接队列上)。
     /// 读取应发生在 `.ready` 之后。用锁保证跨线程可见且不撕裂。
     var peerFingerprint: String? {
-        get { fpLock.lock(); defer { fpLock.unlock() }; return _peerFingerprint }
-        set { fpLock.lock(); _peerFingerprint = newValue; fpLock.unlock() }
+        metadataLock.lock(); defer { metadataLock.unlock() }
+        return _peerFingerprint
+    }
+    /// `.ready` 时从已解析的实际远端 endpoint 捕获；Bonjour service 等不可安全直连的 endpoint 返回 nil。
+    var remoteHost: String? {
+        metadataLock.lock(); defer { metadataLock.unlock() }
+        return _remoteHost
     }
 
     private let queue: DispatchQueue
@@ -75,12 +81,25 @@ final class TransferConnection {
             guard let self else { return }
             // 握手完成后,从本连接自己协商出的 TLS metadata 取对端指纹——
             // 无共享槽位、无跨连接错配、无竞态。必须在回调上层 onStateChange 之前写好。
-            if case .ready = st { self.peerFingerprint = self.readPeerFingerprint() }
+            if case .ready = st {
+                let remoteEndpoint = self.nw.currentPath?.remoteEndpoint ?? self.nw.endpoint
+                self.publishReadyMetadata(
+                    peerFingerprint: self.readPeerFingerprint(),
+                    remoteHost: TransferTrustedEndpoint.host(from: remoteEndpoint)
+                )
+            }
             self._lastState = st
             self._stateHandler?(st)
         }
         nw.start(queue: queue)
         receiveLoop()
+    }
+
+    private func publishReadyMetadata(peerFingerprint: String?, remoteHost: String?) {
+        metadataLock.lock()
+        _peerFingerprint = peerFingerprint
+        _remoteHost = remoteHost
+        metadataLock.unlock()
     }
 
     /// 从本连接已协商的 TLS metadata 取对端证书链的叶证书(index 0)DER 的 SHA-256 hex。

@@ -1,4 +1,4 @@
-// swiftc -swift-version 5 -strict-concurrency=complete -warnings-as-errors -module-cache-path /tmp/easysign-swift-module-cache EasySign/Core/Transfer/TransferModels.swift EasySign/Core/Transfer/TransferAutoReconnect.swift EasySign/Core/Transfer/TransferReconnectCoordinator.swift EasySign/Core/Transfer/TransferReconnectExecutionPolicy.swift Tests/TransferReconnectExecutionPolicyTests.swift -o /tmp/transfer-reconnect-execution-policy
+// swiftc -swift-version 5 -strict-concurrency=complete -warnings-as-errors -module-cache-path /tmp/easysign-swift-module-cache EasySign/Core/Transfer/TransferModels.swift EasySign/Core/Transfer/TransferAutoReconnect.swift EasySign/Core/Transfer/TransferTrustedEndpoint.swift EasySign/Core/Transfer/TransferReconnectCoordinator.swift EasySign/Core/Transfer/TransferReconnectExecutionPolicy.swift Tests/TransferReconnectExecutionPolicyTests.swift -o /tmp/transfer-reconnect-execution-policy
 // /tmp/transfer-reconnect-execution-policy
 
 import Foundation
@@ -1025,7 +1025,7 @@ struct TransferReconnectExecutionPolicyTests {
             active: currentBoundConnection
         )
         expect(staleByeDecision == .ignoreStale,
-               "superseded 旧连接的迟到 bye 必须按 exact identity 忽略")
+               "superseded 旧连接的迟到 bye/hint 必须按 exact identity 忽略")
         if staleByeDecision == .handle {
             staleByeCoordinator.peerSaidBye(peerRef)
         }
@@ -1034,7 +1034,7 @@ struct TransferReconnectExecutionPolicyTests {
         expect(Policy.boundMessageDecision(
             source: currentBoundConnection,
             active: currentBoundConnection
-        ) == .handle, "当前 bound 连接的 bye 应正常处理")
+        ) == .handle, "当前 bound 连接的 bye/hint 应正常处理并把 active 结果传给 hint policy")
         var currentByeCoordinator = Coordinator()
         currentByeCoordinator.connected(to: peerRef, endpointKey: "ep-current")
         if Policy.boundMessageDecision(

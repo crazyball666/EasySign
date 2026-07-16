@@ -18,6 +18,14 @@ struct WireMessageTests {
         expect(try WireMessage.decode(fDone.encoded()) == fDone, "fileComplete round-trip")
         let imgOffer = WireMessage.clipboardImageOffer(id: "img1", size: 9001, hash: "deadbeef")
         expect(try WireMessage.decode(imgOffer.encoded()) == imgOffer, "clipboardImageOffer round-trip")
+        let hint = WireMessage.reconnectHint(port: 54321)
+        expect(try WireMessage.decode(hint.encoded()) == hint, "reconnectHint round-trip")
+        let missing = Data(#"{"type":"reconnectHint"}"#.utf8)
+        expectThrows { _ = try WireMessage.decode(missing) }
+        let negative = Data(#"{"type":"reconnectHint","port":-1}"#.utf8)
+        expectThrows { _ = try WireMessage.decode(negative) }
+        let overflow = Data(#"{"type":"reconnectHint","port":65536}"#.utf8)
+        expectThrows { _ = try WireMessage.decode(overflow) }
         let json = String(data: data, encoding: .utf8)!
         expect(json.contains("\"type\""), "has type field")
         expect(json.contains("hello"), "type value present")
@@ -26,5 +34,11 @@ struct WireMessageTests {
         print("ALL PASS")
     }
     static func expect(_ c: Bool, _ m: String) { if !c { fail(m) } }
+    static func expectThrows(_ body: () throws -> Void) {
+        do {
+            try body()
+            fail("should throw")
+        } catch {}
+    }
     static func fail(_ m: String) -> Never { FileHandle.standardError.write(Data("FAIL: \(m)\n".utf8)); exit(1) }
 }

@@ -1,3 +1,6 @@
+import Foundation
+import Network
+
 struct TransferTrustedEndpoint: Equatable, Sendable {
     let peer: TransferAutoReconnect.PeerRef
     let host: String
@@ -5,6 +8,17 @@ struct TransferTrustedEndpoint: Equatable, Sendable {
 
     var reconnectEndpointKey: String {
         "trusted:\(peer.deviceId):\(host):\(port)"
+    }
+
+    static func host(from endpoint: NWEndpoint) -> String? {
+        switch endpoint {
+        case .hostPort(let host, _):
+            String(describing: host)
+        case .url(let url):
+            url.host
+        default:
+            nil
+        }
     }
 }
 
