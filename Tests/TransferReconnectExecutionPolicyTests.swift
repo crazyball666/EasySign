@@ -695,82 +695,116 @@ struct TransferReconnectExecutionPolicyTests {
             attemptMatches: true, connectionMatches: true, tokenAccepted: true
         ) == .cleanupAndRetry, "attempt/connection/token 全匹配才可清理并重试")
 
-        var endpointRaceCoordinator = Coordinator()
-        endpointRaceCoordinator.connected(to: peerRef, endpointKey: "ep-1")
-        guard case let .dial(oldEndpointToken) = endpointRaceCoordinator.unexpectedDrop(
+        let oldBonjourEndpointKey = peer(recoveryToken: "bonjour-old").reconnectEndpointKey
+        let newTrustedEndpointKey = TransferTrustedEndpoint(
+            peer: peerRef,
+            host: "10.0.0.8",
+            port: 54321
+        ).reconnectEndpointKey
+        var directFallbackCoordinator = Coordinator()
+        directFallbackCoordinator.connected(to: peerRef, endpointKey: oldBonjourEndpointKey)
+        guard case let .dial(oldBonjourToken) = directFallbackCoordinator.unexpectedDrop(
             pathSatisfied: true,
             canDial: true,
-            endpointKey: "ep-1"
-        ) else { fail("endpoint 竞态需要一个 ep-1 自动 attempt") }
-        let endpointChangeActions = Policy.discoveryEndpointActions(
-            oldEndpointKey: "ep-1",
-            newEndpointKey: "ep-2",
+            endpointKey: oldBonjourEndpointKey
+        ) else { fail("Bonjour→trusted 竞态需要一个旧 Bonjour automatic token") }
+        let directFallbackActions = Policy.discoveryEndpointActions(
+            oldEndpointKey: oldBonjourEndpointKey,
+            newEndpointKey: newTrustedEndpointKey,
             hasBoundConnection: false,
             hasActiveAutomaticAttempt: true
         )
-        expect(endpointChangeActions == [
+        expect(directFallbackActions == [
             .invalidateAutomaticRecovery,
             .cleanupAutomaticAttempt,
             .requestRecovery,
-        ], "自动拨号中 endpoint 变化必须先失效、再收口旧 attempt、最后请求最新 endpoint")
+        ], "Bonjour 自动拨号中切 trusted 必须先失效、收口旧 attempt、再请求新 endpoint")
         expect(Policy.discoveryEndpointActions(
-            oldEndpointKey: "ep-1",
-            newEndpointKey: "ep-2",
-            hasBoundConnection: true,
-            hasActiveAutomaticAttempt: false
-        ) == [.recordBoundEndpoint, .requestRecovery],
-        "bound connection 的 endpoint 变化应更新 coordinator，但不清理连接")
-        expect(Policy.discoveryEndpointActions(
-            oldEndpointKey: "ep-1",
-            newEndpointKey: "ep-2",
+            oldEndpointKey: oldBonjourEndpointKey,
+            newEndpointKey: newTrustedEndpointKey,
             hasBoundConnection: false,
             hasActiveAutomaticAttempt: false
         ) == [.requestRecovery], "空闲/等待时 endpoint 变化直接请求新周期")
-        expect(Policy.discoveryEndpointActions(
-            oldEndpointKey: "ep-1",
-            newEndpointKey: "ep-1",
-            hasBoundConnection: false,
-            hasActiveAutomaticAttempt: true
-        ).isEmpty, "endpoint key 未变化不得打断当前 attempt")
 
         var automaticConnectionCount = 1
         var replacementCommand = Coordinator.Command.none
-        for action in endpointChangeActions {
+        for action in directFallbackActions {
             switch action {
             case .invalidateAutomaticRecovery:
-                endpointRaceCoordinator.peerBecameUnavailable()
-                expect(!endpointRaceCoordinator.accepts(oldEndpointToken),
-                       "处理 ep-2 前必须先使 ep-1 token 失效")
+                directFallbackCoordinator.peerBecameUnavailable()
+                expect(!directFallbackCoordinator.accepts(oldBonjourToken),
+                       "处理 trusted endpoint 前必须使旧 Bonjour token 失效")
             case .cleanupAutomaticAttempt:
                 expect(Policy.completionDecision(
                     attemptMatches: true,
                     connectionMatches: true,
-                    tokenAccepted: endpointRaceCoordinator.accepts(oldEndpointToken)
-                ) == .cleanupOnly, "旧 attempt 必须完成 identity cleanup，但不得续排 ep-1 retry")
+                    tokenAccepted: directFallbackCoordinator.accepts(oldBonjourToken)
+                ) == .cleanupOnly, "旧 Bonjour attempt 必须 cleanup，但不得续排 Bonjour retry")
                 automaticConnectionCount -= 1
             case .recordBoundEndpoint:
                 fail("未绑定的自动 attempt 不应走 bound endpoint 更新")
             case .requestRecovery:
                 expect(automaticConnectionCount == 0,
-                       "请求 ep-2 前旧 ep-1 connection 必须已经收口，禁止并发拨号")
-                replacementCommand = endpointRaceCoordinator.recoveryEvent(
+                       "请求 trusted 前旧 Bonjour connection 必须已收口，禁止并发拨号")
+                replacementCommand = directFallbackCoordinator.recoveryEvent(
                     pathSatisfied: true,
                     canDial: true,
                     busy: false,
-                    endpointKey: "ep-2"
+                    endpointKey: newTrustedEndpointKey
                 )
             }
         }
-        guard case let .dial(newEndpointToken) = replacementCommand else {
-            fail("旧 attempt 收口后必须立即拨最新 ep-2")
+        guard case let .dial(newTrustedToken) = replacementCommand else {
+            fail("旧 Bonjour attempt 收口后必须立即拨 trusted endpoint")
         }
         automaticConnectionCount += 1
-        expect(newEndpointToken.endpointKey == "ep-2",
-               "替代 token 必须绑定最新 endpoint")
-        expect(newEndpointToken.generation != oldEndpointToken.generation,
-               "endpoint 变化必须换 generation")
+        expect(newTrustedToken.endpointKey == newTrustedEndpointKey,
+               "替代 token 必须绑定 trusted endpoint key")
+        expect(newTrustedToken.generation != oldBonjourToken.generation,
+               "Bonjour→trusted 必须换 generation")
         expect(automaticConnectionCount == 1,
                "endpoint 切换全过程最多只能保留一个自动 connection")
+
+        let boundFallbackActions = Policy.discoveryEndpointActions(
+            oldEndpointKey: oldBonjourEndpointKey,
+            newEndpointKey: newTrustedEndpointKey,
+            hasBoundConnection: true,
+            hasActiveAutomaticAttempt: false
+        )
+        expect(boundFallbackActions == [.recordBoundEndpoint, .requestRecovery],
+               "bound Bonjour→trusted 应只需记录 endpoint，recovery 由 bound disposition 拦截")
+        var boundFallbackCoordinator = Coordinator()
+        boundFallbackCoordinator.connected(to: peerRef, endpointKey: oldBonjourEndpointKey)
+        let boundDisposition = Policy.DiscoverySessionDisposition.bound
+        var boundDialCount = 0
+        for action in boundFallbackActions {
+            switch action {
+            case .recordBoundEndpoint:
+                boundFallbackCoordinator.connected(to: peerRef, endpointKey: newTrustedEndpointKey)
+            case .requestRecovery:
+                if boundDisposition.allowsAutomaticRecovery,
+                   case .dial = boundFallbackCoordinator.recoveryEvent(
+                       pathSatisfied: true,
+                       canDial: true,
+                       busy: false,
+                       endpointKey: newTrustedEndpointKey
+                   ) {
+                    boundDialCount += 1
+                }
+            case .invalidateAutomaticRecovery, .cleanupAutomaticAttempt:
+                fail("bound Bonjour→trusted 不得失效或清理当前连接")
+            }
+        }
+        expect(boundFallbackCoordinator.endpointKey == newTrustedEndpointKey
+               && boundFallbackCoordinator.phase == .inactive
+               && boundDialCount == 0,
+               "bound session 只能 record trusted key，不得启动拨号")
+        expect(Policy.discoveryEndpointActions(
+            oldEndpointKey: newTrustedEndpointKey,
+            newEndpointKey: newTrustedEndpointKey,
+            hasBoundConnection: false,
+            hasActiveAutomaticAttempt: true
+        ).isEmpty, "trusted endpoint key 未变化不得打断当前 attempt")
 
         var busyDialCoordinator = Coordinator()
         busyDialCoordinator.connected(to: peerRef, endpointKey: "ep-1")
