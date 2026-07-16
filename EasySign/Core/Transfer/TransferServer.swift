@@ -179,7 +179,7 @@ final class TransferConnection {
 /// 监听入站连接。Phase 1:server 以 `.acceptAny` 起(放行任意对端,应用层 HMAC 鉴权),
 /// 每条连接在 `.ready` 后从自身 TLS metadata 自取对端指纹,由上层依据配对状态决定后续处理。
 final class TransferServer {
-    // 并发模型:所有可变状态(listener / lastState / port / advertising)只在 `queue` 上读写——
+    // 并发模型:所有可变状态(listener / lastState / port / portPolicy / advertising)只在 `queue` 上读写——
     // 该串行队列就是 NWListener 的回调队列,始终被 Network.framework 服务,不依赖主线程 runloop 被泵。
     // 公开方法(start/restart/restartIfUnhealthy/setAdvertising/stop)都把改动派发到 `queue`;start 用
     // queue.sync 以便把构造错误同步抛回调用方。stateUpdateHandler 本就在 `queue` 上,直接改状态、不再 hop。
@@ -189,6 +189,7 @@ final class TransferServer {
     private var advertising = false           // 期望的广播开关:restart 后据此恢复(而非每次重读外部状态)
     private var lastState: NWListener.State?   // 最近一次 listener 状态(queue;供 restartIfUnhealthy 判断)
     private var stopped = false                // stop() 后置位:阻止挂起的退避重试/自愈再拉起 listener
+    private var portPolicy: TransferListenerPortPolicy
 
     var onConnection: ((TransferConnection) -> Void)?
     /// listener 状态变化(在 `queue` 上回调,带当前监听端口)。上层据此更新 @Published listenPort(自行切主线程)、感知掉线。
@@ -198,8 +199,9 @@ final class TransferServer {
     /// Bonjour 广播信息(deviceId/name/fingerprint)。queue 私有;经 setAdvertiseInfo 写入,applyAdvertising 读取。
     private var advertiseInfo: (deviceId: String, name: String, fingerprint: String)?
 
-    init(identity: @escaping () throws -> SecIdentity) {
+    init(identity: @escaping () throws -> SecIdentity, preferredPort: UInt16? = nil) {
         self.identity = identity
+        self.portPolicy = TransferListenerPortPolicy(preferredPort: preferredPort)
     }
 
     /// 设置/更新 Bonjour 广播信息(deviceId/name/fingerprint)。任意线程调用,改动派发到 `queue`。
@@ -216,7 +218,17 @@ final class TransferServer {
         let id = try identity()
         // verify block 对所有入站连接共享,只做"放行";指纹由每条连接自己从 metadata 读取。
         let params = TransferTLS.parameters(identity: id, pin: .acceptAny)
-        let listener = try NWListener(using: params)
+        let binding = portPolicy.nextBinding
+        let requestedPort: UInt16?
+        let listener: NWListener
+        switch binding {
+        case .random:
+            requestedPort = nil
+            listener = try NWListener(using: params)
+        case .preferred(let rawPort):
+            requestedPort = rawPort
+            listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: rawPort)!)
+        }
         listener.newConnectionHandler = { [weak self] nw in
             guard let self else { return }
             let conn = TransferConnection(nw, queue: self.queue)
@@ -229,12 +241,26 @@ final class TransferServer {
             // 否则会把刚换上的新 listener 的状态/端口覆盖回旧值。makeListener 在本队列上同步设好 self.listener。
             guard self.listener === listener else { return }
             self.lastState = st
-            if case .ready = st { self.port = listener.port?.rawValue }
+            if case .ready = st {
+                self.port = listener.port?.rawValue
+                if let port = self.port {
+                    self.portPolicy.listenerReady(port: port)
+                }
+            }
             // 自愈:系统睡眠/网络变更常把 listener 打到 .failed(终态,不会自行恢复)→ 退避后重建。
             // 否则醒来后本机既无法被连入、Bonjour 广播也随之消失,对端永远发现不到本机(单向重连死锁的一半)。
             // 退避期间若已被外部 restart 顶替(listener 已换),则跳过,避免把刚起来的监听又拆掉。
-            if case .failed = st {
-                self.queue.asyncAfter(deadline: .now() + 2) { [weak self] in
+            if case .failed(let error) = st {
+                let failureKind = TransferListenerPortPolicy.failureKind(for: error)
+                let nextBinding = self.portPolicy.listenerFailed(
+                    requestedPort: requestedPort,
+                    kind: failureKind
+                )
+                let shouldFallBackImmediately = requestedPort != nil
+                    && failureKind == .addressInUse
+                    && nextBinding == .random
+                let retryDelay: TimeInterval = shouldFallBackImmediately ? 0 : 2
+                self.queue.asyncAfter(deadline: .now() + retryDelay) { [weak self] in
                     guard let self, self.listener === listener else { return }
                     self.makeListenerReplacing()
                 }
