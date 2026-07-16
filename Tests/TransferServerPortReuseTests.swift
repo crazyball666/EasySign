@@ -47,6 +47,55 @@ private final class ListenerReadyProbe {
         return result
     }
 }
+
+/// Records the production listener's complete preferred-port failure and random fallback sequence.
+private final class OccupiedPortFallbackProbe {
+    struct Snapshot {
+        let addressInUseFailures: Int
+        let otherFailures: [String]
+        let readyPort: UInt16?
+    }
+
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var addressInUseFailures = 0
+    private var otherFailures: [String] = []
+    private var readyPort: UInt16?
+    private var didSignal = false
+
+    func record(state: NWListener.State, port: UInt16?) {
+        lock.lock()
+        switch state {
+        case .failed(let error):
+            if case .posix(.EADDRINUSE) = error {
+                addressInUseFailures += 1
+            } else {
+                otherFailures.append(String(describing: error))
+            }
+        case .ready:
+            readyPort = port
+        default:
+            break
+        }
+
+        let shouldSignal = !didSignal
+            && (readyPort != nil || !otherFailures.isEmpty || addressInUseFailures > 1)
+        if shouldSignal { didSignal = true }
+        lock.unlock()
+        if shouldSignal { semaphore.signal() }
+    }
+
+    func wait(timeout: TimeInterval) -> Snapshot {
+        _ = semaphore.wait(timeout: .now() + timeout)
+        lock.lock()
+        defer { lock.unlock() }
+        return Snapshot(
+            addressInUseFailures: addressInUseFailures,
+            otherFailures: otherFailures,
+            readyPort: readyPort
+        )
+    }
+}
 #endif
 
 @main
@@ -63,6 +112,7 @@ struct TransferServerPortReuseTests {
 #if !POLICY_ONLY
         do {
             try testStoppedServerPortCanBeReused()
+            try testOccupiedPreferredPortFallsBackToRandom()
         } catch {
             fail("real listener reuse threw: \(error)")
         }
@@ -170,6 +220,59 @@ struct TransferServerPortReuseTests {
             fail("preferred listener did not become ready within 10s: \(describe(secondResult))")
         }
         expect(reusedPort == originalPort, "second server should reuse \(originalPort), got \(reusedPort)")
+    }
+
+    private static func testOccupiedPreferredPortFallsBackToRandom() throws {
+        let material = try DeviceIdentity.generateSelfSigned(commonName: "EasySign-port-fallback")
+        let loaded = try DeviceIdentity.importIdentity(
+            certDER: material.certDER,
+            keyX963: material.keyX963
+        )
+
+        let holderProbe = ListenerReadyProbe()
+        let holder = TransferServer(identity: { loaded.identity })
+        holder.onStateChange = { state, port in holderProbe.record(state: state, port: port) }
+        try holder.start()
+        defer { holder.stop() }
+
+        let holderResult = holderProbe.wait(timeout: 10)
+        guard case .ready(let occupiedPort)? = holderResult else {
+            holder.stop()
+            fail("holder listener did not become ready within 10s: \(describe(holderResult))")
+        }
+
+        let fallbackProbe = OccupiedPortFallbackProbe()
+        let fallback = TransferServer(identity: { loaded.identity }, preferredPort: occupiedPort)
+        fallback.onStateChange = { state, port in fallbackProbe.record(state: state, port: port) }
+        try fallback.start()
+        defer { fallback.stop() }
+
+        let snapshot = fallbackProbe.wait(timeout: 10)
+        fallback.stop()
+        holder.stop()
+        let holderPortReleased = waitUntil(timeout: 5) { canBindTCPPort(occupiedPort) }
+        let fallbackPortReleased = snapshot.readyPort.map { port in
+            waitUntil(timeout: 5) { canBindTCPPort(port) }
+        } ?? true
+
+        expect(
+            snapshot.otherFailures.isEmpty,
+            "occupied preferred port should fail with POSIX EADDRINUSE, got: \(snapshot.otherFailures)"
+        )
+        expect(
+            snapshot.addressInUseFailures == 1,
+            "occupied preferred port should produce exactly one EADDRINUSE, got \(snapshot.addressInUseFailures)"
+        )
+        guard let fallbackPort = snapshot.readyPort else {
+            fail("same server did not self-heal onto a random port within 10s")
+        }
+        expect(fallbackPort != 0, "fallback listener should use a nonzero random port")
+        expect(
+            fallbackPort != occupiedPort,
+            "fallback listener should leave occupied preferred port \(occupiedPort)"
+        )
+        expect(holderPortReleased, "holder listener should release its port after stop")
+        expect(fallbackPortReleased, "fallback listener should release its port after stop")
     }
 
     private static func canBindTCPPort(_ port: UInt16) -> Bool {
