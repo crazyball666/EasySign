@@ -115,15 +115,16 @@ static let allTools: [any Tool] = [ ResignTool(), QRCodeTool(), DevicesTool(), T
 - **门面**:`TransferService`(`ObservableObject`),UI 唯一入口。
 - **UI**:`TransferToolView` 只读 `@ObservedObject` 的 published 状态、调 `connect()` 等,**碰不到 `NWConnection`**(好边界)。
 
-**信任与重连不变量**(改 `TransferReconnectCoordinator` / 配对逻辑前必读 `CLAUDE.md` 对应段):首配用 6 位码 + HMAC 绑定证书指纹;已配对**免码**,靠 TLS 证书指纹钉扎。自动恢复由意外断线、睡醒/回前台、网络首次可用或恢复、匹配 Bonjour 设备出现或 change token 变化驱动;每个 generation 只按 **0/2/5/10 秒**尝试,四次失败后进入无 timer 的等待状态,直到新的有效事件重开周期。同一 endpoint 的重复发现不会重置活动周期。
+**信任与重连不变量**(改 `TransferReconnectCoordinator` / 配对逻辑前必读 `CLAUDE.md` 对应段):首配用 6 位码 + HMAC 绑定证书指纹;已配对**免码**,靠 TLS 证书指纹钉扎。已绑定连接还会交换监听端口:接收方把端口与该 TLS 连接实际观察到的远端 IP 组合成 App 生命周期级可信 endpoint。它只是在 Bonjour 缺失时提供地址,不是新的信任根。自动恢复由意外断线、睡醒/回前台、网络首次可用或恢复、匹配 Bonjour 设备出现/变化或可信 endpoint 变化驱动;每个 generation 只按 **0/2/5/10 秒**尝试,四次失败后进入无 timer 的等待状态,直到新的有效事件重开周期。同一 endpoint 的重复事件不会重置活动周期。
 
 `TransferReconnectCoordinator` 是纯状态机,`TransferReconnectExecutionPolicy` 固定服务动作顺序和门禁,`TransferNetworkMonitor`/`PeerDiscovery` 提供路径转换与带 generation/change token 的事件。其关键约束是:
 
-- 只有 deviceId 较小的一端主动拨号;较大端只修复 listener/Bonjour 并等待入站,不能用保存的手动 IP 绕过仲裁。网络 path 未知/不可用或当前 Bonjour endpoint 缺失时均不自动拨号。
-- 自动 token 同时绑定 generation、attempt、预期 `PeerRef`(deviceId + fingerprint)与 discovery token;每次拨号从最新 snapshot 解析 endpoint,TLS ready 后再次核对身份。用户 Connect/Retry 会取消定时任务并推进 generation;忙碌导致的 deferred recovery 保留原 token/attempt,不消耗尝试次数;旧回调只能清理自己的连接实例。
-- 睡醒/网络恢复始终先修 listener,最后才请求恢复;非隐身模式的 Bonjour 广告重声明与 discovery 重启组成同一组 repair 动作,**共同受独立 3 秒去抖控制**,旧 browser generation 回调会被拒绝。
-- 自动连接永远不带配对码。成功绑定后,手动 Retry 保留用户明确选择的 peer 或 host/port,但改走免码路径;手动 IP 仅能由用户显式触发。
-- 主动断开先使 recovery generation 失效,再发送 best-effort `.bye`,并把当前 `PeerRef` 加入本机抑制集合;即使 `.bye` 丢失也拒绝该设备后续免码入站,直到本机显式 Connect/Retry 或清除配对。对端 `.bye` 只停止目标恢复,不建立本机抑制。
+- 只有 deviceId 较小的一端主动拨号;较大端只修复 listener/Bonjour 并等待入站。自动拨号还要求网络 path 已 satisfied、`lastConnectedPeer` 对应 `PeerRef` 仍已配对。目标优先当前 Bonjour 匹配项;Bonjour 缺失时才回退同一 `PeerRef` 的可信 IP/端口。可信 endpoint 不能绕过这些门禁,保存的原始手动 host 也不会自动升级成可信目标。
+- 自动 token 同时绑定 generation、attempt、预期 `PeerRef`(deviceId + fingerprint)与 Bonjour/可信 endpoint key;每次拨号从最新 snapshot 解析目标,TLS ready 后再次核对身份。用户 Connect/Retry 会取消定时任务并推进 generation;忙碌导致的 deferred recovery 保留原 token/attempt,不消耗尝试次数;旧回调只能清理自己的连接实例。
+- 睡醒/网络恢复始终先修 listener,最后才请求恢复;非隐身模式的 Bonjour 广告重声明与 discovery 重启组成同一组 repair 动作,**共同受独立 3 秒去抖控制**,旧 browser generation 回调会被拒绝。listener 在同一 App 生命周期的自愈中优先复用已 ready 的端口;端口被占用时才降级到随机端口并继续有限失败策略。
+- 自动 Bonjour/可信直连都永远不带配对码,并以已配对指纹执行 TLS pinning。成功绑定后,手动 Retry 保留用户明确选择的 peer 或 host/port,但改走免码路径;原始手动 IP 仅能由用户显式触发。
+- 主动断开先使 recovery generation 失效,再发送 best-effort `.bye`,并把当前 `PeerRef` 加入本机抑制集合;即使 `.bye` 丢失也拒绝该设备后续免码入站,直到本机显式 Connect/Retry 或清除配对。对端 `.bye` 只停止目标恢复,不建立本机抑制。`stop()` 与清除配对会删除可信 endpoint;显式断开、停止或清配对都不能被旧地址绕过。
+- 能力边界保持保守:若对端 IP 已变化且 Bonjour 不可用,仍需手动重连以学习新地址;App 重启后 `lastConnectedPeer` 与可信 endpoint 都不恢复。listener 端口若被其他进程占用且旧连接已断,对端无法预先得知随机新端口,本轮按 0/2/5/10 有限失败后等待新事件或手动操作。
 
 **并发**:全手写 GCD —— 每连接一个串行队列 + `NSLock`,`TransferServer` 把状态收敛在自己的串行队列,`TransferService` 靠遍布的 `DispatchQueue.main.async` 隐式主线程收敛。无 actor / async-await。
 

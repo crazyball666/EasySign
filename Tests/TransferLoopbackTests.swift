@@ -2,13 +2,27 @@ import Foundation
 import Network
 import Security
 
+/// Compile and run:
+/// swiftc -swift-version 5 -module-cache-path /tmp/easysign-swift-module-cache \
+///   EasySign/Core/Transfer/TransferModels.swift EasySign/Core/Transfer/TransferAutoReconnect.swift \
+///   EasySign/Core/Transfer/TransferTrustedEndpoint.swift EasySign/Core/Transfer/PeerDiscovery.swift \
+///   EasySign/Core/Transfer/WireMessage.swift EasySign/Core/Transfer/CertFingerprint.swift \
+///   EasySign/Core/Transfer/DeviceIdentity.swift EasySign/Core/Transfer/PairingCrypto.swift \
+///   EasySign/Core/Transfer/PairingManager.swift EasySign/Core/Transfer/TransferTLS.swift \
+///   EasySign/Core/Transfer/TransferListenerPortPolicy.swift EasySign/Core/Transfer/TransferServer.swift \
+///   EasySign/Core/Transfer/TransferClient.swift EasySign/Core/Transfer/TransferPaths.swift \
+///   EasySign/Core/Transfer/FileTransferManager.swift Tests/TransferLoopbackTests.swift \
+///   -o /tmp/transfer-loopback && /tmp/transfer-loopback
+
 /// Standalone loopback integration test for the secure-channel + pairing stack.
 /// Exercises the REAL Network.framework + Security stack over 127.0.0.1:
 ///   1. two self-signed identities (distinct fingerprints)
-///   2. mutual-TLS handshake + per-connection peer fingerprint capture (C4 design)
+///   2. mutual-TLS handshake + peer fingerprint/remote-host capture
 ///   3. symmetric PairingManager handshake -> mutual success
-///   4. clipboard WireMessage delivery over the established channel
-///   5. TLS pinning rejects a wrong-fingerprint client (negative test)
+///   4. bidirectional reconnectHint delivery over the bound channel
+///   5. trusted host/port reconnect with the paired fingerprint and no pairing code
+///   6. clipboard and file delivery still work after bound-handler replacement
+///   7. TLS pinning rejects a wrong-fingerprint client (negative test)
 ///
 /// Prints `ALL PASS` only if every assertion holds; otherwise `FAIL: ...` to stderr + exit(1).
 
@@ -19,6 +33,48 @@ final class Latest<T> {
     init(_ initial: T) { v = initial }
     var value: T { lock.lock(); defer { lock.unlock() }; return v }
     func set(_ n: T) { lock.lock(); v = n; lock.unlock() }
+}
+
+/// Thread-safe strong owner for every server-side inbound connection created by the test.
+final class ConnectionCollector {
+    private let condition = NSCondition()
+    private var connections: [TransferConnection] = []
+
+    var count: Int {
+        condition.lock()
+        defer { condition.unlock() }
+        return connections.count
+    }
+
+    func append(_ connection: TransferConnection) {
+        condition.lock()
+        connections.append(connection)
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func waitForCount(_ expectedCount: Int, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        condition.lock()
+        defer { condition.unlock() }
+        while connections.count < expectedCount {
+            guard condition.wait(until: deadline) else { return connections.count >= expectedCount }
+        }
+        return true
+    }
+
+    func connection(at index: Int) -> TransferConnection? {
+        condition.lock()
+        defer { condition.unlock() }
+        return connections.indices.contains(index) ? connections[index] : nil
+    }
+
+    func cancelAll() {
+        condition.lock()
+        let retained = connections
+        condition.unlock()
+        retained.forEach { $0.cancel() }
+    }
 }
 
 @main
@@ -40,14 +96,11 @@ struct TransferLoopbackTests {
 
         // ---- Bring up server (idB) ---------------------------------------------------
         let server = TransferServer(identity: { idB.identity })
-        let serverConnHolder = Latest<TransferConnection?>(nil)
-        let serverConnSem = DispatchSemaphore(value: 0)
+        let inboundConnections = ConnectionCollector()
         server.onConnection = { conn in
-            // onConnection fires on the server queue (serial) -> capture the FIRST only.
-            if serverConnHolder.value == nil {
-                serverConnHolder.set(conn)
-                serverConnSem.signal()
-            }
+            // Retain every inbound through cleanup: TLS failure paths are asynchronous and a weak
+            // wrapper could otherwise disappear before the test observes the decisive state.
+            inboundConnections.append(conn)
         }
         try server.start()
         expect(waitUntil(timeout: 10) { server.port != nil }, "server bound a port")
@@ -57,8 +110,10 @@ struct TransferLoopbackTests {
         // ---- Client (idA) connects with .acceptAny ----------------------------------
         let client = TransferClient(identity: { idA.identity })
         let clientConn = try client.connect(host: "127.0.0.1", port: port, pin: .acceptAny)
-        expect(serverConnSem.wait(timeout: .now() + 10) == .success, "server accepted a connection")
-        let serverConn = serverConnHolder.value!
+        expect(inboundConnections.waitForCount(1, timeout: 10), "server accepted the initial connection")
+        guard let serverConn = inboundConnections.connection(at: 0) else {
+            return fail("initial server connection was not retained")
+        }
 
         // ---- Stage 2: TLS ready + per-connection fingerprint capture -----------------
         let bothReady = waitUntil(timeout: 10) {
@@ -69,7 +124,15 @@ struct TransferLoopbackTests {
                "client captured server(idB) fingerprint, got \(clientConn.peerFingerprint ?? "nil")")
         expect(serverConn.peerFingerprint == idA.fingerprint,
                "server captured client(idA) fingerprint, got \(serverConn.peerFingerprint ?? "nil")")
-        log("stage2 ok: mutual TLS + per-connection fingerprint capture verified")
+        guard let clientRemoteHost = clientConn.remoteHost,
+              let serverRemoteHost = serverConn.remoteHost else {
+            return fail("both ready connections must expose a direct remote host")
+        }
+        expect(isLoopbackHost(clientRemoteHost),
+               "client remote host represents loopback, got \(clientRemoteHost)")
+        expect(isLoopbackHost(serverRemoteHost),
+               "server remote host represents loopback, got \(serverRemoteHost)")
+        log("stage2 ok: mutual TLS + fingerprints + remote hosts \(clientRemoteHost)/\(serverRemoteHost)")
 
         // ---- Stage 3: pairing handshake (symmetric, both sides) ----------------------
         let code = PairingCrypto.makeCode()
@@ -113,7 +176,68 @@ struct TransferLoopbackTests {
         expect(peerSeenByB.deviceId == "device-A", "B learned A's deviceId via hello")
         log("stage3 ok: mutual pairing success (code=\(code))")
 
-        // ---- Stage 4: clipboard message delivery ------------------------------------
+        // ---- Stage 4: bound reconnect hints travel intact in both directions ---------
+        let hintSeenByA = Latest<UInt16?>(nil)
+        let hintSeenByB = Latest<UInt16?>(nil)
+        let hintSemA = DispatchSemaphore(value: 0)
+        let hintSemB = DispatchSemaphore(value: 0)
+        clientConn.onMessage = { msg in
+            if case let .reconnectHint(hintPort) = msg {
+                hintSeenByA.set(hintPort); hintSemA.signal()
+            }
+        }
+        serverConn.onMessage = { msg in
+            if case let .reconnectHint(hintPort) = msg {
+                hintSeenByB.set(hintPort); hintSemB.signal()
+            }
+        }
+
+        let listenerPortA: UInt16 = 45_678
+        serverConn.send(.reconnectHint(port: port))
+        clientConn.send(.reconnectHint(port: listenerPortA))
+        expect(hintSemA.wait(timeout: .now() + 10) == .success,
+               "A received B's reconnect hint")
+        expect(hintSemB.wait(timeout: .now() + 10) == .success,
+               "B received A's reconnect hint")
+        expect(hintSeenByA.value == port,
+               "B's listener port arrived intact (\(hintSeenByA.value.map(String.init) ?? "nil") vs \(port))")
+        expect(hintSeenByB.value == listenerPortA,
+               "A's listener port arrived intact (\(hintSeenByB.value.map(String.init) ?? "nil") vs \(listenerPortA))")
+        log("stage4 ok: reconnect hints delivered intact in both directions")
+
+        // ---- Stage 5: pinned trusted direct reconnect needs no PairingManager --------
+        guard let learnedServerPort = hintSeenByA.value else {
+            return fail("A did not retain B's reconnect hint port")
+        }
+        let inboundBeforeTrustedDial = inboundConnections.count
+        let trustedClient = TransferClient(identity: { idA.identity })
+        let trustedClientConn = try trustedClient.connect(
+            host: clientRemoteHost,
+            port: learnedServerPort,
+            pin: .requirePinned(fingerprint: idB.fingerprint)
+        )
+        expect(inboundConnections.waitForCount(inboundBeforeTrustedDial + 1, timeout: 10),
+               "server accepted the trusted direct connection")
+        guard let trustedServerConn = inboundConnections.connection(at: inboundBeforeTrustedDial) else {
+            return fail("trusted direct server connection was not retained")
+        }
+        expect(waitUntil(timeout: 10) {
+            trustedClientConn.peerFingerprint == idB.fingerprint
+                && trustedServerConn.peerFingerprint == idA.fingerprint
+        }, "trusted direct connection became ready on both ends with paired fingerprints")
+        expect(isReady(trustedClientConn.nw.state),
+               "trusted direct client reached ready, state=\(describe(trustedClientConn.nw.state))")
+        expect(isReady(trustedServerConn.nw.state),
+               "trusted direct server inbound reached ready, state=\(describe(trustedServerConn.nw.state))")
+        expect(trustedClientConn.peerFingerprint == idB.fingerprint,
+               "trusted direct client pinned idB without a pairing code")
+        expect(trustedServerConn.peerFingerprint == idA.fingerprint,
+               "trusted direct server captured idA")
+        log("stage5 ok: observed host + hint port reconnected with the paired TLS pin")
+        trustedClientConn.cancel()
+        trustedServerConn.cancel()
+
+        // ---- Stage 6: clipboard message delivery after bound handler replacement -----
         let clip = Latest<String?>(nil)
         let clipSem = DispatchSemaphore(value: 0)
         serverConn.onMessage = { msg in
@@ -124,14 +248,17 @@ struct TransferLoopbackTests {
         clientConn.send(.clipboardText(text: "hello 世界", contentHash: "h"))
         expect(clipSem.wait(timeout: .now() + 10) == .success, "server received a clipboard message")
         expect(clip.value == "hello 世界", "clipboard text round-trips exactly, got \(clip.value ?? "nil")")
-        log("stage4 ok: clipboard message delivered intact")
+        log("stage6 ok: clipboard message delivered intact")
 
-        // ---- Stage 5: pinning rejects a stranger (negative) -------------------------
+        // ---- Stage 7: pinning rejects a stranger (negative) -------------------------
         let wrongFp = String(repeating: "0", count: 64)
         expect(wrongFp != idB.fingerprint, "wrong pin differs from the real server fingerprint")
+        let inboundBeforeWrongPin = inboundConnections.count
         let client2 = TransferClient(identity: { idA.identity })
         let badConn = try client2.connect(host: "127.0.0.1", port: port,
                                           pin: .requirePinned(fingerprint: wrongFp))
+        expect(inboundConnections.waitForCount(inboundBeforeWrongPin + 1, timeout: 10),
+               "server retained the wrong-pin inbound until cleanup")
         // Poll the connection's own state (race-free vs. callback assignment ordering).
         let decisive = waitUntil(timeout: 10) {
             isReady(badConn.nw.state) || isBlocked(badConn.nw.state)
@@ -143,10 +270,10 @@ struct TransferLoopbackTests {
         expect(isBlocked(finalState),
                "pinned-wrong connection blocked (failed/waiting/cancelled), state=\(describe(finalState))")
         expect(badConn.peerFingerprint == nil, "blocked connection captured no peer fingerprint")
-        log("stage5 ok: TLS pinning blocked the wrong-fingerprint client (state=\(describe(finalState)))")
+        log("stage7 ok: TLS pinning blocked the wrong-fingerprint client (state=\(describe(finalState)))")
         badConn.cancel()
 
-        // ---- Stage 6: chunked binary file round-trip over the paired channel ----------
+        // ---- Stage 8: chunked binary file round-trip over the paired channel ----------
         // connA = clientConn (sender), connB = serverConn (receiver). Deterministic bytes
         // (index-based, NOT random) so the comparison is reproducible without Date/rand.
         let payloadSize = 200_000
@@ -189,13 +316,13 @@ struct TransferLoopbackTests {
         expect(outBytes.count == payloadSize,
                "received byte count == source (\(outBytes.count) vs \(payloadSize))")
         expect(outBytes == srcBytes, "received bytes are byte-for-byte identical to source")
-        log("stage6 ok: file \(outBytes.count) bytes round-trip intact")
+        log("stage8 ok: file \(outBytes.count) bytes round-trip intact")
         try? FileManager.default.removeItem(at: srcURL)
         try? FileManager.default.removeItem(at: outURL)
 
         // ---- Cleanup -----------------------------------------------------------------
         clientConn.cancel()
-        serverConn.cancel()
+        inboundConnections.cancelAll()
         server.stop()
 
         print("ALL PASS")
@@ -235,6 +362,23 @@ struct TransferLoopbackTests {
         case .cancelled: return "cancelled"
         @unknown default: return "unknown"
         }
+    }
+
+    static func isLoopbackHost(_ host: String) -> Bool {
+        let normalized = host
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            .lowercased()
+        if let ipv4 = IPv4Address(normalized) {
+            return ipv4.rawValue.first == 127
+        }
+        if let ipv6 = IPv6Address(normalized) {
+            let bytes = [UInt8](ipv6.rawValue)
+            let isIPv6Loopback = bytes.dropLast().allSatisfy { $0 == 0 } && bytes.last == 1
+            let isMappedIPv4Loopback = bytes.prefix(10).allSatisfy { $0 == 0 }
+                && bytes[10] == 0xff && bytes[11] == 0xff && bytes[12] == 127
+            return isIPv6Loopback || isMappedIPv4Loopback
+        }
+        return false
     }
 
     static func log(_ m: String) { FileHandle.standardError.write(Data("• \(m)\n".utf8)) }
