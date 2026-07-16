@@ -112,6 +112,10 @@ struct TransferAutoReconnectTests {
             discovered: [], trusted: [trustedPeer: trusted], pairedPeers: pairedB
         ) == nil, "userStopped 时可信地址不应触发重连")
         expect(TransferAutoReconnect.target(
+            busy: false, userStopped: false, selfDeviceId: "A", last: nil,
+            discovered: [], trusted: [trustedPeer: trusted], pairedPeers: pairedB
+        ) == nil, "last == nil 时可信地址不应触发重连")
+        expect(TransferAutoReconnect.target(
             busy: false, userStopped: false, selfDeviceId: "A", last: trustedPeer,
             discovered: [], trusted: [trustedPeer: trusted], pairedPeers: []
         ) == nil, "未配对时可信地址不应触发重连")
