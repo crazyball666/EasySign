@@ -110,6 +110,9 @@ final class TransferService: ObservableObject {
     private var lastManualConnect: (() -> Void)?     // 仅供 UI 显式「重试」，自动恢复绝不读取
     private var stopRequested = false
     private var lastConnectedPeer: TransferAutoReconnect.PeerRef?
+    /// 仅在主线程读写；可信地址只活在本次 App 生命周期内，不进入配对持久化。
+    private var trustedReconnectEndpoints:
+        [TransferAutoReconnect.PeerRef: TransferTrustedEndpoint] = [:]
     private var networkPathSatisfied: Bool?
     private var reconnectCoordinator = TransferReconnectCoordinator()
     private var reconnectWork: DispatchWorkItem?
@@ -248,7 +251,11 @@ final class TransferService: ObservableObject {
                     guard let self,
                           self.serviceGeneration.acceptsEvent(generation) else { return }
                     switch st {
-                    case .ready:                 self.listenPort = port
+                    case .ready:
+                        self.listenPort = port
+                        if let conn = self.activeConn {
+                            self.sendReconnectHintIfPossible(on: conn)
+                        }
                     case .failed, .cancelled:    self.listenPort = nil
                     default:                     break
                     }
@@ -1129,7 +1136,7 @@ final class TransferService: ObservableObject {
         lastConnectedPeer = peerRef
         reconnectCoordinator.connected(
             to: peerRef,
-            endpointKey: discoveredPeer(matching: peerRef)?.reconnectEndpointKey
+            endpointKey: resolvedAutomaticTarget(for: peerRef)?.reconnectEndpointKey
         )
         if let outboundAttempt, outboundAttempt.origin == .user,
            let manualRetryRequest {
@@ -1185,6 +1192,10 @@ final class TransferService: ObservableObject {
                 self.fileManager.handleOffer(id: id, name: "image-\(id).png", size: size, isImage: true)
             case let .fileComplete(id):
                 self.fileManager.handleComplete(id: id)
+            case let .reconnectHint(port):
+                DispatchQueue.main.async {
+                    self.handleReconnectHint(port: port, peer: peer, source: conn)
+                }
             case .bye:
                 DispatchQueue.main.async {
                     self.handlePeerBye(peer: peer, source: conn)
@@ -1194,6 +1205,64 @@ final class TransferService: ObservableObject {
             }
         }
         conn.onMessage = { router.handle($0) }   // 强捕获 router:连接持有该闭包即维持其与内部 pm 存活
+        sendReconnectHintIfPossible(on: conn)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self, weak conn] in
+            guard let self, let conn else { return }
+            self.sendReconnectHintIfPossible(on: conn)
+        }
+    }
+
+    private func sendReconnectHintIfPossible(on conn: TransferConnection) {
+        guard activePeerFingerprint != nil,
+              let port = TransferReconnectExecutionPolicy.reconnectHintPort(
+                  source: conn,
+                  activeBound: activeConn,
+                  listenPort: listenPort
+              ) else { return }
+        conn.send(.reconnectHint(port: port))
+    }
+
+    private func handleReconnectHint(
+        port: UInt16,
+        peer: PairedPeer,
+        source: TransferConnection
+    ) {
+        let sourceIsActive = TransferReconnectExecutionPolicy.boundMessageDecision(
+            source: source,
+            active: activeConn
+        ) == .handle
+        let peerRef = TransferAutoReconnect.PeerRef(
+            deviceId: peer.deviceId,
+            fingerprint: peer.fingerprint
+        )
+        guard sourceIsActive,
+              activePeerFingerprint == peer.fingerprint,
+              lastConnectedPeer == peerRef,
+              reconnectCoordinator.target == peerRef,
+              let endpoint = TransferReconnectHintPolicy.endpoint(
+                  peer: peerRef,
+                  sourceIsActive: sourceIsActive,
+                  remoteHost: source.remoteHost,
+                  port: port
+              ) else { return }
+
+        let endpointChanged = trustedReconnectEndpoints[peerRef] != endpoint
+        if endpointChanged {
+            trustedReconnectEndpoints[peerRef] = endpoint
+            logger.log(
+                .info,
+                tool: "transfer",
+                "已更新 \(peer.name) 的可信直连地址 \(endpoint.host):\(endpoint.port)"
+            )
+        }
+
+        guard let currentTarget = resolvedAutomaticTarget(for: peerRef),
+              reconnectCoordinator.endpointKey != currentTarget.reconnectEndpointKey
+                || reconnectCoordinator.target != peerRef else { return }
+        reconnectCoordinator.connected(
+            to: peerRef,
+            endpointKey: currentTarget.reconnectEndpointKey
+        )
     }
 
     private func handleBoundConnectionDrop(
@@ -1363,6 +1432,7 @@ final class TransferService: ObservableObject {
         peerStore.removeAll()
         pairedPeers = []
         lastConnectedPeer = nil
+        trustedReconnectEndpoints.removeAll()
     }
 
     // MARK: - 生命周期动作
@@ -1468,6 +1538,7 @@ final class TransferService: ObservableObject {
         cancelReconnectScheduling()
         reconnectCoordinator.stop()
         lastConnectedPeer = nil
+        trustedReconnectEndpoints.removeAll()
         networkPathBridge.deactivate()
         networkMonitor.stop()
         networkPathSatisfied = nil
@@ -1514,42 +1585,58 @@ final class TransferService: ObservableObject {
         }
     }
 
+    /// 只解析指定已知 PeerRef 的当前 endpoint，不读取 busy/path/stop/deviceId 仲裁。
+    /// 绑定、hint 与 discovery snapshot 切换都需要在 connected/busy 状态下得到真实 key。
+    private func resolvedAutomaticTarget(
+        for peerRef: TransferAutoReconnect.PeerRef,
+        in peers: [DiscoveredPeer]? = nil
+    ) -> TransferAutomaticTarget? {
+        guard let pairedPeer = pairedPeers.first(where: {
+            $0.deviceId == peerRef.deviceId && $0.fingerprint == peerRef.fingerprint
+        }) else { return nil }
+        if let peer = discoveredPeer(matching: peerRef, in: peers) {
+            return .bonjour(peer)
+        }
+        guard let endpoint = trustedReconnectEndpoints[peerRef],
+              endpoint.peer == peerRef else { return nil }
+        return .trusted(endpoint, peerName: pairedPeer.name)
+    }
+
     private func handleDiscoveredPeers(
         _ peers: [DiscoveredPeer],
         generation: UInt
     ) {
         guard serviceGeneration.acceptsEvent(generation) else { return }
         let sessionDisposition = discoverySessionDisposition
-        let target = reconnectCoordinator.target
-        let oldPeer = target.flatMap { discoveredPeer(matching: $0) }
-        let newPeer = target.flatMap { discoveredPeer(matching: $0, in: peers) }
+        let targetPeer = reconnectCoordinator.target
+        let oldTarget = targetPeer.flatMap { resolvedAutomaticTarget(for: $0) }
+        let newTarget = targetPeer.flatMap { resolvedAutomaticTarget(for: $0, in: peers) }
         discoveredPeers = peers
 
-        guard let target else { return }
-        if oldPeer != nil, newPeer == nil {
+        guard let targetPeer,
+              oldTarget?.reconnectEndpointKey != newTarget?.reconnectEndpointKey else { return }
+        guard let newTarget else {
             cancelReconnectScheduling()
             reconnectCoordinator.peerBecameUnavailable()
             if sessionDisposition.allowsAutomaticAttemptCleanup {
                 cleanupUnboundAutomaticAttempt()
             }
             if !sessionDisposition.preservesPresentation {
-                showWaitingForRecovery("等待设备重新出现")
+                showWaitingForRecovery(nil)
             }
             return
         }
-        if let newPeer {
-            executeDiscoveryEndpointActions(
-                TransferReconnectExecutionPolicy.discoveryEndpointActions(
-                    oldEndpointKey: oldPeer?.reconnectEndpointKey,
-                    newEndpointKey: newPeer.reconnectEndpointKey,
-                    hasBoundConnection: hasBoundConnection,
-                    hasActiveAutomaticAttempt: hasActiveAutomaticAttempt
-                ),
-                target: target,
-                newEndpointKey: newPeer.reconnectEndpointKey,
-                sessionDisposition: sessionDisposition
-            )
-        }
+        executeDiscoveryEndpointActions(
+            TransferReconnectExecutionPolicy.discoveryEndpointActions(
+                oldEndpointKey: oldTarget?.reconnectEndpointKey,
+                newEndpointKey: newTarget.reconnectEndpointKey,
+                hasBoundConnection: hasBoundConnection,
+                hasActiveAutomaticAttempt: hasActiveAutomaticAttempt
+            ),
+            target: targetPeer,
+            newEndpointKey: newTarget.reconnectEndpointKey,
+            sessionDisposition: sessionDisposition
+        )
     }
 
     private func executeDiscoveryEndpointActions(
@@ -1586,17 +1673,35 @@ final class TransferService: ObservableObject {
     ) {
         guard serviceGeneration.acceptsEvent(generation) else { return }
         let sessionDisposition = discoverySessionDisposition
-        cancelReconnectScheduling()
-        if reconnectCoordinator.target != nil {
-            reconnectCoordinator.peerBecameUnavailable()
-        }
-        if sessionDisposition.allowsAutomaticAttemptCleanup {
-            cleanupUnboundAutomaticAttempt()
-        }
+        let targetPeer = reconnectCoordinator.target
+        let oldTarget = targetPeer.flatMap { resolvedAutomaticTarget(for: $0) }
         discoveredPeers = []
+        let newTarget = targetPeer.flatMap { resolvedAutomaticTarget(for: $0) }
         logger.log(.warn, tool: "transfer", "Bonjour 浏览失败: \(error.localizedDescription)")
-        if !sessionDisposition.preservesPresentation {
-            showWaitingForRecovery("等待设备重新出现")
+        if let targetPeer,
+           oldTarget?.reconnectEndpointKey != newTarget?.reconnectEndpointKey {
+            if let newTarget {
+                executeDiscoveryEndpointActions(
+                    TransferReconnectExecutionPolicy.discoveryEndpointActions(
+                        oldEndpointKey: oldTarget?.reconnectEndpointKey,
+                        newEndpointKey: newTarget.reconnectEndpointKey,
+                        hasBoundConnection: hasBoundConnection,
+                        hasActiveAutomaticAttempt: hasActiveAutomaticAttempt
+                    ),
+                    target: targetPeer,
+                    newEndpointKey: newTarget.reconnectEndpointKey,
+                    sessionDisposition: sessionDisposition
+                )
+            } else {
+                cancelReconnectScheduling()
+                reconnectCoordinator.peerBecameUnavailable()
+                if sessionDisposition.allowsAutomaticAttemptCleanup {
+                    cleanupUnboundAutomaticAttempt()
+                }
+            }
+        }
+        if newTarget == nil && !sessionDisposition.preservesPresentation {
+            showWaitingForRecovery(nil)
         }
     }
 
@@ -1698,15 +1803,20 @@ final class TransferService: ObservableObject {
         )
     }
 
-    private func currentAutomaticTarget() -> DiscoveredPeer? {
+    private func automaticTarget(busy: Bool) -> TransferAutomaticTarget? {
         TransferAutoReconnect.target(
-            busy: connectionState.isBusy,
+            busy: busy,
             userStopped: stopRequested,
             selfDeviceId: identityStore.deviceId,
             last: lastConnectedPeer,
             discovered: discoveredPeers,
-            pairedFingerprints: Set(pairedPeers.map(\.fingerprint))
+            trusted: trustedReconnectEndpoints,
+            pairedPeers: pairedPeers
         )
+    }
+
+    private func currentAutomaticTarget() -> TransferAutomaticTarget? {
+        automaticTarget(busy: connectionState.isBusy)
     }
 
     private func requestAutomaticRecovery(unexpectedDrop: Bool = false) {
@@ -1823,7 +1933,15 @@ final class TransferService: ObservableObject {
             return
         case .waitForEvent:
             cancelReconnectScheduling()
-            showWaitingForRecovery(nil)
+            let detail: String?
+            if networkPathSatisfied != true {
+                detail = "网络不可用，等待网络恢复"
+            } else if case .trusted = automaticTarget(busy: false) {
+                detail = "自动恢复暂未成功，等待网络变化或可手动重试"
+            } else {
+                detail = nil
+            }
+            showWaitingForRecovery(detail)
         case let .schedule(token, delay):
             cancelReconnectScheduling()
             reconnectScheduledToken = token
@@ -1840,12 +1958,7 @@ final class TransferService: ObservableObject {
         case let .dial(token):
             cancelReconnectScheduling()
             let target = currentAutomaticTarget()
-            let currentPeer = target.map {
-                TransferAutoReconnect.PeerRef(
-                    deviceId: $0.deviceId,
-                    fingerprint: $0.fingerprint
-                )
-            }
+            let currentPeer = target?.peerRef
             let currentEndpointKey = target?.reconnectEndpointKey
             let tokenAccepted = reconnectCoordinator.accepts(token)
             let decision = TransferReconnectExecutionPolicy.automaticDialDecision(
@@ -1871,7 +1984,7 @@ final class TransferService: ObservableObject {
             case .targetUnavailable:
                 reconnectCoordinator.peerBecameUnavailable()
                 cleanupUnboundAutomaticAttempt()
-                showWaitingForRecovery("等待设备重新出现")
+                showWaitingForRecovery(nil)
                 return
             case .waitForEvent:
                 reconnectCoordinator.networkUnavailable()
@@ -1881,12 +1994,31 @@ final class TransferService: ObservableObject {
                 break
             }
             guard let target else { return }
-            logger.log(.info, tool: "transfer", "自动重连(免码)→ \(target.name), attempt \(token.attempt)")
-            performOutbound(
-                to: target,
-                pairingCode: nil,
-                origin: .automatic(token)
-            )
+            switch target {
+            case let .bonjour(peer):
+                logger.log(
+                    .info,
+                    tool: "transfer",
+                    "自动重连(Bonjour,免码)→ \(peer.name), attempt \(token.attempt)"
+                )
+                performOutbound(
+                    to: peer,
+                    pairingCode: nil,
+                    origin: .automatic(token)
+                )
+            case let .trusted(endpoint, peerName):
+                logger.log(
+                    .info,
+                    tool: "transfer",
+                    "自动重连(可信直连,免码)→ \(peerName) \(endpoint.host):\(endpoint.port), attempt \(token.attempt)"
+                )
+                performOutbound(
+                    host: endpoint.host,
+                    port: endpoint.port,
+                    pairingCode: nil,
+                    origin: .automatic(token)
+                )
+            }
         }
     }
 

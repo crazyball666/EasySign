@@ -1035,6 +1035,31 @@ struct TransferReconnectExecutionPolicyTests {
             source: currentBoundConnection,
             active: currentBoundConnection
         ) == .handle, "当前 bound 连接的 bye/hint 应正常处理并把 active 结果传给 hint policy")
+        expect(Policy.reconnectHintPort(
+            source: currentBoundConnection,
+            activeBound: currentBoundConnection,
+            listenPort: 54321
+        ) == 54321, "500ms 补发只能向当前 bound 连接发送有效监听端口")
+        expect(Policy.reconnectHintPort(
+            source: staleBoundConnection,
+            activeBound: currentBoundConnection,
+            listenPort: 54321
+        ) == nil, "500ms 补发不得向 superseded 旧连接发送 hint")
+        expect(Policy.reconnectHintPort(
+            source: currentBoundConnection,
+            activeBound: nil,
+            listenPort: 54321
+        ) == nil, "bound 会话已结束时不得补发 hint")
+        expect(Policy.reconnectHintPort(
+            source: currentBoundConnection,
+            activeBound: currentBoundConnection,
+            listenPort: nil
+        ) == nil, "listener 未 ready 时不得补发 hint")
+        expect(Policy.reconnectHintPort(
+            source: currentBoundConnection,
+            activeBound: currentBoundConnection,
+            listenPort: 0
+        ) == nil, "listener 端口为 0 时不得补发 hint")
         var currentByeCoordinator = Coordinator()
         currentByeCoordinator.connected(to: peerRef, endpointKey: "ep-current")
         if Policy.boundMessageDecision(

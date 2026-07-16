@@ -439,6 +439,17 @@ enum TransferReconnectExecutionPolicy {
         return ObjectIdentifier(source) == ObjectIdentifier(active) ? .handle : .ignoreStale
     }
 
+    static func reconnectHintPort(
+        source: AnyObject,
+        activeBound: AnyObject?,
+        listenPort: UInt16?
+    ) -> UInt16? {
+        guard boundMessageDecision(source: source, active: activeBound) == .handle,
+              let listenPort,
+              listenPort != 0 else { return nil }
+        return listenPort
+    }
+
     static func completionDecision(
         attemptMatches: Bool,
         connectionMatches: Bool,
