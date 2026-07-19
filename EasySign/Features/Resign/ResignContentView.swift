@@ -272,17 +272,21 @@ struct DropdownPickerRow<SelectionValue: Hashable>: View {
     @Binding var selection: SelectionValue
     let options: [SelectionValue]
     let displayTitle: (SelectionValue) -> String
+    /// 返回非 nil 表示该项不可选,内容是禁用原因(显示为菜单里的灰色说明行)。
+    let disabledReason: (SelectionValue) -> String?
 
     init(
         title: String,
         selection: Binding<SelectionValue>,
         options: [SelectionValue],
-        displayTitle: @escaping (SelectionValue) -> String
+        displayTitle: @escaping (SelectionValue) -> String,
+        disabledReason: @escaping (SelectionValue) -> String? = { _ in nil }
     ) {
         self.title = title
         self._selection = selection
         self.options = options
         self.displayTitle = displayTitle
+        self.disabledReason = disabledReason
     }
 
     var body: some View {
@@ -290,15 +294,20 @@ struct DropdownPickerRow<SelectionValue: Hashable>: View {
         FormRow(title) {
             Menu {
                 ForEach(options, id: \.self) { option in
+                    let reason = disabledReason(option)
                     Button {
                         selection = option
                     } label: {
+                        // 禁用项把原因直接拼进标题:macOS 的 Menu 里禁用项没有
+                        // 悬停提示,不写出来用户只会看到一个点不动的选项。
+                        let label = reason.map { "\(displayTitle(option))（\($0)）" } ?? displayTitle(option)
                         if option == selection {
-                            Label(displayTitle(option), systemImage: "checkmark")
+                            Label(label, systemImage: "checkmark")
                         } else {
-                            Text(displayTitle(option))
+                            Text(label)
                         }
                     }
+                    .disabled(reason != nil)
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -428,6 +437,8 @@ struct ResignContentView: View {
         _logger = ObservedObject(wrappedValue: hub.logger)
     }
     @State private var validationError: String?
+    /// nil = 还没探测完。探测要起子进程,放后台,期间不禁用任何选项(避免闪一下)。
+    @State private var isXcodeAvailable: Bool?
 
     private var injectedDylibText: Binding<String> {
         Binding {
@@ -458,7 +469,7 @@ struct ResignContentView: View {
                             }
                         }
                     }
-                    .padding(GlassMetric.spacingXL)
+                    .glassWorkspacePadding()
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             }
@@ -479,6 +490,7 @@ struct ResignContentView: View {
             viewModel.resignBackend = ResignBackend(rawValue: UserDefaults.standard.string(forKey: CacheKey.selectedResignBackend.rawValue) ?? "") ?? .zsign
             viewModel.resignType = ResignExportType(rawValue: UserDefaults.standard.string(forKey: CacheKey.selectedResignType.rawValue) ?? "") ?? .dev
             viewModel.outputDir = UserDefaults.standard.string(forKey: CacheKey.selectedOutput.rawValue) ?? ""
+            probeXcode()
         })
         .alert("Error", isPresented: Binding(value: $viewModel.presentError)) {
             Button("OK", role: .cancel) {}
@@ -593,10 +605,14 @@ struct ResignContentView: View {
                 }
 
                 DropdownPickerRow(
-                    title: "重签方式",
+                    title: "重签引擎",
                     selection: $viewModel.resignBackend,
                     options: ResignBackend.allCases,
-                    displayTitle: { $0.displayName }
+                    displayTitle: { $0.displayName },
+                    disabledReason: { backend in
+                        guard backend.requiresFullXcode, isXcodeAvailable == false else { return nil }
+                        return "需安装 Xcode"
+                    }
                 )
 
                 DropdownPickerRow(
@@ -638,11 +654,17 @@ struct ResignContentView: View {
                 )
 
                 HStack(alignment: .center, spacing: GlassMetric.spacingM) {
-                    Label("运行详情与完整日志位于任务摘要。", systemImage: "waveform.path.ecg")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     Spacer()
                     ResignPrimaryAction(isRunning: viewModel.loading, action: onTapStart)
+                }
+
+                // 日志跟着「开始」放在同一步:重签跑起来后要盯的就是它,
+                // 原先塞在任务摘要弹窗里,一边点开始一边看日志得先开弹窗。
+                VStack(alignment: .leading, spacing: GlassMetric.spacingS) {
+                    GlassSectionTitle("任务日志", icon: "list.bullet.rectangle")
+                    LogPanelView(logger: logger, toolId: "resign")
+                        .frame(minHeight: 190, maxHeight: 250)
+                        .clipShape(RoundedRectangle(cornerRadius: GlassMetric.radiusSmall, style: .continuous))
                 }
             }
         }
@@ -663,13 +685,6 @@ struct ResignContentView: View {
                 detail: activityDescription,
                 status: resignStatus
             )
-
-            VStack(alignment: .leading, spacing: GlassMetric.spacingS) {
-                GlassSectionTitle("任务活动", icon: "list.bullet.rectangle")
-                LogPanelView(logger: logger, toolId: "resign")
-                    .frame(minHeight: 190, maxHeight: 250)
-                    .clipShape(RoundedRectangle(cornerRadius: GlassMetric.radiusSmall, style: .continuous))
-            }
         }
     }
 
@@ -743,6 +758,30 @@ struct ResignContentView: View {
         let inputURL = URL(fileURLWithPath: viewModel.inputFile)
         return ["ipa", "zip", "app"].contains(inputURL.pathExtension.lowercased()) &&
             FileManager.default.fileExists(atPath: inputURL.path)
+    }
+
+    /// 探测完整 Xcode 是否可用,决定 codesign 引擎能不能选。
+    /// 只探一次(已有结果就跳过):切工具来回进出会反复触发 onAppear。
+    private func probeXcode() {
+        guard isXcodeAvailable == nil else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let probe = XcodeAvailability.probe()
+            DispatchQueue.main.async {
+                isXcodeAvailable = probe.isAvailable
+                if probe.isAvailable {
+                    hub.logger.log(.debug, tool: "resign",
+                                   "Xcode 可用:\(probe.developerDirectory ?? "?")")
+                } else {
+                    hub.logger.log(.info, tool: "resign",
+                                   "未检测到完整 Xcode,codesign 引擎已禁用。\(probe.failureReason ?? "")")
+                    // 上次选的是 codesign、这次环境里没有 Xcode → 退回 zsign,
+                    // 否则会停在一个既选不了、跑起来又必失败的状态上。
+                    if viewModel.resignBackend.requiresFullXcode {
+                        viewModel.resignBackend = .zsign
+                    }
+                }
+            }
+        }
     }
 
     private func onTapPreview() {

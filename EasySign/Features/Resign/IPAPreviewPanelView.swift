@@ -26,7 +26,9 @@ struct IPAPreviewPanelView: View {
             VStack(spacing: 0) {
                 heroHeader
                 tabBar
+                // tab 栏收进来之后,分隔线也得跟着收,否则它比上下都宽一截。
                 Divider()
+                    .padding(.horizontal, GlassMetric.spacingXL)
                 ScrollView {
                     Group {
                         switch selectedTab {
@@ -66,7 +68,9 @@ struct IPAPreviewPanelView: View {
             fileMeta
         }
         .glassSurface(.standard, radius: GlassMetric.radiusLarge, padding: GlassMetric.spacingXL)
-        .padding(GlassMetric.spacingS)
+        // 左右与 tab 栏、内容区统一到 spacingXL;上下保持原来的 spacingS。
+        .padding(.horizontal, GlassMetric.spacingXL)
+        .padding(.vertical, GlassMetric.spacingS)
     }
 
     @ViewBuilder
@@ -158,6 +162,9 @@ struct IPAPreviewPanelView: View {
         }
         .padding(.horizontal, GlassMetric.spacingS)
         .glassSurface(.inset, radius: GlassMetric.radiusMedium, padding: 0)
+        // 与 hero 卡片、下方内容区左右对齐(统一 spacingXL);
+        // 原先 tab 栏是通栏的,左右比上下两块各宽出一截。
+        .padding(.horizontal, GlassMetric.spacingXL)
     }
 
     private func iconForTab(_ tab: PreviewTab) -> String {

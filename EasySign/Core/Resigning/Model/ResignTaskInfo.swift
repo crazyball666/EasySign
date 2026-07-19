@@ -24,9 +24,13 @@ enum ResignBackend: String, CaseIterable {
         case .zsign:
             return "zsign"
         case .apple:
-            return "系统 codesign"
+            return "codesign"
         }
     }
+
+    /// 这条后端要跑 `xcodebuild -exportArchive`,只装命令行工具时会失败。
+    /// 详见 XcodeAvailability。
+    var requiresFullXcode: Bool { self == .apple }
 }
 
 struct ResignTaskInfo {
