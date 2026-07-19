@@ -14,6 +14,9 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 生成更新说明要读 tag 之间的提交历史,浅克隆(默认 depth=1)拿不到。
+          fetch-depth: 0
 
       - name: Select Xcode
         uses: maxim-lobanov/setup-xcode@v1
@@ -52,9 +55,18 @@ jobs:
           || hdiutil create -volname "EasySign ${{ steps.ver.outputs.version }}" \
                -srcfolder "$APP" -ov -format UDZO "$DMG"
 
+      - name: Generate release notes
+        run: |
+          scripts/release-notes.sh "${GITHUB_REF_NAME}" > RELEASE_NOTES.md
+          echo "--- 生成的更新说明 ---"
+          cat RELEASE_NOTES.md
+
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
+          # 不用 generate_release_notes:它只列已合并的 PR,本仓库直接往 main 提交,
+          # 结果永远只有一行 "Full Changelog: <链接>"。改为按 conventional commits
+          # 归类生成,见 scripts/release-notes.sh。
+          body_path: RELEASE_NOTES.md
           files: EasySign-*.dmg
