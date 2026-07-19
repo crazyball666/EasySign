@@ -33,18 +33,21 @@ struct DeviceView: View {
                 let usesInspector = GlassLayout.contextPresentation(for: proxy.size.width) == .inspector
                 VStack(alignment: .leading, spacing: GlassMetric.spacingL) {
                     WorkspaceHeader(icon: "iphone", title: "设备工作台", subtitle: "浏览 iOS 应用沙盒与媒体文件", status: selectedDevice == nil ? .idle : .success, statusTitle: selectedDevice == nil ? "等待设备" : "设备已连接") {
-                        if usesInspector {
-                            GlassInspectorButton(title: "设备信息") { DeviceConnectionRail(device: selectedDevice, mode: mode).padding(GlassMetric.spacingS) }
-                        } else { EmptyView() }
+                        HStack(spacing: GlassMetric.spacingM) {
+                            if selectedDevice != nil { modeSegment }
+                            if usesInspector {
+                                GlassInspectorButton(title: "设备信息") { DeviceConnectionRail(device: selectedDevice, mode: mode).padding(GlassMetric.spacingS) }
+                            }
+                        }
                     }
                     HStack(spacing: GlassMetric.spacingL) {
                         DeviceListPanel(devices: deviceManager.devices, selectedDevice: $selectedDevice, onRefresh: { deviceManager.refreshDevices() }, onDeviceSelected: resetSelection)
-                            .frame(width: 180)
+                            .frame(width: 150)
                         mainContent.frame(maxWidth: .infinity, maxHeight: .infinity)
                         if !usesInspector { DeviceConnectionRail(device: selectedDevice, mode: mode).frame(width: 270) }
                     }
                 }
-                .padding(GlassMetric.spacingXL)
+                .glassWorkspacePadding()
             }
         }
         .onAppear {
@@ -69,29 +72,21 @@ struct DeviceView: View {
         if selectedDevice == nil {
             placeholder("从左侧选择一台设备")
         } else {
-            VStack(spacing: 0) {
-                modeSegment
-                Divider()
-                bodyForMode
-            }
+            bodyForMode
         }
     }
 
+    // Lives in the workspace header's trailing slot: a dedicated segment row above
+    // the browser would cost ~60pt of the app list's visible area for one control.
     private var modeSegment: some View {
-        HStack {
-            Picker("", selection: $mode) {
-                ForEach(BrowseMode.allCases, id: \.self) { m in
-                    Text(m.rawValue).tag(m)
-                }
+        Picker("", selection: $mode) {
+            ForEach(BrowseMode.allCases, id: \.self) { m in
+                Text(m.rawValue).tag(m)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 260)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .glassSurface(.inset, radius: GlassMetric.radiusMedium, padding: 0)
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 168)
         .onChange(of: mode) { _, _ in
             // Switching mode collapses any deeper navigation in the previous mode.
             selectedApp = nil

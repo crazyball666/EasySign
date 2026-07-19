@@ -52,26 +52,29 @@ struct DeviceRow: View {
     var body: some View {
         let palette = GlassPalette(colorScheme: colorScheme)
         Button(action: onTap) {
-            HStack {
+            HStack(spacing: GlassMetric.spacingS) {
                 Image(systemName: device.deviceClass == .iPhone ? "iphone" : "ipad")
                     .foregroundStyle(isSelected ? palette.onAccentText : palette.primaryStart)
-                VStack(alignment: .leading) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text(device.name)
                         .font(.subheadline)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                         .foregroundStyle(isSelected ? palette.onAccentText : Color.primary)
                     Text(device.systemVersion)
                         .font(.caption)
+                        .lineLimit(1)
                         .foregroundStyle(isSelected ? palette.onAccentText.opacity(0.82) : palette.mutedText)
                 }
-                Spacer()
+                Spacer(minLength: 0)
                 if device.interfaceType == .wireless {
                     Image(systemName: "wifi")
                         .font(.caption)
                         .foregroundStyle(isSelected ? palette.onAccentText : palette.primaryStart)
                 }
             }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
+            .padding(.horizontal, GlassMetric.spacingS)
+            .padding(.vertical, 7)
             .background {
                 if isSelected {
                     RoundedRectangle(cornerRadius: GlassMetric.radiusSmall, style: .continuous)

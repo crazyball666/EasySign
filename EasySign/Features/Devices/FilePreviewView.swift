@@ -48,19 +48,24 @@ struct FilePreviewView: View {
                 .glassSurface(.emphasized, radius: GlassMetric.radiusMedium, padding: GlassMetric.spacingM)
 
                 // 预览内容
-                if isLoading {
-                    ActivityCard(
-                        title: "正在加载预览",
-                        detail: "正在从设备读取 \(fileName)",
-                        status: .active
-                    )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let error = errorMessage {
-                    ActivityCard(title: "无法预览文件", detail: error, status: .danger)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let result = previewResult {
-                    previewContent(result)
+                ZStack {
+                    if isLoading {
+                        StatePlaceholder(
+                            title: "正在加载预览",
+                            detail: "正在从设备读取 \(fileName)",
+                            status: .active
+                        )
+                        .transition(.glassState)
+                    } else if let error = errorMessage {
+                        StatePlaceholder(title: "无法预览文件", detail: error, status: .danger)
+                            .transition(.glassState)
+                    } else if let result = previewResult {
+                        previewContent(result)
+                            .transition(.glassState)
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .animation(.glassState, value: previewStateKey)
                 }
                 .padding(GlassMetric.spacingL)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -87,6 +92,13 @@ struct FilePreviewView: View {
         } message: { msg in
             Text(msg)
         }
+    }
+
+    /// 见 AppListView.contentStateKey:只在状态种类变化时转场。
+    private var previewStateKey: String {
+        if isLoading { return "loading" }
+        if let error = errorMessage { return "error:\(error)" }
+        return previewResult == nil ? "none" : "preview"
     }
 
     @ViewBuilder

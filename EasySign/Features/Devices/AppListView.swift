@@ -19,6 +19,8 @@ struct AppListView: View {
     @State private var opMessage: String?
     @State private var opError: String?
     @State private var pendingUninstall: InstalledApp?
+    @State private var detailApp: InstalledApp?
+    @StateObject private var iconStore = AppIconStore()
 
     enum AppFilter: String, CaseIterable {
         case all = "All"
@@ -85,23 +87,18 @@ struct AppListView: View {
         } message: {
             Text("将从设备删除该 App 及其数据,不可撤销。")
         }
+        .sheet(item: $detailApp) { app in
+            AppDetailSheet(app: app, icon: iconStore.icons[app.bundleID])
+        }
         .onAppear { loadApps() }
-        .onChange(of: device) { _, _ in loadApps() }
+        .onChange(of: device) { _, _ in
+            iconStore.reset(deviceID: device?.id)
+            loadApps()
+        }
     }
 
     private var searchBar: some View {
-        VStack(spacing: GlassMetric.spacingS) {
-            HStack {
-                Spacer()
-                Button {
-                    pickAndInstall()
-                } label: {
-                    Label("安装 IPA…", systemImage: "square.and.arrow.down.on.square")
-                }
-                .buttonStyle(GlassButtonStyle(.primary))
-                .disabled(device == nil || opTitle != nil || isLoading)
-            }
-
+        HStack(spacing: GlassMetric.spacingS) {
             HStack(spacing: GlassMetric.spacingS) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
@@ -113,6 +110,7 @@ struct AppListView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
             .glassSurface(.inset, radius: GlassMetric.radiusSmall)
+            .frame(minWidth: 120)
 
             Picker("", selection: $selectedFilter) {
                 ForEach(AppFilter.allCases, id: \.self) { f in
@@ -121,40 +119,72 @@ struct AppListView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .frame(width: 170)
+
+            Button {
+                pickAndInstall()
+            } label: {
+                Label("安装 IPA", systemImage: "square.and.arrow.down.on.square")
+            }
+            .buttonStyle(GlassButtonStyle(.primary, compact: true))
+            .disabled(device == nil || opTitle != nil || isLoading)
+            .fixedSize()
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        if isLoading {
-            ActivityCard(
-                title: "正在读取 App 列表",
-                detail: "正在从已连接设备加载应用信息",
-                status: .active
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let error = errorMessage {
-            ActivityCard(title: "无法读取 App 列表", detail: error, status: .danger)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if filteredApps.isEmpty {
-            ActivityCard(
-                title: apps.isEmpty ? "没有找到 App" : "没有匹配的 App",
-                detail: apps.isEmpty ? "设备中没有可显示的应用" : "尝试调整搜索词或筛选条件",
-                status: .idle
-            )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            List(filteredApps) { app in
-                AppRow(app: app, onUninstall: { pendingUninstall = $0 })
+        // ZStack + 每个分支自带 transition:if/else 直接换视图会硬切,
+        // 加载态出现/消失都很突兀。外层 .animation 绑定状态标识驱动转场。
+        ZStack {
+            if isLoading {
+                StatePlaceholder(
+                    title: "正在读取 App 列表",
+                    detail: "正在从已连接设备加载应用信息",
+                    status: .active
+                )
+                .transition(.glassState)
+            } else if let error = errorMessage {
+                StatePlaceholder(title: "无法读取 App 列表", detail: error, status: .danger)
+                    .transition(.glassState)
+            } else if filteredApps.isEmpty {
+                StatePlaceholder(
+                    title: apps.isEmpty ? "没有找到 App" : "没有匹配的 App",
+                    detail: apps.isEmpty ? "设备中没有可显示的应用" : "尝试调整搜索词或筛选条件",
+                    status: .idle
+                )
+                .transition(.glassState)
+            } else {
+                List(filteredApps) { app in
+                    AppRow(
+                        app: app,
+                        icon: iconStore.icons[app.bundleID],
+                        onUninstall: { pendingUninstall = $0 },
+                        onShowDetail: { detailApp = $0 }
+                    )
                     .contentShape(Rectangle())
                     .onTapGesture { onAppSelected(app) }
+                    // 行出现时才拉图标 —— 一次 RPC 一个 App,三百多个全拉完既慢又白费。
+                    .onAppear { iconStore.load(for: app) }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                // Drop the List's default bottom content margin so the very last
+                // row is fully visible and clickable.
+                .listBottomContentMarginZero()
+                .transition(.glassState)
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            // Drop the List's default bottom content margin so the very last
-            // row is fully visible and clickable.
-            .listBottomContentMarginZero()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.glassState, value: contentStateKey)
+    }
+
+    /// 只在「哪一种状态」真正变化时触发转场 —— 绑定 filteredApps 本身会让
+    /// 每次输入搜索词都把整个列表淡入淡出一遍。
+    private var contentStateKey: String {
+        if isLoading { return "loading" }
+        if let error = errorMessage { return "error:\(error)" }
+        return filteredApps.isEmpty ? "empty:\(apps.isEmpty)" : "list"
     }
 
     private var operationOverlay: some View {
@@ -274,11 +304,13 @@ struct AppListView: View {
 struct AppRow: View {
     @Environment(\.colorScheme) private var colorScheme
     let app: InstalledApp
+    var icon: NSImage? = nil
     var onUninstall: ((InstalledApp) -> Void)? = nil
+    var onShowDetail: ((InstalledApp) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 10) {
-            AppIconPlaceholder(app: app)
+            AppIconView(app: app, icon: icon)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name)
@@ -297,7 +329,18 @@ struct AppRow: View {
                 Text(app.version.isEmpty ? "—" : app.version)
                     .font(.system(size: 11))
                     .foregroundStyle(GlassPalette(colorScheme: colorScheme).mutedText)
-                signingBadge
+                SigningBadge(app: app)
+            }
+
+            if let onShowDetail {
+                Button {
+                    onShowDetail(app)
+                } label: {
+                    Image(systemName: "info.circle")
+                }
+                .buttonStyle(GlassIconButtonStyle())
+                .foregroundStyle(GlassPalette(colorScheme: colorScheme).primaryStart)
+                .help("应用详情")
             }
 
             // 卸载入口仅对用户 App 开放(系统 App installation_proxy 也会拒)。
@@ -314,48 +357,25 @@ struct AppRow: View {
         }
         .padding(.vertical, 3)
     }
-
-    private var signingBadge: some View {
-        let color = badgeColor
-        return Text(app.badgeLabel)
-            .font(.system(size: 10, weight: .medium))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
-            .background(Capsule(style: .continuous).fill(color.opacity(0.15)))
-            .foregroundStyle(color)
-    }
-
-    private var badgeColor: Color {
-        let palette = GlassPalette(colorScheme: colorScheme)
-        if app.isSystemApp { return palette.mutedText }
-        switch app.signingInfo {
-        case .development: return palette.success
-        case .distribution: return palette.primaryStart
-        case .enterprise: return palette.warning
-        case .system: return palette.mutedText
-        case .unknown: return palette.mutedText
-        }
-    }
 }
 
 // MARK: - AppIconPlaceholder
 
-// Real iOS app icons live inside the .app bundle which house_arrest doesn't
-// expose. Until/unless we add network-based icon fetching (iTunes Search API
-// for App Store apps, etc.), this gives a polished color-coded placeholder
-// keyed off the bundle ID hash.
+// 真实图标走 SpringBoardServicesClient(见 AppIconStore);这里是它到位之前
+// (以及取不到时)的兜底:按 bundle ID 哈希着色的字母占位图。
 struct AppIconPlaceholder: View {
     @Environment(\.colorScheme) private var colorScheme
     let app: InstalledApp
+    var size: CGFloat = 38
 
     var body: some View {
         let colors = gradient(for: app.bundleID)
-        RoundedRectangle(cornerRadius: 9)
+        RoundedRectangle(cornerRadius: size * 0.23, style: .continuous)
             .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-            .frame(width: 38, height: 38)
+            .frame(width: size, height: size)
             .overlay(
                 Text(initial)
-                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .font(.system(size: size * 0.47, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
             )
             .shadow(color: colors.last!.opacity(0.25), radius: 1, y: 1)

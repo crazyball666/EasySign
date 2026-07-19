@@ -67,25 +67,38 @@ struct DestinationPickerSheet: View {
         .onAppear { load() }
     }
 
-    @ViewBuilder
     private var content: some View {
+        ZStack { contentBody }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(.glassState, value: contentStateKey)
+    }
+
+    /// 见 AppListView.contentStateKey:只在状态种类变化时转场。
+    private var contentStateKey: String {
+        if isLoading { return "loading" }
+        if let error = errorMessage { return "error:\(error)" }
+        return folders.isEmpty ? "empty" : "list"
+    }
+
+    @ViewBuilder
+    private var contentBody: some View {
         if isLoading {
-            ActivityCard(
+            StatePlaceholder(
                 title: "正在读取文件夹",
                 detail: "正在浏览 \(currentPath)",
                 status: .active
             )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .transition(.glassState)
         } else if let error = errorMessage {
-            ActivityCard(title: "无法读取目标文件夹", detail: error, status: .danger)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            StatePlaceholder(title: "无法读取目标文件夹", detail: error, status: .danger)
+                .transition(.glassState)
         } else if folders.isEmpty {
-            ActivityCard(
+            StatePlaceholder(
                 title: "此目录下没有子文件夹",
                 detail: "可以直接选择当前目录作为目标位置",
                 status: .idle
             )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .transition(.glassState)
         } else {
             List(folders) { node in
                 HStack {
@@ -104,6 +117,7 @@ struct DestinationPickerSheet: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .listBottomContentMarginZero()
+            .transition(.glassState)
         }
     }
 

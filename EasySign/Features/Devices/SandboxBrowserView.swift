@@ -196,16 +196,32 @@ struct SandboxBrowserView: View {
 
     @ViewBuilder
     private var content: some View {
+        ZStack {
+            contentBody
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.glassState, value: contentStateKey)
+    }
+
+    /// 见 AppListView.contentStateKey:只在状态种类变化时转场。
+    private var contentStateKey: String {
+        if isLoading { return "loading" }
+        if let error = errorMessage { return "error:\(error)" }
+        return "list"
+    }
+
+    @ViewBuilder
+    private var contentBody: some View {
         if isLoading {
-            ActivityCard(
+            StatePlaceholder(
                 title: "正在读取文件",
                 detail: "正在浏览 \(currentPath)",
                 status: .active
             )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .transition(.glassState)
         } else if let error = errorMessage {
-            ActivityCard(title: "无法读取当前目录", detail: error, status: .danger)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            StatePlaceholder(title: "无法读取当前目录", detail: error, status: .danger)
+                .transition(.glassState)
         } else {
             // Mount the progress bar on the List via safeAreaInset(bottom:)
             // instead of stacking it next to the List in a VStack. Otherwise
@@ -245,6 +261,7 @@ struct SandboxBrowserView: View {
             // .inProgress 的 bytes 每 ~0.1s 变一次,会让整个 List 子树在传输
             // 期间持续重启 0.2s 动画(updateTransfer 刻意不带 withAnimation)。
             .animation(.easeInOut(duration: 0.2), value: transferState.isActive)
+            .transition(.glassState)
         }
     }
 
