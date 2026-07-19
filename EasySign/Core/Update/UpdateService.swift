@@ -86,7 +86,8 @@ final class UpdateService: NSObject, ObservableObject, URLSessionDownloadDelegat
                 }
                 self.availableUpdate = UpdateInfo(version: latest.displayString,
                                                   releaseNotes: parsed.body,
-                                                  dmgURL: dmg, publishedAt: parsed.publishedAt)
+                                                  dmgURL: dmg, publishedAt: parsed.publishedAt,
+                                                  releaseURL: parsed.releaseURL)
                 self.logger.log(.info, tool: "update", "发现新版本 \(latest.displayString)")
             }
         }.resume()
