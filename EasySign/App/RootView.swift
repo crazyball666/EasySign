@@ -3,6 +3,8 @@ import SwiftUI
 struct RootView: View {
     @State private var selection: String?
     @State private var hub: ServiceHub
+    /// 由系统工具栏那颗 toggle 回写,用来判断详情列是不是成了最左列。
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(hub: ServiceHub) {
@@ -10,16 +12,19 @@ struct RootView: View {
         _selection = State(initialValue: Self.initialSelection(settings: hub.settings))
     }
 
+    private var sidebarHidden: Bool { columnVisibility == .detailOnly }
+
     var body: some View {
         GlassCanvas {
             GeometryReader { proxy in
                 let sidebarMode = GlassLayout.sidebarMode(for: proxy.size.width)
-                NavigationSplitView {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
                     SidebarView(
                         selection: $selection,
                         tools: ToolRegistry.allTools,
                         mode: sidebarMode
                     )
+                    .ignoresSafeArea(.container, edges: .top)
                 } detail: {
                     detailView
                         .id(selection ?? "empty-tool")
@@ -27,6 +32,18 @@ struct RootView: View {
                         // 680 = 各工具固定横排的最大需求(二维码:预览 340 + 操作列 220
                         // + 间距/边距 100 = 660)+ 缓冲;同时顶住侧栏分隔条把内容挤窄。
                         .frame(minWidth: 680, minHeight: 400)
+                        // 侧栏列本来就顶到窗口上沿(红绿灯浮在它上面),详情列却被工具栏
+                        // 的安全区推下约 52pt,白出一条空带。这里让它也顶上去,顶部留白
+                        // 改由 workspaceTopInset 说了算。
+                        //
+                        // 注意:窗口标题栏在内容之上,y < ~50pt 的区域点击会被它接走
+                        // (变成拖窗口)。所以 workspaceTopInset 不能小到把可点控件
+                        // (工作台头部右侧那颗按钮)顶进这条带里。
+                        //
+                        // 只在侧栏可见时顶上去。侧栏收起后详情列成了最左列,红绿灯和
+                        // 工具栏那颗 toggle 都落在它头上 —— 实测会直接压在工作台标题上,
+                        // 这种情况老老实实让安全区顶着。
+                        .ignoresSafeArea(.container, edges: sidebarHidden ? [] : .top)
                 }
                 .animation(detailAnimation, value: selection)
             }
@@ -90,6 +107,9 @@ struct RootView: View {
 /// Integrates the automatic NavigationSplitView toolbar with the Glass canvas.
 /// macOS 15 adds removal of the generated title item; macOS 14 still loses the
 /// opaque toolbar background while retaining its native title presentation.
+///
+/// 注意:不要改成 .toolbar(.hidden, for: .windowToolbar) —— 实测它会把标准
+/// 窗口按钮(红绿灯)一起干掉,而工具栏保留的那块高度**并不会**释放。
 private struct GlassWindowToolbarStyle: ViewModifier {
     func body(content: Content) -> some View {
         if #available(macOS 15.0, *) {

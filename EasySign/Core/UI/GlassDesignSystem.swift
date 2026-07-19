@@ -172,6 +172,23 @@ enum GlassMetric {
     static let radiusSmall: CGFloat = 10
     static let radiusMedium: CGFloat = 14
     static let radiusLarge: CGFloat = 20
+
+    /// 工具页内容顶边到**窗口上沿**的距离(两列都 ignoresSafeArea 之后从 0 起算)。
+    ///
+    /// 不能再小。标题栏浮在内容之上,落在它里面的点击会被接走(变成拖窗口),
+    /// 而工作台头部卡片右侧那颗按钮垂直居中,离卡片顶边固定 33.5pt。截图实测:
+    ///   - 标题栏拦截区 = 51.5pt(由改动前 "卡片顶边 57.5 - 当时 inset 6" 反推)
+    ///   - 取 20 → 按钮上沿 53.5pt,只剩 2pt 余量,贴边太险
+    ///   - 取 26 → 按钮上沿 59.5pt,留 8pt 余量
+    /// 顶部空带仍从原来的 57.5pt 降到 26pt。
+    ///
+    /// 另:工具栏那 51.5pt 不要试图用 .toolbar(.hidden, for: .windowToolbar) 去掉,
+    /// 实测红绿灯会被一起干掉,而保留高度并不释放。
+    static let workspaceTopInset: CGFloat = 26
+
+    /// 侧栏是最左一列,红绿灯浮在它的卡片上(约占窗口顶部 30pt),
+    /// 品牌行要额外下压这么多才不会被压住。详情列没有红绿灯,不需要。
+    static let trafficLightClearance: CGFloat = 24
 }
 
 struct GlassPalette {
@@ -353,31 +370,42 @@ extension View {
     func glassSidebarRail() -> some View {
         modifier(GlassSidebarRailModifier())
     }
+
+    /// 工具页根视图的外边距。顶部单独收窄,见 GlassMetric.workspaceTopInset。
+    func glassWorkspacePadding() -> some View {
+        padding(.top, GlassMetric.workspaceTopInset)
+            .padding(.horizontal, GlassMetric.spacingXL)
+            .padding(.bottom, GlassMetric.spacingXL)
+    }
 }
 
 struct GlassButtonStyle: ButtonStyle {
     let emphasis: GlassButtonEmphasis
+    /// 紧凑尺寸:用于挤在搜索栏/工具条里的次要动作,避免主按钮体量压掉列表可视区。
+    let compact: Bool
 
-    init(_ emphasis: GlassButtonEmphasis = .secondary) {
+    init(_ emphasis: GlassButtonEmphasis = .secondary, compact: Bool = false) {
         self.emphasis = emphasis
+        self.compact = compact
     }
 
     func makeBody(configuration: Configuration) -> some View {
-        GlassButtonBody(configuration: configuration, emphasis: emphasis)
+        GlassButtonBody(configuration: configuration, emphasis: emphasis, compact: compact)
     }
 
     private struct GlassButtonBody: View {
         @Environment(\.colorScheme) private var colorScheme
         let configuration: ButtonStyle.Configuration
         let emphasis: GlassButtonEmphasis
+        let compact: Bool
 
         var body: some View {
             let palette = GlassPalette(colorScheme: colorScheme)
             configuration.label
-                .font(.subheadline.weight(.semibold))
+                .font(compact ? .caption.weight(.semibold) : .subheadline.weight(.semibold))
                 .foregroundStyle(foreground(palette))
-                .padding(.horizontal, GlassMetric.spacingM)
-                .padding(.vertical, 8)
+                .padding(.horizontal, compact ? GlassMetric.spacingS : GlassMetric.spacingM)
+                .padding(.vertical, compact ? 5 : 8)
                 .background {
                     switch emphasis {
                     case .primary:
@@ -510,4 +538,110 @@ struct ActivityPulse: View {
             expanded = false
         }
     }
+}
+
+/// 不定量加载指示:渐变圆弧持续旋转。ActivityPulse 那颗 8pt 小圆点在
+/// 一整块空白内容区里当主角太弱,这个给「占满区域」的等待态用。
+struct GlassSpinner: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var spinning = false
+    var size: CGFloat = 30
+
+    var body: some View {
+        let palette = GlassPalette(colorScheme: colorScheme)
+        ZStack {
+            Circle()
+                .stroke(palette.border, lineWidth: 3)
+            Circle()
+                .trim(from: 0, to: 0.28)
+                .stroke(
+                    AngularGradient(
+                        colors: [palette.primaryStart, palette.primaryEnd],
+                        center: .center
+                    ),
+                    style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                )
+                .rotationEffect(.degrees(spinning ? 360 : 0))
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+        .onAppear(perform: updateAnimation)
+        .onChange(of: reduceMotion) { _, _ in updateAnimation() }
+        .onDisappear { withAnimation(nil) { spinning = false } }
+    }
+
+    private func updateAnimation() {
+        guard !reduceMotion else {
+            withAnimation(nil) { spinning = false }
+            return
+        }
+        spinning = false
+        withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) {
+            spinning = true
+        }
+    }
+}
+
+/// 占满一块内容区的状态视图(加载 / 出错 / 空列表)。
+///
+/// 与 `ActivityCard` 的分工:ActivityCard 是嵌在信息栏里的横幅,靠左满宽;
+/// 这个是居中的空状态,不带背景卡片(调用方所在区域通常已经是卡片),
+/// 且**不截断正文** —— 出错原因经常两三行,截掉等于没提示。
+struct StatePlaceholder: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let title: String
+    let detail: String?
+    let status: GlassStatus
+
+    init(title: String, detail: String? = nil, status: GlassStatus) {
+        self.title = title
+        self.detail = detail
+        self.status = status
+    }
+
+    var body: some View {
+        let palette = GlassPalette(colorScheme: colorScheme)
+        let tint = palette.color(for: status)
+        VStack(spacing: GlassMetric.spacingM) {
+            if status.isAnimated {
+                GlassSpinner()
+            } else {
+                Image(systemName: status.symbol)
+                    .font(.system(size: 26, weight: .regular))
+                    .foregroundStyle(tint)
+                    .frame(height: 30)
+            }
+
+            VStack(spacing: 5) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(palette.mutedText)
+                        .multilineTextAlignment(.center)
+                        // 让文本按可用宽度换行、按需要长高,而不是被压成一行省略号。
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: 320)
+        }
+        .padding(GlassMetric.spacingXL)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+extension AnyTransition {
+    /// 状态切换(加载 ↔ 内容 ↔ 出错)的统一转场:淡入淡出 + 极轻微缩放。
+    static var glassState: AnyTransition {
+        .opacity.combined(with: .scale(scale: 0.97))
+    }
+}
+
+extension Animation {
+    /// 配合 `.glassState` 使用的时长,统一各工具的状态切换手感。
+    static var glassState: Animation { .easeInOut(duration: 0.24) }
 }

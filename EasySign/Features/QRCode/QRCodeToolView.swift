@@ -31,7 +31,7 @@ struct QRCodeToolView: View {
                             }
                         }
                     }
-                    .padding(GlassMetric.spacingXL)
+                    .glassWorkspacePadding()
                 }
             }
         }

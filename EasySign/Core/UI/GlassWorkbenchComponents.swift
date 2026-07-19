@@ -41,6 +41,7 @@ struct WorkspaceHeader<Trailing: View>: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.title2.weight(.bold))
+                    .lineLimit(1)
                 Text(subtitle)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(palette.mutedText)
@@ -201,7 +202,11 @@ struct GlassInspectorButton<Content: View>: View {
         Button {
             isPresented.toggle()
         } label: {
+            // 不换行:标题栏尾部与其它控件抢宽度时,SwiftUI 会先折断按钮文字,
+            // 把胶囊撑成两行的方块。宁可让标题区先截断。
             Label(title, systemImage: "sidebar.right")
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(GlassButtonStyle())
         .popover(isPresented: $isPresented, arrowEdge: .trailing) {

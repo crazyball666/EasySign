@@ -52,7 +52,7 @@ struct TransferToolView: View {
                             }
                         }
                     }
-                    .padding(GlassMetric.spacingXL)
+                    .glassWorkspacePadding()
                 }
             }
         }

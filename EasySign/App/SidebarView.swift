@@ -51,9 +51,12 @@ struct SidebarView: View {
                 }
             }
         }
-        .padding(mode == .labelledRail ? GlassMetric.spacingS : 5)
-        .padding(.vertical, GlassMetric.spacingS)
+        // 顶部与详情侧共用 workspaceTopInset —— 两侧卡片顶边必须齐平,
+        // 只收窄一边会看出错位。左右/底部维持原来的 8 + 8。
+        .padding(.horizontal, mode == .labelledRail ? GlassMetric.spacingS : 5)
         .padding(.leading, GlassMetric.spacingS)
+        .padding(.top, GlassMetric.workspaceTopInset)
+        .padding(.bottom, GlassMetric.spacingL)
         .frame(
             minWidth: mode == .labelledRail ? 208 : 66,
             idealWidth: mode == .labelledRail ? 242 : 66,
@@ -75,11 +78,11 @@ struct SidebarView: View {
                 Spacer()
             }
             .padding(.horizontal, GlassMetric.spacingS)
-            .padding(.top, GlassMetric.spacingS)
+            .padding(.top, GlassMetric.trafficLightClearance)
             .padding(.bottom, GlassMetric.spacingM)
         } else {
             appIconImage
-                .padding(.top, GlassMetric.spacingS)
+                .padding(.top, GlassMetric.trafficLightClearance)
                 .padding(.bottom, GlassMetric.spacingM)
                 .accessibilityLabel("EasySign")
         }
