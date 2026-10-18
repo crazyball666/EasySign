@@ -192,6 +192,15 @@ struct ResignTask {
         let entitlementsPath = workspacePath.appendingPathComponent("zsign.entitlements")
         try reconciledEntitlements.xml.write(to: entitlementsPath, atomically: true, encoding: .utf8)
 
+        let extensionExecutables = try MachOExecutableScanner.extensionExecutables(in: appBundle.path)
+        if !extensionExecutables.isEmpty {
+            logger?.log(.info, tool: "resign", "扩展复用主 App 证书、描述文件和 entitlements，不保证扩展可用")
+            let profileData = try Data(contentsOf: taskInfo.mobileProvisionPath)
+            for executable in extensionExecutables.keys {
+                try profileData.write(to: executable.deletingLastPathComponent().appendingPathComponent("embedded.mobileprovision"), options: .atomic)
+            }
+        }
+
         let publisher = try ResignOutputPublisher(finalURL: taskInfo.outputPath)
         defer { try? publisher.discardCandidate() }
 
@@ -302,6 +311,13 @@ extension ResignTask {
         _ = try reparsedProfile.zsignProfileContext().validatedIdentity(targetBundleIdentifier: targetBundleIdentifier)
 
         try MachOExecutableScanner.validateAppTopology(appRoot: appURL, mainExecutable: verifiedExecutable)
+        let extensionExecutables = try MachOExecutableScanner.extensionExecutables(in: appURL)
+        for executable in extensionExecutables.keys {
+            let profileURL = executable.deletingLastPathComponent().appendingPathComponent("embedded.mobileprovision")
+            guard try Data(contentsOf: profileURL) == Data(contentsOf: mobileProvision.file) else {
+                throw NSError(message: "zsign 扩展未复用所选主 App 描述文件")
+            }
+        }
         for machoURL in try MachOExecutableScanner.machOFiles(in: appURL) {
             let data = try Data(contentsOf: machoURL)
             if machoURL.resolvingSymlinksInPath().standardizedFileURL == verifiedExecutable.resolvingSymlinksInPath().standardizedFileURL {
@@ -309,6 +325,13 @@ extension ResignTask {
                     in: data,
                     expectedEntitlements: expectedEntitlements,
                     expectedIdentifier: expectedIdentifier,
+                    expectedTeamIdentifier: expectedTeamIdentifier
+                )
+            } else if let identifier = extensionExecutables[machoURL.resolvingSymlinksInPath().standardizedFileURL] {
+                try MachOCodeSignatureInspector.inspectMainExecutable(
+                    in: data,
+                    expectedEntitlements: expectedEntitlements,
+                    expectedIdentifier: identifier,
                     expectedTeamIdentifier: expectedTeamIdentifier
                 )
             } else {

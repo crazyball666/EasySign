@@ -90,11 +90,12 @@ private func signedMachO(
     xmlEntitlements: [String: Any],
     derEntitlements: [String: Any],
     execSegFlags: UInt64 = 0,
+    identifier: String = "com.example.app",
     signaturePadding: Int = 0,
     derBlobExtendsIntoSignaturePadding: Bool = false
 ) -> Data {
     let xmlData = try! PropertyListSerialization.data(fromPropertyList: xmlEntitlements, format: .xml, options: 0)
-    let code = codeDirectory(identifier: "com.example.app", team: "TEAM", execSegFlags: execSegFlags)
+    let code = codeDirectory(identifier: identifier, team: "TEAM", execSegFlags: execSegFlags)
     let blobs: [(UInt32, Data)] = [
         (0, code),
         (5, blob(magic: 0xfade7171, payload: xmlData)),
@@ -147,6 +148,18 @@ struct MachOCodeSignatureInspectorTests {
             expect(true, "main executable accepts matching XML, DER and CodeDirectory identity")
         } catch {
             failures += 1; print("FAIL  valid signature inspection: \(error)")
+        }
+
+        do {
+            try MachOCodeSignatureInspector.inspectMainExecutable(
+                in: signedMachO(xmlEntitlements: expected, derEntitlements: expected, identifier: "com.example.app.notification"),
+                expectedEntitlements: expected,
+                expectedIdentifier: "com.example.app.notification",
+                expectedTeamIdentifier: "TEAM"
+            )
+            expect(true, "extension accepts main app entitlements with its own CodeDirectory identifier")
+        } catch {
+            failures += 1; print("FAIL  shared-profile extension signature: \(error)")
         }
 
         do {

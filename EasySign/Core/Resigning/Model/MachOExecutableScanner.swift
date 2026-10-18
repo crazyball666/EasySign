@@ -58,14 +58,42 @@ enum MachOExecutableScanner {
             throw MachOScannerError.invalidTopology("declared main executable is not MH_EXECUTE")
         }
 
+        let extensions = try extensionExecutables(in: appRoot)
         for fileURL in try machOFiles(in: appRoot) {
             let executable = try slices(in: Data(contentsOf: fileURL)).contains { $0.fileType == .execute }
             guard executable else { continue }
             let resolved = fileURL.resolvingSymlinksInPath().standardizedFileURL
-            guard resolved == main else {
-                throw MachOScannerError.invalidTopology("nested MH_EXECUTE is unsupported by the single-profile ZSign backend: \(fileURL.path)")
+            guard resolved == main || extensions[resolved] != nil else {
+                throw MachOScannerError.invalidTopology("undeclared nested MH_EXECUTE is unsupported by ZSign: \(fileURL.path)")
             }
         }
+    }
+
+    /// Standard iOS extensions share the main signing asset on the ZSign path.
+    /// Only their declared executable is allowed; arbitrary nested helpers remain rejected.
+    static func extensionExecutables(in appRoot: URL) throws -> [URL: String] {
+        let root = appRoot.resolvingSymlinksInPath().standardizedFileURL
+        let plugins = root.appendingPathComponent("PlugIns")
+        guard FileManager.default.fileExists(atPath: plugins.path) else { return [:] }
+        var result: [URL: String] = [:]
+        for bundle in try FileManager.default.contentsOfDirectory(at: plugins, includingPropertiesForKeys: nil)
+            where bundle.pathExtension == "appex" {
+            let resolvedBundle = bundle.resolvingSymlinksInPath().standardizedFileURL
+            guard isDescendant(resolvedBundle, of: root),
+                  let info = try PropertyListSerialization.propertyList(
+                    from: Data(contentsOf: bundle.appendingPathComponent("Info.plist")), options: [], format: nil
+                  ) as? [String: Any],
+                  let name = info["CFBundleExecutable"] as? String, !name.isEmpty,
+                  name != ".", name != "..", !name.contains("/"),
+                  let identifier = info["CFBundleIdentifier"] as? String, !identifier.isEmpty
+            else { throw MachOScannerError.invalidTopology("invalid extension bundle: \(bundle.path)") }
+            let executable = bundle.appendingPathComponent(name).resolvingSymlinksInPath().standardizedFileURL
+            guard isDescendant(executable, of: resolvedBundle) else {
+                throw MachOScannerError.invalidTopology("extension executable escapes its bundle: \(bundle.path)")
+            }
+            result[executable] = identifier
+        }
+        return result
     }
 
     static func machOFiles(in appRoot: URL) throws -> [URL] {

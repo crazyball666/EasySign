@@ -3,12 +3,24 @@
 #include "third-party/minizip/zip.h"
 #include "third-party/minizip/unzip.h"
 
+namespace {
+// Paths are UTF-8 (including the converted Windows paths below). The legacy
+// minizip API defaults to DOS provenance, causing macOS unzip to reinterpret
+// non-ASCII bytes and fail with exit 50 / Illegal byte sequence.
+constexpr uLong kUnixVersionMadeBy = (3UL << 8) | 20;
+constexpr uLong kUTF8FilenameFlag = 1UL << 11;
+}
+
 void Zip::GetModificationTime(const char* path, void* zfi)
 {
 	zip_fileinfo* zi = (zip_fileinfo*)zfi;
 	struct stat st = { 0 };
 	memset(zi, 0, sizeof(zip_fileinfo));
 	if (0 == stat(path, &st)) {
+        // Unix provenance requires Unix permissions in the upper attribute bits;
+        // otherwise unzip restores mode 000, including on app executables.
+        zi->external_fa = (static_cast<uLong>(st.st_mode) << 16) |
+                          (S_ISDIR(st.st_mode) ? 0x10 : 0);
 #ifdef _WIN32
 		struct tm tm = { 0 };
 		localtime_s(&tm, &st.st_mtime);
@@ -42,7 +54,7 @@ bool Zip::_WriteFileToZip(void* hZip, const string& strFile, const string& strRe
 
 	zip_fileinfo zi = { 0 };
 	GetModificationTime(strFile.c_str(), &zi);
-	if (ZIP_OK != zipOpenNewFileInZip3_64(hZip, strRelativePath.c_str(), &zi, NULL, 0, NULL, 0, NULL, Z_DEFLATED, zip_level, 0, -MAX_WBITS, DEF_MEM_LEVEL, 0, NULL, 0, 0)) {
+	if (ZIP_OK != zipOpenNewFileInZip4_64(hZip, strRelativePath.c_str(), &zi, NULL, 0, NULL, 0, NULL, Z_DEFLATED, zip_level, 0, -MAX_WBITS, DEF_MEM_LEVEL, 0, NULL, 0, kUnixVersionMadeBy, kUTF8FilenameFlag, 0)) {
 		fclose(fp);
 		ZLog::ErrorV(">>> Zip: Failed to add file to zip: %s\n", strRelativePath.c_str());
 		return false;
@@ -68,7 +80,7 @@ bool Zip::_CreateFolderToZip(void* hZip, const string& strFolder, const string& 
 {
 	zip_fileinfo zi = { 0 };
 	GetModificationTime(strFolder.c_str(), &zi);
-	if (ZIP_OK != zipOpenNewFileInZip3_64(hZip, strRelativePath.c_str(), &zi, NULL, 0, NULL, 0, NULL, Z_DEFLATED, zip_level, 0, -MAX_WBITS, DEF_MEM_LEVEL, 0, NULL, 0, 0)) {
+	if (ZIP_OK != zipOpenNewFileInZip4_64(hZip, strRelativePath.c_str(), &zi, NULL, 0, NULL, 0, NULL, Z_DEFLATED, zip_level, 0, -MAX_WBITS, DEF_MEM_LEVEL, 0, NULL, 0, kUnixVersionMadeBy, kUTF8FilenameFlag, 0)) {
 		ZLog::ErrorV(">>> Zip: Failed to create folder to zip: %s\n", strRelativePath.c_str());
 		return false;
 	}

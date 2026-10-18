@@ -312,7 +312,7 @@ struct DropdownPickerRow<SelectionValue: Hashable>: View {
             } label: {
                 HStack(spacing: 8) {
                     Text(displayTitle(selection))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
 
                     Spacer(minLength: 8)
