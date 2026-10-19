@@ -73,25 +73,27 @@ enum MachOExecutableScanner {
     /// Only their declared executable is allowed; arbitrary nested helpers remain rejected.
     static func extensionExecutables(in appRoot: URL) throws -> [URL: String] {
         let root = appRoot.resolvingSymlinksInPath().standardizedFileURL
-        let plugins = root.appendingPathComponent("PlugIns")
-        guard FileManager.default.fileExists(atPath: plugins.path) else { return [:] }
         var result: [URL: String] = [:]
-        for bundle in try FileManager.default.contentsOfDirectory(at: plugins, includingPropertiesForKeys: nil)
-            where bundle.pathExtension == "appex" {
-            let resolvedBundle = bundle.resolvingSymlinksInPath().standardizedFileURL
-            guard isDescendant(resolvedBundle, of: root),
-                  let info = try PropertyListSerialization.propertyList(
-                    from: Data(contentsOf: bundle.appendingPathComponent("Info.plist")), options: [], format: nil
-                  ) as? [String: Any],
-                  let name = info["CFBundleExecutable"] as? String, !name.isEmpty,
-                  name != ".", name != "..", !name.contains("/"),
-                  let identifier = info["CFBundleIdentifier"] as? String, !identifier.isEmpty
-            else { throw MachOScannerError.invalidTopology("invalid extension bundle: \(bundle.path)") }
-            let executable = bundle.appendingPathComponent(name).resolvingSymlinksInPath().standardizedFileURL
-            guard isDescendant(executable, of: resolvedBundle) else {
-                throw MachOScannerError.invalidTopology("extension executable escapes its bundle: \(bundle.path)")
+        for directoryName in ["PlugIns", "Extensions"] {
+            let directory = root.appendingPathComponent(directoryName)
+            guard FileManager.default.fileExists(atPath: directory.path) else { continue }
+            for bundle in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                where bundle.pathExtension == "appex" {
+                let resolvedBundle = bundle.resolvingSymlinksInPath().standardizedFileURL
+                guard isDescendant(resolvedBundle, of: root),
+                      let info = try PropertyListSerialization.propertyList(
+                        from: Data(contentsOf: bundle.appendingPathComponent("Info.plist")), options: [], format: nil
+                      ) as? [String: Any],
+                      let name = info["CFBundleExecutable"] as? String, !name.isEmpty,
+                      name != ".", name != "..", !name.contains("/"),
+                      let identifier = info["CFBundleIdentifier"] as? String, !identifier.isEmpty
+                else { throw MachOScannerError.invalidTopology("invalid extension bundle: \(bundle.path)") }
+                let executable = bundle.appendingPathComponent(name).resolvingSymlinksInPath().standardizedFileURL
+                guard isDescendant(executable, of: resolvedBundle) else {
+                    throw MachOScannerError.invalidTopology("extension executable escapes its bundle: \(bundle.path)")
+                }
+                result[executable] = identifier
             }
-            result[executable] = identifier
         }
         return result
     }

@@ -122,21 +122,23 @@ struct MachOZSignSafetyTests {
             try MachOExecutableScanner.validateAppTopology(appRoot: app, mainExecutable: main)
             expect(true, "app topology accepts only the declared main executable")
 
-            let plugin = app.appendingPathComponent("PlugIns/Notification.appex")
-            try FileManager.default.createDirectory(at: plugin, withIntermediateDirectories: true)
-            let pluginExecutable = plugin.appendingPathComponent("Notification")
-            try write(thinMachO(fileType: MachOFileType.execute.rawValue), to: pluginExecutable)
-            let pluginInfo: [String: Any] = ["CFBundleExecutable": "Notification", "CFBundleIdentifier": "com.example.test.notification"]
-            try PropertyListSerialization.data(fromPropertyList: pluginInfo, format: .xml, options: 0)
-                .write(to: plugin.appendingPathComponent("Info.plist"))
-            try MachOExecutableScanner.validateAppTopology(appRoot: app, mainExecutable: main)
-            expect(true, "standard appex executable is accepted for shared-profile signing")
-            let helper = plugin.appendingPathComponent("UnexpectedHelper")
-            try write(thinMachO(fileType: MachOFileType.execute.rawValue), to: helper)
-            expectThrows("undeclared executable inside appex remains rejected") {
+            for directory in ["Extensions", "PlugIns"] {
+                let plugin = app.appendingPathComponent("\(directory)/Notification.appex")
+                try FileManager.default.createDirectory(at: plugin, withIntermediateDirectories: true)
+                let pluginExecutable = plugin.appendingPathComponent("Notification")
+                try write(thinMachO(fileType: MachOFileType.execute.rawValue), to: pluginExecutable)
+                let pluginInfo: [String: Any] = ["CFBundleExecutable": "Notification", "CFBundleIdentifier": "com.example.test.notification"]
+                try PropertyListSerialization.data(fromPropertyList: pluginInfo, format: .xml, options: 0)
+                    .write(to: plugin.appendingPathComponent("Info.plist"))
                 try MachOExecutableScanner.validateAppTopology(appRoot: app, mainExecutable: main)
+                expect(true, "\(directory) appex executable is accepted for shared-profile signing")
+                let helper = plugin.appendingPathComponent("UnexpectedHelper")
+                try write(thinMachO(fileType: MachOFileType.execute.rawValue), to: helper)
+                expectThrows("undeclared executable inside \(directory) appex remains rejected") {
+                    try MachOExecutableScanner.validateAppTopology(appRoot: app, mainExecutable: main)
+                }
+                try FileManager.default.removeItem(at: helper)
             }
-            try FileManager.default.removeItem(at: helper)
 
             let nested = app.appendingPathComponent("Frameworks/Bad.framework/Bad")
             try FileManager.default.createDirectory(at: nested.deletingLastPathComponent(), withIntermediateDirectories: true)

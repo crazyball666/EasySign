@@ -39,7 +39,7 @@ EasySign 现在保留原有的系统重签逻辑，并新增一个内嵌的 zsig
 
 ## 已知边界
 
-- zsign 后端使用主 App 的 p12 和 mobileprovision 递归签名主 App 及其内嵌内容。标准 `PlugIns/*.appex` 扩展也复用主 App 的描述文件和 reconciled entitlements，并覆盖扩展原描述文件；不保证扩展可安装或可用。
+- zsign 后端使用主 App 的 p12 和 mobileprovision 递归签名主 App 及其内嵌内容。`PlugIns/*.appex` 和 `Extensions/*.appex` 扩展也复用主 App 的描述文件和 reconciled entitlements，并覆盖扩展原描述文件；不保证扩展可安装或可用。
 - 签前及导出校验允许扩展 Info.plist 声明的可执行文件；其他未声明的嵌套 MH_EXECUTE 仍会拒绝。扩展仍需通过签名结构和 codesign 校验。
 - 系统 codesign 后端也统一使用主 App 证书重签 Appex；当前不再为 Appex 配置独立证书和描述文件。
 - zsign 后端不会调用 `xcodebuild -exportArchive`，导出类型主要用于生成 entitlements。
